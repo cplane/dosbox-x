@@ -4682,6 +4682,13 @@ static void ClearAllBinds(void) {
 		event->ClearBinds();
 }
 
+/* [sdl] hotkeys=false: DOSBox-X's own shortcuts get no default binding, so
+ * every key combination reaches the emulated program (headless/streamed use). */
+static bool MAPPER_HotkeysEnabled(void) {
+    Section_prop *section = static_cast<Section_prop *>(control->GetSection("sdl"));
+    return section == NULL || section->Get_bool("hotkeys");
+}
+
 static void CreateDefaultBinds(void) {
 	ClearAllBinds();
     char buffer[512];
@@ -4718,9 +4725,11 @@ static void CreateDefaultBinds(void) {
 # endif
 #endif
 
-    for (CHandlerEventVector_it hit=handlergroup.begin();hit!=handlergroup.end();++hit) {
-        (*hit)->MakeDefaultBind(buffer);
-        CreateStringBind(buffer);
+    if (MAPPER_HotkeysEnabled()) {
+        for (CHandlerEventVector_it hit=handlergroup.begin();hit!=handlergroup.end();++hit) {
+            (*hit)->MakeDefaultBind(buffer);
+            CreateStringBind(buffer);
+        }
     }
 
     /* joystick1, buttons 1-6 */
@@ -4816,7 +4825,7 @@ void MAPPER_AddHandler(MAPPER_Handler * handler,MapKeys key,Bitu mods,char const
 
                 pending_string_binds.erase(i);
             }
-            else {
+            else if (MAPPER_HotkeysEnabled()) {
                 /* use default binding.
                  * redundant? Yes! But, apparently necessary. */
                 event->MakeDefaultBind(tmp);
