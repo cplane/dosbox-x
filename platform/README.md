@@ -47,7 +47,9 @@ screen; `gl-type "echo hello from k8s > hello.txt|dir|"` runs in DOS and the
 file lands on the PVC (`/data/c/HELLO.TXT`). With the sidecar
 (`dosbox-stream`): the player page via port-forward shows the live screen
 (~10 fps on a mostly static DOS prompt, ~10 KB/frame) and keys typed in the
-browser run `ver` in DOS.
+browser run `ver` in DOS. Turbo C++ 3.0 from the volume opens, compiles and
+runs (Ctrl+F9) a BGI paint program in 640x480x256 with `SVGA256.BGI`
+(jharg93/SvgaBGI, MIT), and relative mouse input draws on its canvas.
 
 Build notes: a full compile is ~14 min on 2 vCPU requested; Kaniko layer cache
 (`dosbox-x-cache` repo) brings unchanged-source rebuilds to ~4 min. The
@@ -70,6 +72,17 @@ Limits to rework later:
 - input is a key-state bitmap (Windows scancodes), mouse is relative only
 - no audio over Game Link (only volume) — needs a mixer hook or PulseAudio sink
 - one Game Link instance per IPC namespace -> one box per pod (fine)
+- the INT 33h software cursor isn't drawn in VESA 256-color modes, so in
+  e.g. 640x480x256 programs the arrow is invisible (positions/clicks work)
+
+DOSBox-X changes made for headless use (this fork):
+- `[sdl] hotkeys` (default `true`): `false` leaves DOSBox-X's own shortcuts
+  unbound so every combo reaches DOS — otherwise Ctrl+F9 (Turbo C "Run")
+  quits the emulator. `docker/dosbox-x.conf` sets `hotkeys = false`.
+- Game Link mouse input is treated as a captured mouse
+  (`OUTPUT_GAMELINK_InputEvent`): the cursor flags are normally refreshed
+  only from SDL motion events, which never arrive headless, so DOSBox-X
+  snapped the DOS cursor to (0,0) and never accumulated mickeys.
 
 ## Target architecture
 
@@ -94,7 +107,10 @@ inside the gateway pod; for DOS boxes a pod per box gives resource limits,
 isolation (arbitrary user DOS software) and independent lifetimes.
 
 ## Next steps
-1. ~~`stream` sidecar~~ (done; mouse path untested against a DOS mouse program yet).
+1. ~~`stream` sidecar~~ (done, keyboard + mouse verified).
+   Next for it: a control API for agents/scripts — `/type` (text incl.
+   shifted chars), `/keys` (combos), `/mouse`, file upload + auto `rescan`,
+   lossless `/snapshot.png`.
 2. `gateway`: box lifecycle via k8s API, auth middleware, WS proxy.
 3. `web`: account + box list UI around the player.
 4. Helm chart + ingress, same layout as the dunelegacy chart.

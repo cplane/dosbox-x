@@ -16,6 +16,7 @@
 #include "mem.h"
 #include "mixer.h"
 #include "mapper.h"
+#include "mouse.h"
 #include "../gamelink/scancodes_windows.h"
 #include "output/output_surface.h"
 #include "output/output_opengl.h"
@@ -24,6 +25,8 @@
 using namespace std;
 
 extern uint32_t RunningProgramHash[4];
+extern bool user_cursor_locked;
+extern MOUSE_EMULATION user_cursor_emulation;
 #if !defined(C_SDL2)
 #error "gamelink output requires SDL2"
 #endif
@@ -73,7 +76,14 @@ void OUTPUT_GAMELINK_InputEvent()
         //
         // -- Input
 
-        Mouse_CursorMoved( 
+        // Game Link mouse input is relative only, like a captured host
+        // mouse. These are normally refreshed from SDL motion events, which
+        // never arrive here; without this DOSBox-X snaps the DOS cursor to
+        // the absent host cursor (0,0) and never accumulates mickeys.
+        user_cursor_locked = true;
+        user_cursor_emulation = sdl.mouse.emulation;
+
+        Mouse_CursorMoved(
             sdl.gamelink.input.mouse_dx, 
             sdl.gamelink.input.mouse_dy, 
             0, 

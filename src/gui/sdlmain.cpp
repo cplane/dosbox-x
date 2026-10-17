@@ -7017,6 +7017,11 @@ void SDL_SetupConfigSection() {
     Pstring->Set_help("File used to load/save the key/event mappings from. Resetmapper only works with the default value.");
     Pstring->SetBasic(true);
 
+    Pbool = sdl_sec->Add_bool("hotkeys",Property::Changeable::OnlyAtStart,true);
+    Pbool->Set_help("If set to false, DOSBox-X's own keyboard shortcuts (such as Ctrl+F9 to quit, Ctrl+F10 to capture the mouse\n"
+                    "and the Host key combinations) get no default binding, so every key combination reaches the emulated program.\n"
+                    "Bindings loaded from a mapper file still apply. Useful for headless or streamed setups.");
+
     Pstring = sdl_sec->Add_path("mapperfile_sdl1",Property::Changeable::Always,"");
     Pstring->Set_help("File used to load/save the key/event mappings from DOSBox-X SDL1 builds. If set it will override \"mapperfile\" for SDL1 builds.");
 
