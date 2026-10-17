@@ -3,6 +3,7 @@
 #
 #   kubectl -n dosbox apply -f platform/k8s/dosbox-instance.yaml
 #   kubectl -n dosbox exec dosbox-test -c dosbox -- gl-snap
+#   kubectl -n dosbox port-forward pod/dosbox-test 8080:8080   # player at http://localhost:8080/
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -37,8 +38,24 @@ spec:
       volumeMounts:
         - {name: data, mountPath: /data}
         - {name: shm, mountPath: /dev/shm}
-      # Future: a "stream" sidecar mounting the same /dev/shm reads frames
-      # from DWD_GAMELINK_MMAP_R4 and writes input back.
+    # Reads frames from /dev/shm/DWD_GAMELINK_MMAP_R4 and writes input back;
+    # serves the player + WebSocket on :8080.
+    - name: stream
+      image: registry.digitalocean.com/container-registry-ams3/dosbox-stream:latest
+      imagePullPolicy: Always
+      env:
+        - {name: JPEG_QUALITY, value: "80"}
+        - {name: MAX_FPS, value: "30"}
+      ports:
+        - {name: http, containerPort: 8080}
+      readinessProbe:
+        httpGet: {path: /healthz, port: http}
+        periodSeconds: 5
+      resources:
+        requests: {cpu: 100m, memory: 32Mi}
+        limits: {cpu: 500m, memory: 128Mi}
+      volumeMounts:
+        - {name: shm, mountPath: /dev/shm}
   volumes:
     - name: data
       persistentVolumeClaim:
