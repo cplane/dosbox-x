@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Build the headless DOSBox-X image inside the DOKS cluster with Kaniko (no
+# Build a dos-box platform image inside the DOKS cluster with Kaniko (no
 # local Docker) and push it to the DigitalOcean registry.
 #
-#   platform/build.sh [tag]        default tag: git short sha (+ -dirty)
+#   platform/build.sh [dosbox|stream] [tag]
+#
+#   dosbox  headless DOSBox-X (context: repo root)       -> dosbox-x
+#   stream  Game Link streaming sidecar (platform/stream) -> dosbox-stream
+#   tag     default: git short sha (+ -dirty)
 #
 # Needs: kubectl (context = the DOKS cluster), doctl (authenticated), git, gzip.
 set -euo pipefail
@@ -10,13 +14,33 @@ export MSYS_NO_PATHCONV=1
 
 NS=${NS:-dosbox}
 REGISTRY=${REGISTRY:-registry.digitalocean.com/container-registry-ams3}
-IMAGE=${IMAGE:-$REGISTRY/dosbox-x}
 KANIKO=${KANIKO:-gcr.io/kaniko-project/executor:v1.23.2}
 JOBS=${JOBS:-4}
+COMPONENT=${1:-dosbox}
 
 cd "$(dirname "$0")/.."
 GIT_DIR=$(git rev-parse --git-dir)   # relative paths: Windows git/kubectl choke on /tmp and C:
-TAG=${1:-$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- . ':!platform' || echo -dirty)}
+
+case "$COMPONENT" in
+  dosbox)
+    IMAGE=${IMAGE:-$REGISTRY/dosbox-x}
+    SUBTREE=""                                   # whole repo
+    DOCKERFILE=platform/docker/Dockerfile
+    # Trees the Linux SDL2 build never touches; vs/ stays because the SDL2
+    # build still includes vs/sdl/{include,src/cdrom} and vs/zlib.
+    EXCLUDES=(':!vs/sdl2' ':!vs/sdl2net' ':!vs/freetype' ':!vs/libpng' ':!ref' ':!docs' ':!build-scripts' ':!experiments')
+    DIRTY_PATHS=(. ':!platform')
+    ;;
+  stream)
+    IMAGE=${IMAGE:-$REGISTRY/dosbox-stream}
+    SUBTREE=platform/stream
+    DOCKERFILE=Dockerfile
+    EXCLUDES=()
+    DIRTY_PATHS=(platform/stream)
+    ;;
+  *) echo "usage: $0 [dosbox|stream] [tag]" >&2; exit 2 ;;
+esac
+TAG=${2:-$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- "${DIRTY_PATHS[@]}" || echo -dirty)}
 
 idx="$GIT_DIR/index.dosbox-build"
 ctx="$GIT_DIR/dosbox-build-context.tar.gz"
@@ -44,20 +68,19 @@ rm -f "$cfg"
 
 # Build context = working tree (incl. uncommitted/untracked changes) snapshotted
 # into a throwaway index, exported with LF endings (the Windows checkout uses
-# autocrlf). Trees the Linux SDL2 build never touches are left out; vs/ stays
-# because the SDL2 build still includes vs/sdl/{include,src/cdrom} and vs/zlib.
+# autocrlf).
 cp "$GIT_DIR/index" "$idx"
 GIT_INDEX_FILE="$idx" git add -A 2>/dev/null
 tree=$(GIT_INDEX_FILE="$idx" git write-tree)
 rm -f "$idx"
-EXCLUDES=(':!vs/sdl2' ':!vs/sdl2net' ':!vs/freetype' ':!vs/libpng' ':!ref' ':!docs' ':!build-scripts' ':!experiments')
+[ -n "$SUBTREE" ] && tree="$tree:$SUBTREE"
 git -c core.autocrlf=false archive --format=tar "$tree" -- . "${EXCLUDES[@]}" | gzip -1 > "$ctx"
 echo "context: tree $tree ($(du -h "$ctx" | cut -f1)) -> $IMAGE:$TAG"
 
 # The build runs as a Job so a flaky local link can't kill it: an init
 # container waits for the context, we upload it with (retried) kubectl cp,
 # then Kaniko builds and pushes on its own while we follow the logs.
-job="dosbox-build-$(date +%s)"
+job="$COMPONENT-build-$(date +%s)"
 retry kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: Job
@@ -83,7 +106,7 @@ spec:
           image: $KANIKO
           args:
             - --context=tar:///workspace/context.tar.gz
-            - --dockerfile=platform/docker/Dockerfile
+            - --dockerfile=$DOCKERFILE
             - --destination=$IMAGE:$TAG
             - --destination=$IMAGE:latest
             - --build-arg=JOBS=$JOBS
