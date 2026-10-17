@@ -1,0 +1,49 @@
+# One dos-box instance. The platform will template this per allocation
+# (name, owner label, PVC); for now it is a single hand-applied test box.
+#
+#   kubectl -n dosbox apply -f platform/k8s/dosbox-instance.yaml
+#   kubectl -n dosbox exec dosbox-test -c dosbox -- gl-snap
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dosbox-test-data
+  namespace: dosbox
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dosbox-test
+  namespace: dosbox
+  labels:
+    app: dosbox
+    dosbox/instance: test
+spec:
+  imagePullSecrets:
+    - name: container-registry-ams3
+  restartPolicy: Always
+  containers:
+    - name: dosbox
+      image: registry.digitalocean.com/container-registry-ams3/dosbox-x:latest
+      imagePullPolicy: Always
+      resources:
+        requests: {cpu: 250m, memory: 128Mi}
+        limits: {cpu: "1", memory: 512Mi}
+      volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: shm, mountPath: /dev/shm}
+      # Future: a "stream" sidecar mounting the same /dev/shm reads frames
+      # from DWD_GAMELINK_MMAP_R4 and writes input back.
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: dosbox-test-data
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Mi
