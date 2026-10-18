@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dosbox-auth
+  labels:
+    app: dosbox-auth
+    {{- include "dosbox.labels" . | nindent 4 }}
+spec:
+  # One replica with Recreate: the signing key lives on a ReadWriteOnce volume.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dosbox-auth
+  template:
+    metadata:
+      labels:
+        app: dosbox-auth
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      containers:
+        - name: auth
+          image: {{ include "dosbox.image" (dict "root" . "image" .Values.images.platform) }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command: ["/app/auth"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.auth.port }}
+          env:
+            - name: HTTP_SERVICE_PORT
+              value: "{{ .Values.auth.port }}"
+            - name: AUTH_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: postgresUrl
+            - name: AUTH_TOKEN_ISSUER
+              value: "{{ .Values.auth.tokenIssuer }}"
+            - name: AUTH_ACCESS_TTL
+              value: "{{ .Values.auth.accessTtl }}"
+            - name: AUTH_REFRESH_TTL
+              value: "{{ .Values.auth.refreshTtl }}"
+            - name: AUTH_ROTATION_GRACE
+              value: "{{ .Values.auth.rotationGrace }}"
+            - name: AUTH_COOKIE_SECURE
+              value: "{{ .Values.auth.cookieSecure }}"
+            - name: AUTH_PRIVATE_KEY_PATH
+              value: /certs/auth.key
+            - name: AUTH_PUBLIC_KEY_PATH
+              value: /certs/auth.pub
+            # Optional: absent means no Google sign-in button.
+            - name: AUTH_GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: googleClientId
+                  optional: true
+          volumeMounts:
+            - name: keys
+              mountPath: /certs
+          readinessProbe:
+            httpGet:
+              path: /auth/health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.auth.resources | nindent 12 }}
+      volumes:
+        - name: keys
+          persistentVolumeClaim:
+            claimName: dosbox-auth-keys
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dosbox-auth-keys
+  labels:
+    {{- include "dosbox.labels" . | nindent 4 }}
+  annotations:
+    # The RSA signing key is generated on first boot; losing it signs
+    # everyone out.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.auth.keyStorage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dosbox-auth
+  labels:
+    app: dosbox-auth
+    {{- include "dosbox.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: dosbox-auth
+  ports:
+    - name: http
+      port: {{ .Values.auth.port }}
+      targetPort: http
