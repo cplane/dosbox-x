@@ -39,7 +39,9 @@ input {
 .auth-form { display: flex; flex-direction: column; gap: 10px; }
 .auth-form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
 .auth-error { color: var(--bad); margin: 6px 0; }
-.google-button { min-height: 0; }
+/* Google's button is a light-scheme iframe; on a dark-scheme page Chrome
+ * paints an opaque white backdrop behind it unless the schemes match. */
+.google-button { min-height: 0; margin-top: 10px; display: flex; justify-content: center; color-scheme: light; }
 
 /* pages */
 .page { width: min(100%, 900px); margin: 0 auto; padding: 16px; }

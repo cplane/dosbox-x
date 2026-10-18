@@ -398,6 +398,11 @@ func (s *Server) proxyTo(p *Pod, path string) *httputil.ReverseProxy {
 			// user's session.
 			pr.Out.Header.Del("Cookie")
 			pr.Out.Header.Del("Authorization")
+			// The sidecar's WebSocket upgrader compares Origin with Host,
+			// and Host is now the pod IP, so a browser's Origin would always
+			// be refused. The origin is checked here instead (handleWS),
+			// where the public host is known.
+			pr.Out.Header.Del("Origin")
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			httpErr(w, http.StatusBadGateway, "box unreachable: %v", err)
@@ -405,8 +410,26 @@ func (s *Server) proxyTo(p *Pod, path string) *httputil.ReverseProxy {
 	}
 }
 
+// sameOrigin reports whether a request's Origin (if any) names the host it
+// was sent to. Non-browser clients send no Origin and are let through; they
+// still need the session like any other API call.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
+}
+
 // GET /api/boxes/{id}/ws: the player's WebSocket (frames out, input in).
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, _ auth.Identity, b *Box) {
+	// WebSockets are not covered by CORS: refuse a page from another site
+	// driving the user's box with their cookies.
+	if !sameOrigin(r) {
+		httpErr(w, http.StatusForbidden, "cross-origin websocket")
+		return
+	}
 	p := s.runningPod(w, r, b)
 	if p == nil {
 		return

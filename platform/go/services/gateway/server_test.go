@@ -368,3 +368,26 @@ func TestPodState(t *testing.T) {
 		t.Fatal(st)
 	}
 }
+
+func TestSameOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		host, origin string
+		want         bool
+	}{
+		{"dosbox.pocket-maze.app", "", true}, // non-browser client
+		{"dosbox.pocket-maze.app", "https://dosbox.pocket-maze.app", true},
+		{"dosbox.pocket-maze.app", "https://DOSBOX.pocket-maze.app", true},
+		{"dosbox.pocket-maze.app", "https://evil.example", false},
+		{"dosbox.pocket-maze.app", "https://dunelegacy.pocket-maze.app", false},
+		{"dosbox.pocket-maze.app", "null", false},
+	} {
+		r := httptest.NewRequest("GET", "/api/boxes/x/ws", nil)
+		r.Host = tc.host
+		if tc.origin != "" {
+			r.Header.Set("Origin", tc.origin)
+		}
+		if got := sameOrigin(r); got != tc.want {
+			t.Errorf("sameOrigin(host=%q, origin=%q) = %v, want %v", tc.host, tc.origin, got, tc.want)
+		}
+	}
+}
