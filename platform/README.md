@@ -10,7 +10,8 @@ manage boxes. Modeled on the dunelegacy deployment already in the cluster
 
 | Path | What |
 |---|---|
-| `docker/Dockerfile` | Ubuntu 24.04 multi-stage build of DOSBox-X with SDL2 (system SDL2), `--disable-debug`. Runtime deps resolved from `ldd`. |
+| `docker/Dockerfile.builder`, `docker/compile.sh` | Toolchain image and the compile script it runs (SDL2, `--disable-debug`, ccache); see Build notes. |
+| `docker/Dockerfile` | Runtime image: the compiled binary on Ubuntu 24.04 + runtime deps resolved from `ldd`. |
 | `docker/dosbox-x.conf` | Headless defaults: `videodriver=dummy`, `output=gamelink`, `gamelink master=true`, no sound, `C:` = `/data/c`. |
 | `docker/entrypoint.sh` | Starts one instance; extra args pass through (`-c "cmd"`, `-set "sec key=val"`). |
 | `docker/gl-snap.py` | Reads the Game Link shared memory and writes the current frame as PNG (proves the frame path). |
@@ -120,11 +121,38 @@ matches the source, then `/keys ctrl+f9` + `alt+f5` show its output
 with `?rescan=0` `DIR` doesn't list the file, after `POST /rescan` (or a
 normal PUT) it does; `/snapshot.png` returns the 720x400 frame.
 
-Build notes: a full compile is ~14 min on 2 vCPU requested; Kaniko layer cache
-(`dosbox-x-cache` repo) brings unchanged-source rebuilds to ~4 min. The
-Windows checkout is CRLF (`core.autocrlf=true`) — `build.sh` exports LF via
-`git archive`. The Linux build still needs `vs/sdl/{include,src/cdrom}` and
-`vs/zlib`; only the big vendored libs under `vs/` are excluded.
+Build notes (`build.sh dosbox`, same recipe as the dunelegacy engine build):
+the emulator is compiled **outside** the image build, because Kaniko's layer
+cache misses on any source change and recompiled all ~600 objects (14 min).
+1. `dosbox-x-builder:<hash of docker/Dockerfile.builder>`: toolchain +
+   ccache; rebuilt only when that file changes.
+2. `dosbox-x-bin:<hash of the emulator sources, compile.sh, pch.h, builder>`:
+   a Job runs `docker/compile.sh` in the builder image with a persistent
+   ccache PVC (`dosbox-build-ccache`, 10 Gi; also caches autogen output and
+   `configure` results), then Kaniko pushes the binary as a `FROM scratch`
+   image. Skipped when that tag already exists: `platform/` changes never
+   recompile the emulator.
+3. `dosbox-x:<tag>`: `docker/Dockerfile` puts the binary on Ubuntu with the
+   runtime packages `compile.sh` resolved via `ldd` (cached layer).
+
+Measured 2026-10-18 (2 vCPU requested, `-j4`):
+
+| Change | Before | Now |
+|---|---|---|
+| none in the emulator (platform files only) | ~4 min | 67 s |
+| one `.cpp` (or a recipe change, warm cache) | ~15–18 min | ~3.5 min, of which the compile is ~45 s (585/585 ccache hits); the rest is pod start, PVC attach, the 51 MB upload and two pushes |
+| cold cache | ~15 min | ~15 min (make 834 s) |
+
+A precompiled header (`PCH=1 platform/build.sh dosbox`, `docker/pch.h`:
+standard headers only, force-included via `CXXFLAGS`, the `.gch` cached by
+content so ccache keeps hitting) cut a cold make only from 834 s to 777 s,
+since `-O2` code generation, not header parsing, dominates this build. So
+it is off by default. A header that many files include (e.g. `dosbox.h`)
+still means a near-cold build. The Windows checkout is CRLF
+(`core.autocrlf=true`); `build.sh` exports LF via `git archive`. The Linux
+build still needs `vs/sdl/{include,src/cdrom}` and `vs/zlib`; only the big
+vendored libs under `vs/` are left out. Concurrent `build.sh stream` and
+`build.sh dosbox` runs are fine (per-component temp files).
 
 ## Why Game Link
 
