@@ -2,7 +2,7 @@
 # Build a dos-box platform image inside the DOKS cluster (no local Docker)
 # and push it to the DigitalOcean registry.
 #
-#   platform/build.sh [dosbox|stream] [tag]
+#   platform/build.sh [dosbox|stream|platform|web] [tag]
 #
 #   dosbox  headless DOSBox-X -> dosbox-x, in up to three steps, each skipped
 #           when its result already exists in the registry:
@@ -11,6 +11,8 @@
 #                (builder image + persistent ccache PVC, see compile.sh)
 #             3. runtime image  dosbox-x:<tag> = bin + platform/docker files
 #   stream  Game Link streaming sidecar (platform/stream) -> dosbox-stream
+#   platform  auth + gateway Go services (platform/go) -> dosbox-platform
+#   web     browser client + nginx (platform/web) -> dosbox-web
 #   tag     default: git short sha (+ -dirty)
 #
 # Needs: kubectl (context = the DOKS cluster), doctl (authenticated), git, gzip.
@@ -29,9 +31,11 @@ cd "$(dirname "$0")/.."
 GIT_DIR=$(git rev-parse --git-dir)   # relative paths: Windows git/kubectl choke on /tmp and C:
 
 case "$COMPONENT" in
-  dosbox) DIRTY_PATHS=(. ':!platform/stream' ':!platform/k8s' ':!platform/README.md') ;;
+  dosbox) DIRTY_PATHS=(. ':!platform/stream' ':!platform/go' ':!platform/web' ':!platform/helm' ':!platform/k8s' ':!platform/README.md') ;;
   stream) DIRTY_PATHS=(platform/stream) ;;
-  *) echo "usage: $0 [dosbox|stream] [tag]" >&2; exit 2 ;;
+  platform) DIRTY_PATHS=(platform/go) ;;
+  web) DIRTY_PATHS=(platform/web) ;;
+  *) echo "usage: $0 [dosbox|stream|platform|web] [tag]" >&2; exit 2 ;;
 esac
 TAG=${2:-$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- "${DIRTY_PATHS[@]}" || echo -dirty)}
 
@@ -191,10 +195,12 @@ EOF
 
 tree=$(snapshot_tree)
 
-if [ "$COMPONENT" = stream ]; then
-  IMAGE=${IMAGE:-$REGISTRY/dosbox-stream}
-  archive "$tree:platform/stream"
-  run_job stream-build "$(kaniko_spec Dockerfile "$IMAGE:$TAG" "$IMAGE:latest")"
+if [ "$COMPONENT" != dosbox ]; then
+  sub=$COMPONENT
+  [ "$COMPONENT" = platform ] && sub=go
+  IMAGE=${IMAGE:-$REGISTRY/dosbox-$COMPONENT}
+  archive "$tree:platform/$sub"
+  run_job "$COMPONENT-build" "$(kaniko_spec Dockerfile "$IMAGE:$TAG" "$IMAGE:latest")"
   echo "pushed $IMAGE:$TAG"
   exit 0
 fi
@@ -218,7 +224,7 @@ fi
 # touches), the compile recipe and the toolchain.
 SRC_EXCLUDES=(':!platform' ':!vs/sdl2' ':!vs/sdl2net' ':!vs/freetype' ':!vs/libpng' ':!ref' ':!docs' ':!build-scripts' ':!experiments')
 # The upload also needs compile.sh (pathspec excludes win over includes).
-UPLOAD_EXCLUDES=(":!platform/stream" ":!platform/k8s" ":!platform/README.md" ":!platform/build.sh" "${SRC_EXCLUDES[@]:1}")
+UPLOAD_EXCLUDES=(":!platform/stream" ":!platform/go" ":!platform/web" ":!platform/helm" ":!platform/k8s" ":!platform/README.md" ":!platform/build.sh" "${SRC_EXCLUDES[@]:1}")
 # (git ls-tree takes no exclude pathspecs: filter its "<mode> <type> <id>\t<path>" lines.)
 src_re=$(printf '%s|' "${SRC_EXCLUDES[@]#:!}")
 src_re=$'\t'"(${src_re%|})(/|\$)"

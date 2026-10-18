@@ -17,8 +17,9 @@ manage boxes. Modeled on the dunelegacy deployment already in the cluster
 | `docker/gl-snap.py` | Reads the Game Link shared memory and writes the current frame as PNG (proves the frame path). |
 | `docker/gl-type.py` | Types text into the box through the Game Link input block (`\|` = Enter). Not baked into the image yet: `kubectl exec -i ... -- sh -c 'cat > /tmp/gl-type.py' < platform/docker/gl-type.py`. |
 | `stream/` | Go sidecar: Game Link frames -> JPEG over WebSocket, browser keyboard/mouse -> Game Link input; serves a test player page. |
-| `build.sh` | Builds an image **inside the cluster** as a Kaniko Job (no local Docker): `build.sh dosbox` -> `dosbox-x`, `build.sh stream` -> `dosbox-stream`, tags `<sha>` and `latest` in `registry.digitalocean.com/container-registry-ams3`. Uploads the working tree (incl. uncommitted changes) as the build context. |
-| `k8s/dosbox-instance.yaml` | One test box: Pod (dosbox + stream containers) + 1 Gi PVC in namespace `dosbox`, `/dev/shm` as a memory emptyDir shared by both. |
+| `build.sh` | Builds an image **inside the cluster** as a Kaniko Job (no local Docker): `build.sh dosbox` -> `dosbox-x`, `stream` -> `dosbox-stream`, `platform` -> `dosbox-platform`, `web` -> `dosbox-web`, tags `<sha>` and `latest` in `registry.digitalocean.com/container-registry-ams3`. Uploads the working tree (incl. uncommitted changes) as the build context. |
+| `go/`, `web/`, `helm/`, `deploy.sh` | The web platform, see "Web platform" below. |
+| `k8s/dosbox-instance.yaml` | One standalone test box (outside the platform): Pod (dosbox + stream containers) + 1 Gi PVC in namespace `dosbox`, `/dev/shm` as a memory emptyDir shared by both. |
 
 ```bash
 platform/build.sh dosbox
@@ -192,32 +193,81 @@ DOSBox-X changes made for headless use (this fork):
   was rendered, so on a static screen (a dialog without a blinking cursor)
   `:rescan` waited until something on screen changed.
 
-## Target architecture
+## Web platform: https://dosbox.pocket-maze.app
+
+Helm release `dosbox` in namespace `dosbox` (`helm/dosbox`), deployed with
+`platform/deploy.sh`. Same layout as dunelegacy: the ingress sends
+everything to `web`, whose nginx serves the app and routes `/auth/` and
+`/api/` on the same origin (host-only, httpOnly, SameSite=Lax cookies; no
+CORS). TLS: the load balancer's `*.pocket-maze.app` certificate; DNS: an A
+record `dosbox` -> 167.99.18.243.
 
 ```
-browser ──https/wss──> ingress (dosbox.pocket-maze.app)
-                        ├── web      SPA: login, box list, player (canvas)
-                        ├── auth     accounts, JWT access/refresh cookies
-                        │            (same model as dunelegacy-auth; could be shared)
-                        └── gateway  REST: /boxes CRUD, start/stop/snapshot
-                                     WS:   /boxes/{id}/stream -> proxied to box
-                                     owns a k8s client (ServiceAccount, ns dosbox)
-                                     Postgres: users<->boxes, quotas, state
-box pod (one per allocated dos-box, ns dosbox)
-  ├── dosbox   this image; output=gamelink
-  └── stream   sidecar: shm frames -> encode (JPEG/WebP first, H.264/WebRTC
-               later) -> WS; WS input -> shm input block
-  PVC          the box's C: drive / disk images (or DO Spaces sync)
+browser ──https/wss──> ingress-nginx ──> dosbox-web (nginx + React app, 2 replicas)
+                                          ├── /auth/ ──> dosbox-auth     accounts, RS256 JWT cookies
+                                          │                              (dbx_access 1h / dbx_refresh 90d)
+                                          └── /api/  ──> dosbox-gateway  boxes, pods, proxy, files, janitor
+                                                            │  k8s API (ServiceAccount, Role: pods)
+                                                            ▼
+                                          box-<id> pods: dosbox (DOSBox-X) + stream sidecar
+                                          dosbox-boxes volume (10 Gi): <id>/ = box /data, <id>/c = C:
+Postgres: database dosbox-01 (owner: user dosbox) on the managed cluster
+db-pgsql-ams3-80134; tables identity/refresh_token (auth), box (gateway).
 ```
 
-Differences from dunelegacy: its gateway spawns `dlserver` as child processes
-inside the gateway pod; for DOS boxes a pod per box gives resource limits,
-isolation (arbitrary user DOS software) and independent lifetimes.
+| Piece | What |
+|---|---|
+| `go/` | One Go module, one image `dosbox-platform` (`/app/auth`, `/app/gateway`). `core/auth` + `services/auth` are a copy of dunelegacy's auth service (cookies renamed `dbx_*`, issuer `dosbox-auth`). `services/gateway` is new. |
+| `web/` | React 18 + Vite + TypeScript, image `dosbox-web`: sign-in (from dunelegacy), box list, file browser, player (canvas + keyboard + pointer-lock mouse, as the stream test page). Routes in the hash: `#/box/<id>`, `#/box/<id>/files`. |
+| `helm/dosbox` | auth (+ keys PVC), gateway (+ ServiceAccount/Role/RoleBinding, `dosbox-boxes` PVC, NetworkPolicy for box pods), web, ingress. PVCs carry `helm.sh/resource-policy: keep`. |
+| `deploy.sh` | `helm upgrade --install`, each image pinned to the build `latest` points at. |
+| Secret `dosbox` | `postgresUrl` (created out of band; optional `googleClientId` enables Google sign-in). |
+
+Gateway API (all need a session cookie or `Authorization: Bearer <access token>`; only the owner, or an admin, sees a box):
+
+| | |
+|---|---|
+| `GET/POST /api/boxes`, `GET/DELETE /api/boxes/{id}` | list / create `{"name"}` / status / delete (pod, folder and row) |
+| `POST /api/boxes/{id}/start`, `/stop` | create / delete the box's pod |
+| `GET /api/boxes/{id}/ws` | the player WebSocket, proxied to the box's stream sidecar (counts viewers) |
+| `/api/boxes/{id}/ctl/{type,keys,mouse,click,rescan,snapshot.png,snapshot.jpg}` | the box control API (see Control API), proxied without the user's credentials |
+| `GET/PUT/DELETE /api/boxes/{id}/files/<path>` | the box's C: drive, served by the gateway from the volume (works while the box is stopped); PUT is checked against the disk allowance and makes a running box rescan |
+| `GET /api/config` | limits, for the UI |
+
+Box model and limits (values `gateway.limits`):
+- A box is a folder plus a row; it **runs** while pod `box-<id>` exists.
+  Start creates the pod (~15 s to a DOS prompt), stop/idle deletes it, and
+  the C: drive stays. Delete removes all three.
+- 3 boxes and 1 running box per user, 8 running in total, 500 MB per C:.
+  A running box nobody watches (no player socket, no API calls) stops after
+  15 min.
+- **One node.** The volume is a DO block volume (attaches to one node), so
+  the gateway and every box pod share the label `dosbox/storage=boxes` with
+  a required pod affinity on it: all land on the node that holds the
+  volume (the first of them picks it). That node's capacity (~4 vCPU /
+  6 GB, each box requests 350m / 160Mi) bounds `runningTotal`.
+- **Soft disk limit** (no privileged quota tooling): DOS sees the remaining
+  allowance as free space (`mount c /data/c -freesize N`, set from
+  `C_FREESIZE_MB` by `docker/entrypoint.sh`); uploads that don't fit are
+  refused (413); the janitor (every 30 s) measures each running box's C:
+  and stops a box that went over, and a box over its allowance can't start
+  until files are deleted (Files page or `DELETE /files/...`).
+- **Isolation:** box pods have no service account token and no network
+  card in DOSBox-X (`ne2000 = false`), and a NetworkPolicy lets only the
+  gateway reach them (`:8080`) and them reach nothing.
+
+Verified 2026-10-18 on https://dosbox.pocket-maze.app: sign-up and session
+via `/auth`; create, start (pod Ready in 15 s on the volume's node), type
+`ver`/`dir`/`type hello.txt` after uploading `HELLO.TXT` (DOS lists it at
+once and shows 524,288,000 bytes free), PNG snapshot, the player WebSocket
+through ingress, web nginx and gateway (meta + ~9 fps, viewer counted),
+another pod blocked from the box by the NetworkPolicy, stop and delete.
+Gateway unit tests (`go test ./...` in `go/`, also run by the image build)
+cover limits, ownership, credential stripping, the file API and disk
+limit, and the janitor (idle, over-limit, orphan pods).
 
 ## Next steps
 1. ~~`stream` sidecar~~ (done, keyboard + mouse verified), ~~control API~~
    (`/type`, `/keys`, `/mouse`, `/files` + rescan, `/snapshot.png`).
-2. `gateway`: box lifecycle via k8s API, auth middleware, WS proxy.
-3. `web`: account + box list UI around the player.
-4. Helm chart + ingress, same layout as the dunelegacy chart.
-5. Audio: mixer hook in DOSBox-X -> PCM ring in shm -> sidecar (Opus/WebAudio).
+2. ~~`gateway`, `web`, Helm chart + ingress~~ (done: dosbox.pocket-maze.app).
+3. Audio: mixer hook in DOSBox-X -> PCM ring in shm -> sidecar (Opus/WebAudio).

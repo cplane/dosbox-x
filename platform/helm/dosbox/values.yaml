@@ -1,0 +1,74 @@
+# dos-box platform at dosbox.pocket-maze.app. Deploy: platform/deploy.sh
+# (sets the image tags). Secrets are created out of band:
+#   kubectl -n dosbox create secret generic dosbox --from-literal=postgresUrl=...
+registry: registry.digitalocean.com/container-registry-ams3
+imagePullSecrets:
+  - name: container-registry-ams3
+secretName: dosbox
+podAnnotations: {}
+
+images:
+  # auth + gateway binaries (platform/go)
+  platform: {repository: dosbox-platform, tag: latest}
+  web: {repository: dosbox-web, tag: latest}
+  # the two containers of every box pod
+  dosbox: {repository: dosbox-x, tag: latest}
+  stream: {repository: dosbox-stream, tag: latest}
+  pullPolicy: IfNotPresent
+
+auth:
+  port: 8080
+  tokenIssuer: dosbox-auth
+  accessTtl: 1h
+  refreshTtl: 2160h
+  rotationGrace: 10s
+  # The load balancer terminates TLS and ingress-nginx rewrites
+  # X-Forwarded-Proto, so the request never says https by itself.
+  cookieSecure: true
+  keyStorage: 1Gi
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+gateway:
+  port: 8080
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+  # The shared volume: one folder per box (<id>/c is its C: drive). A DO
+  # block volume attaches to one node, so the gateway and every box pod
+  # are pinned together (pod affinity on dosbox/storage=boxes).
+  boxes:
+    size: 10Gi
+    storageClass: do-block-storage-retain
+  limits:
+    diskMB: 500          # per box (soft: uploads refused, box stopped when over)
+    idleMinutes: 15      # a running box nobody watches is stopped
+    boxesPerUser: 3
+    runningPerUser: 1
+    runningTotal: 8      # all on one node: ~350m CPU / 160Mi requested each
+
+web:
+  replicaCount: 2
+  port: 8080
+  resources:
+    requests: {cpu: 10m, memory: 16Mi}
+    limits: {memory: 64Mi}
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: dosbox.pocket-maze.app
+  annotations:
+    # HTTPS only: the DO load balancer terminates TLS with the
+    # *.pocket-maze.app certificate and exposes no port 80.
+    kubernetes.io/ingress.allow-http: "false"
+    # Player WebSockets stay open as long as someone watches a box.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Uploads to a box's C: drive (the gateway enforces the box's limit).
+    nginx.ingress.kubernetes.io/proxy-body-size: 256m
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dosbox-web
+  labels:
+    app: dosbox-web
+    {{- include "dosbox.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      app: dosbox-web
+  template:
+    metadata:
+      labels:
+        app: dosbox-web
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      containers:
+        - name: web
+          image: {{ include "dosbox.image" (dict "root" . "image" .Values.images.web) }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          # nginx.conf is an envsubst template: /api -> gateway, /auth -> auth.
+          env:
+            - name: GATEWAY_HOST
+              value: dosbox-gateway
+            - name: GATEWAY_PORT
+              value: "{{ .Values.gateway.port }}"
+            - name: AUTH_HOST
+              value: dosbox-auth
+            - name: AUTH_PORT
+              value: "{{ .Values.auth.port }}"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dosbox-web
+  labels:
+    app: dosbox-web
+    {{- include "dosbox.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: dosbox-web
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
