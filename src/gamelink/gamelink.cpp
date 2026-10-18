@@ -465,6 +465,12 @@ void GameLink::Term()
 //------------------------------------------------------------------------------
 // GameLink::In
 //------------------------------------------------------------------------------
+bool GameLink::MessagePending()
+{
+	return g_p_shared_memory && !sdl.gamelink.snoop && !g_trackonly_mode &&
+		g_p_shared_memory->buf_recv.payload != 0;
+}
+
 int GameLink::In( GameLink::sSharedMMapInput_R2* p_input,
 				  GameLink::sSharedMMapAudio_R1* p_audio )
 {

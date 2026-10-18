@@ -173,6 +173,11 @@ namespace GameLink
 
 	extern void InitTerminal();
 
+	// True while the client has a message in buf_recv. Messages are read
+	// in Out(), which only runs when a frame is rendered, so callers push
+	// a frame when this is set (a static screen renders none).
+	extern bool MessagePending();
+
 
 }; // namespace GameLink
 

@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"time"
 )
 
 // Offsets into sSharedMemoryMap_R4 (src/gamelink/gamelink.h, #pragma pack 1).
@@ -33,6 +34,14 @@ const (
 	offInputReady = offInput + 8
 	offInputBtn   = offInput + 9
 	offInputKeys  = offInput + 10 // uint32[8], bit n = Windows set-1 scancode n
+
+	offPeek    = offInput + 42                     // sSharedMMapPeek_R2
+	offBufRecv = offPeek + 4 + 16*1024*4 + 16*1024 // sSharedMMapBuffer_R1: payload u16 + data[64K]
+	offBufHost = offBufRecv + 2 + 64*1024
+	offAudio   = offBufHost + 2 + 64*1024
+	offRAMSize = offAudio + 2
+	coreSize   = offRAMSize + 4 // MEMORY_MAP_CORE_SIZE; guest RAM follows
+	maxMechCmd = 128            // proc_mech() ignores longer commands
 )
 
 var errNoFrame = errors.New("no frame")
@@ -187,6 +196,75 @@ func (g *Gamelink) Consumed() (bool, error) {
 		return false, err
 	}
 	return b[0] == 0, nil
+}
+
+// Command sends a Game Link "mechanical" command (":reset", ":pause",
+// ":rescan" ...) through buf_recv and waits until DOSBox-X has taken it.
+// DOSBox-X polls the buffer once per frame output.
+func (g *Gamelink) Command(cmd string, timeout time.Duration) error {
+	if len(cmd) < 2 || len(cmd) > maxMechCmd || cmd[0] != ':' {
+		return fmt.Errorf("bad command %q", cmd)
+	}
+	f, err := g.file()
+	if err != nil {
+		return err
+	}
+	pending := func() (bool, error) {
+		var b [2]byte
+		if _, err := f.ReadAt(b[:], offBufRecv); err != nil {
+			return false, err
+		}
+		return binary.LittleEndian.Uint16(b[:]) != 0, nil
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		p, err := pending()
+		if err != nil {
+			return err
+		}
+		if !p {
+			break
+		}
+		if time.Now().After(deadline) {
+			return errors.New("game link command buffer busy")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Data first, then the payload length that makes DOSBox-X read it.
+	if _, err := f.WriteAt(append([]byte(cmd), 0), offBufRecv+2); err != nil {
+		return err
+	}
+	var n [2]byte
+	binary.LittleEndian.PutUint16(n[:], uint16(len(cmd)))
+	if _, err := f.WriteAt(n[:], offBufRecv); err != nil {
+		return err
+	}
+	for time.Now().Before(deadline) {
+		if p, err := pending(); err != nil || !p {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return errors.New("DOSBox-X did not take the command (paused, or no frames?)")
+}
+
+// ReadRAM reads guest physical memory, which Game Link maps right after
+// the core block.
+func (g *Gamelink) ReadRAM(addr, n int) ([]byte, error) {
+	f, err := g.file()
+	if err != nil {
+		return nil, err
+	}
+	var sz [4]byte
+	if _, err := f.ReadAt(sz[:], offRAMSize); err != nil {
+		return nil, err
+	}
+	if addr < 0 || n < 0 || addr+n > int(binary.LittleEndian.Uint32(sz[:])) {
+		return nil, fmt.Errorf("guest address %#x+%d out of range", addr, n)
+	}
+	b := make([]byte, n)
+	_, err = f.ReadAt(b, int64(coreSize+addr))
+	return b, err
 }
 
 func (h FrameHeader) String() string {

@@ -42,9 +42,9 @@ case "$COMPONENT" in
 esac
 TAG=${2:-$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- "${DIRTY_PATHS[@]}" || echo -dirty)}
 
-idx="$GIT_DIR/index.dosbox-build"
-ctx="$GIT_DIR/dosbox-build-context.tar.gz"
-cfg="$GIT_DIR/dosbox-build-docker.json"
+idx="$GIT_DIR/index.$COMPONENT-build"
+ctx="$GIT_DIR/$COMPONENT-build-context.tar.gz"
+cfg="$GIT_DIR/$COMPONENT-build-docker.json"
 trap 'rm -f "$idx" "$ctx" "$cfg"' EXIT
 
 retry() {

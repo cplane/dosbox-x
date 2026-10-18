@@ -17,6 +17,7 @@
 #include "mixer.h"
 #include "mapper.h"
 #include "mouse.h"
+#include "keyboard.h"
 #include "../gamelink/scancodes_windows.h"
 #include "output/output_surface.h"
 #include "output/output_opengl.h"
@@ -62,6 +63,27 @@ void OUTPUT_GAMELINK_InputEvent()
     //LOG_MSG("OUTPUT_GAMELINK: InputEvent");
     //
     // Client Mouse & Keyboard
+
+    // Commands (e.g. ":rescan") are only read when a frame goes out, and a
+    // static screen renders none: push the current frame to get them read.
+    if ( GameLink::MessagePending() ) OUTPUT_GAMELINK_Transfer();
+
+    // Back-pressure: leave the client's input block unconsumed until the
+    // guest has read every scancode of the previous change (plus 2 ms of
+    // emulated time), so keys reach it no faster than a person could type
+    // them however fast the client sends. Otherwise a slow guest either
+    // overflows the controller queue (KEYBOARD_AddBuffer() then drops all
+    // of it) or, with an ISR that reads port 60h twice, gets keys swapped.
+    // The client waits for 'ready' to clear before publishing the next
+    // change. Bounded, so a guest that never reads the keyboard doesn't
+    // freeze the mouse.
+    static Uint32 deferred_since = 0;
+    if ( !KEYBOARD_IdleFor( 2.0 ) ) {
+        const Uint32 now = SDL_GetTicks();
+        if ( !deferred_since ) deferred_since = now ? now : 1;
+        if ( now - deferred_since < 1000 ) return;
+    }
+    deferred_since = 0;
 
     if ( GameLink::In( &sdl.gamelink.input, &sdl.gamelink.audio ) )
     {

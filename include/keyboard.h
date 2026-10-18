@@ -78,5 +78,6 @@ enum KBD_KEYS {
 void KEYBOARD_ClrBuffer(void);
 void KEYBOARD_AddKey(KBD_KEYS keytype,bool pressed);
 size_t KEYBOARD_BufferSpaceAvail();  // emendelson from dbDOS
+bool KEYBOARD_IdleFor(double gap_ms); // all bytes read, last read >= gap_ms ago
 
 #endif
