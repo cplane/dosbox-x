@@ -4,8 +4,8 @@
 #
 #   platform/deploy.sh [extra helm args...]
 #
-# Each image is pinned to the build its registry "latest" tag points at
-# (what platform/build.sh last pushed), so a rollout is reproducible and box
+# Each image is pinned to the build platform/build.sh last pushed
+# (its newest tag), so a rollout is reproducible and box
 # pods can use IfNotPresent. Build first: platform/build.sh platform|web|
 # dosbox|stream. Prerequisites (once): the secret
 #   kubectl -n dosbox create secret generic dosbox --from-literal=postgresUrl=...
@@ -16,16 +16,16 @@ cd "$(dirname "$0")"
 
 NS=${NS:-dosbox}
 
-# pinned <repo>: the newest non-latest tag sharing latest's digest.
+# pinned <repo>: the most recently pushed tag other than "latest", i.e. what
+# platform/build.sh last pushed. Not resolved through "latest" itself: the
+# DO registry has been seen to keep "latest" on the previous image after a
+# Kaniko push of both tags.
 pinned() {
   doctl registry repository list-tags "$1" -o json | node -e '
-    const tags = JSON.parse(require("fs").readFileSync(0));
-    const latest = tags.find(t => t.tag === "latest");
-    if (!latest) process.exit(1);
-    const same = tags.filter(t => t.tag !== "latest" && t.manifest_digest === latest.manifest_digest)
+    const tags = JSON.parse(require("fs").readFileSync(0)).filter(t => t.tag !== "latest")
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    if (!same.length) process.exit(1);
-    console.log(same[0].tag);'
+    if (!tags.length) process.exit(1);
+    console.log(tags[0].tag);'
 }
 
 args=()
