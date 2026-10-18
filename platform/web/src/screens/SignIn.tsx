@@ -160,7 +160,15 @@ function GoogleButton({ onCredential }: { onCredential: (credential: string) => 
           client_id: config.googleClientId,
           callback: (response) => onCredential(response.credential),
         })
-        window.google.accounts.id.renderButton(parent, { theme: 'filled_black', size: 'large' })
+        // Match the Sign in button above: full card width (GIS caps it at 400).
+        window.google.accounts.id.renderButton(parent, {
+          theme: 'filled_black',
+          size: 'large',
+          shape: 'rectangular',
+          text: 'signin_with',
+          logo_alignment: 'left',
+          width: Math.min(400, Math.floor(parent.clientWidth)),
+        })
       })
       .catch(() => undefined)
   }, [ready, onCredential])

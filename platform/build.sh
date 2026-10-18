@@ -13,7 +13,7 @@
 #   stream  Game Link streaming sidecar (platform/stream) -> dosbox-stream
 #   platform  auth + gateway Go services (platform/go) -> dosbox-platform
 #   web     browser client + nginx (platform/web) -> dosbox-web
-#   tag     default: git short sha (+ -dirty)
+#   tag     default: git short sha (+ -dirty-<snapshot> with uncommitted changes)
 #
 # Needs: kubectl (context = the DOKS cluster), doctl (authenticated), git, gzip.
 set -euo pipefail
@@ -194,6 +194,13 @@ EOF
 }
 
 tree=$(snapshot_tree)
+
+# A dirty build is also tagged by its snapshot: two builds from different
+# uncommitted changes must not share a tag, or deploy.sh pins the same tag
+# again and IfNotPresent pods keep running the first image.
+if [ -z "${2:-}" ] && [ "${TAG%-dirty}" != "$TAG" ]; then
+  TAG="$TAG-${tree:0:8}"
+fi
 
 if [ "$COMPONENT" != dosbox ]; then
   sub=$COMPONENT

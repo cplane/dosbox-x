@@ -9,6 +9,9 @@
 # pods can use IfNotPresent. Build first: platform/build.sh platform|web|
 # dosbox|stream. Prerequisites (once): the secret
 #   kubectl -n dosbox create secret generic dosbox --from-literal=postgresUrl=...
+# optionally with --from-literal=googleClientId=<id>.apps.googleusercontent.com
+# (Google sign-in; that OAuth client must list https://dosbox.pocket-maze.app
+# as an Authorized JavaScript origin),
 # and the DNS A record dosbox.pocket-maze.app -> the ingress load balancer.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
