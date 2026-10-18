@@ -37,6 +37,11 @@ type Store interface {
 	DeleteBox(ctx context.Context, id uuid.UUID) error
 	Touch(ctx context.Context, id uuid.UUID, at time.Time) error
 	SetUsage(ctx context.Context, id uuid.UUID, used int64) error
+
+	ListCatalog(ctx context.Context) ([]CatalogItem, error)
+	GetCatalogItem(ctx context.Context, slug string) (*CatalogItem, error) // ErrNotFound
+	PutCatalogItem(ctx context.Context, it *CatalogItem) error              // insert or replace
+	DeleteCatalogItem(ctx context.Context, slug string) error
 }
 
 //go:embed migration/*.sql
@@ -143,13 +148,106 @@ func (s *pgStore) SetUsage(ctx context.Context, id uuid.UUID, used int64) error 
 	return err
 }
 
-// memStore is the in-memory Store the tests use.
-type memStore struct {
-	mu    sync.Mutex
-	boxes map[uuid.UUID]Box
+const catalogCols = `slug, title, category, description, dir, run, source, license, size_bytes, files,
+	status, error, created_by, created_at, updated_at`
+
+func (s *pgStore) queryCatalog(ctx context.Context, where string, args ...any) ([]CatalogItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+catalogCols+` FROM catalog_item `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CatalogItem{}
+	for rows.Next() {
+		var it CatalogItem
+		if err := rows.Scan(&it.Slug, &it.Title, &it.Category, &it.Description, &it.Dir, &it.Run, &it.Source,
+			&it.License, &it.SizeBytes, &it.Files, &it.Status, &it.Error, &it.CreatedBy, &it.CreatedAt, &it.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
 }
 
-func newMemStore() *memStore { return &memStore{boxes: map[uuid.UUID]Box{}} }
+func (s *pgStore) ListCatalog(ctx context.Context) ([]CatalogItem, error) {
+	return s.queryCatalog(ctx, `ORDER BY category, title`)
+}
+
+func (s *pgStore) GetCatalogItem(ctx context.Context, slug string) (*CatalogItem, error) {
+	its, err := s.queryCatalog(ctx, `WHERE slug = $1`, slug)
+	if err != nil {
+		return nil, err
+	}
+	if len(its) == 0 {
+		return nil, ErrNotFound
+	}
+	return &its[0], nil
+}
+
+func (s *pgStore) PutCatalogItem(ctx context.Context, it *CatalogItem) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO catalog_item (`+catalogCols+`)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		ON CONFLICT (slug) DO UPDATE SET title = $2, category = $3, description = $4, dir = $5, run = $6,
+			source = $7, license = $8, size_bytes = $9, files = $10, status = $11, error = $12,
+			updated_at = $15`,
+		it.Slug, it.Title, it.Category, it.Description, it.Dir, it.Run, it.Source, it.License, it.SizeBytes,
+		it.Files, it.Status, it.Error, it.CreatedBy, it.CreatedAt, it.UpdatedAt)
+	return err
+}
+
+func (s *pgStore) DeleteCatalogItem(ctx context.Context, slug string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM catalog_item WHERE slug = $1`, slug)
+	return err
+}
+
+// memStore is the in-memory Store the tests use.
+type memStore struct {
+	mu      sync.Mutex
+	boxes   map[uuid.UUID]Box
+	catalog map[string]CatalogItem
+}
+
+func newMemStore() *memStore {
+	return &memStore{boxes: map[uuid.UUID]Box{}, catalog: map[string]CatalogItem{}}
+}
+
+func (m *memStore) ListCatalog(context.Context) ([]CatalogItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []CatalogItem{}
+	for _, it := range m.catalog {
+		out = append(out, it)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out, nil
+}
+
+func (m *memStore) GetCatalogItem(_ context.Context, slug string) (*CatalogItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	it, ok := m.catalog[slug]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &it, nil
+}
+
+func (m *memStore) PutCatalogItem(_ context.Context, it *CatalogItem) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if old, ok := m.catalog[it.Slug]; ok {
+		it.CreatedBy, it.CreatedAt = old.CreatedBy, old.CreatedAt
+	}
+	m.catalog[it.Slug] = *it
+	return nil
+}
+
+func (m *memStore) DeleteCatalogItem(_ context.Context, slug string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.catalog, slug)
+	return nil
+}
 
 func (m *memStore) ListBoxes(_ context.Context, owner uuid.UUID) ([]Box, error) {
 	all, _ := m.AllBoxes(context.Background())

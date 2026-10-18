@@ -47,6 +47,10 @@ gateway:
     boxesPerUser: 3
     runningPerUser: 1
     runningTotal: 8      # all on one node: ~350m CPU / 160Mi requested each
+  catalog:
+    maxItemMB: 400       # unpacked size of one catalog item
+    spacesEndpoint: ams3.digitaloceanspaces.com
+    spacesBucket: dosbox-catalog-ams3  # created by the gateway if missing
 
 web:
   replicaCount: 2

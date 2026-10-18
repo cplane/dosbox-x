@@ -134,6 +134,26 @@ spec:
               value: "{{ .Values.gateway.limits.runningPerUser }}"
             - name: MAX_RUNNING_TOTAL
               value: "{{ .Values.gateway.limits.runningTotal }}"
+            # The catalog: unpacked on the boxes volume, master copies in
+            # Spaces. Without the optional key the catalog is volume only.
+            - name: CATALOG_MAX_ITEM_MB
+              value: "{{ .Values.gateway.catalog.maxItemMB }}"
+            - name: SPACES_ENDPOINT
+              value: "{{ .Values.gateway.catalog.spacesEndpoint }}"
+            - name: SPACES_BUCKET
+              value: "{{ .Values.gateway.catalog.spacesBucket }}"
+            - name: SPACES_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: spacesKey
+                  optional: true
+            - name: SPACES_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: spacesSecret
+                  optional: true
           volumeMounts:
             - name: boxes
               mountPath: /boxes

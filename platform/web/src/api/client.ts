@@ -64,11 +64,11 @@ export const limits = async () => json<Limits>(await request('/api/config'))
 export const listBoxes = async () => json<Box[]>(await request('/api/boxes'))
 export const getBox = async (id: string) => json<Box>(await request(box(id)))
 
-export async function createBox(name: string): Promise<Box> {
+export async function createBox(name: string, items: string[] = []): Promise<Box> {
   return json<Box>(await request('/api/boxes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, items }),
   }))
 }
 
@@ -106,3 +106,58 @@ export function wsURL(id: string): string {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   return `${scheme}://${location.host}${box(id)}/ws`
 }
+
+// ---- catalog: ready-made software copied onto a box's C: drive
+
+export type CatalogStatus = 'ready' | 'importing' | 'failed'
+
+export interface CatalogItem {
+  slug: string
+  title: string
+  category: string
+  description: string
+  dir: string
+  run: string
+  source: string
+  license: string
+  sizeBytes: number
+  files: number
+  status: CatalogStatus
+  error?: string
+}
+
+export const listCatalog = async () => json<CatalogItem[]>(await request('/api/catalog'))
+
+export async function attachItems(id: string, items: string[]): Promise<void> {
+  await json(await request(`${box(id)}/attach`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  }))
+}
+
+/** Admin: import an archive.org item (finishes in the background). */
+export async function importFromArchive(fields: Record<string, string | boolean>): Promise<CatalogItem> {
+  return json<CatalogItem>(await request('/api/catalog/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  }))
+}
+
+/** Admin: upload a zip as an item (finishes in the background). */
+export async function uploadItem(slug: string, fields: Record<string, string>, zip: Blob): Promise<CatalogItem> {
+  const q = new URLSearchParams(Object.entries(fields).filter(([, v]) => v !== ''))
+  return json<CatalogItem>(await request(`/api/catalog/${encodeURIComponent(slug)}?${q}`, { method: 'PUT', body: zip }))
+}
+
+export async function editItem(slug: string, fields: Partial<CatalogItem>): Promise<CatalogItem> {
+  return json<CatalogItem>(await request(`/api/catalog/${encodeURIComponent(slug)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  }))
+}
+
+export const deleteItem = async (slug: string) =>
+  json<void>(await request(`/api/catalog/${encodeURIComponent(slug)}`, { method: 'DELETE' }))
