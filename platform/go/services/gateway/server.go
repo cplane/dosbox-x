@@ -39,14 +39,23 @@ type Server struct {
 	startMu sync.Mutex              // start limit checks + pod creation
 	boxMu   sync.Map                // per-box *sync.Mutex for file writes
 	stopped map[uuid.UUID]string    // why the janitor stopped a box (shown once)
+
+	catalog *Catalog
 }
 
 func NewServer(cfg *Config, store Store, kube Kube, verifier auth.Verifier) *Server {
 	return &Server{
 		cfg: cfg, store: store, kube: kube, verifier: verifier, now: time.Now,
 		viewers: map[uuid.UUID]int{}, active: map[uuid.UUID]time.Time{}, stopped: map[uuid.UUID]string{},
+		catalog: NewCatalog(cfg.BoxesDir, nil, store, cfg.CatalogMaxItemMB),
 	}
 }
+
+// Catalog is the server's catalog (cmd uses it for Spaces, sync and seeding).
+func (s *Server) Catalog() *Catalog { return s.catalog }
+
+// UseBlob gives the catalog its master copy store (nil: volume only).
+func (c *Catalog) UseBlob(b Blob) { c.blob = b }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -64,6 +73,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/boxes/{id}/files/{path...}", s.owned(s.handleFileGet))
 	mux.HandleFunc("PUT /api/boxes/{id}/files/{path...}", s.owned(s.handleFilePut))
 	mux.HandleFunc("DELETE /api/boxes/{id}/files/{path...}", s.owned(s.handleFileDelete))
+	mux.HandleFunc("POST /api/boxes/{id}/attach", s.owned(s.handleAttach))
+	mux.HandleFunc("GET /api/catalog", s.signedIn(s.handleCatalogList))
+	mux.HandleFunc("POST /api/catalog/import", s.admin(s.handleCatalogImport))
+	mux.HandleFunc("PUT /api/catalog/{slug}", s.admin(s.handleCatalogUpload))
+	mux.HandleFunc("PATCH /api/catalog/{slug}", s.admin(s.handleCatalogEdit))
+	mux.HandleFunc("DELETE /api/catalog/{slug}", s.admin(s.handleCatalogDelete))
 	return auth.Middleware(s.verifier)(mux)
 }
 
@@ -214,9 +229,17 @@ func validName(n string) bool {
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request, ident auth.Identity) {
-	var req struct{ Name string }
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || !validName(req.Name) {
+	var req struct {
+		Name  string
+		Items []string // catalog items to copy onto the new C:
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil || !validName(req.Name) {
 		httpErr(w, http.StatusBadRequest, "name: 1-40 printable characters")
+		return
+	}
+	items, err := s.readyItems(r.Context(), req.Items)
+	if err != nil {
+		httpErr(w, http.StatusBadRequest, "%v", err)
 		return
 	}
 	s.startMu.Lock()
@@ -246,7 +269,18 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request, ident auth
 		httpErr(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	logrus.WithFields(logrus.Fields{"box": b.ID, "owner": ident.Username}).Info("box created")
+	if err := s.attach(r.Context(), b, items); err != nil {
+		s.store.DeleteBox(r.Context(), b.ID)
+		os.RemoveAll(s.boxDir(b.ID))
+		writeAttachErr(w, err)
+		return
+	}
+	if len(items) > 0 {
+		if nb, err := s.store.GetBox(r.Context(), b.ID); err == nil {
+			b = nb
+		}
+	}
+	logrus.WithFields(logrus.Fields{"box": b.ID, "owner": ident.Username, "items": len(items)}).Info("box created")
 	writeJSON(w, http.StatusCreated, s.view(*b, nil))
 }
 

@@ -81,3 +81,21 @@ input {
 @media (max-width: 600px) {
   .create { flex-direction: column; }
 }
+
+/* catalog: picker (create box / add software) and the admin page */
+.create-form { display: grid; gap: 8px; margin-bottom: 8px; }
+button.on { border-color: var(--accent); color: var(--accent); }
+.picker { display: grid; gap: 8px; }
+.picker-group { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 8px; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; }
+.picker-group legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+.picker-item { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; cursor: pointer; }
+.picker-item .small { grid-column: 2; }
+.picker-item.taken { opacity: .5; cursor: default; }
+.add-panel { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 8px; }
+.catalog-form { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 10px; margin-bottom: 16px; }
+.catalog-form label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 13px; }
+.tabs { display: flex; gap: 6px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px 12px; }
+.catalog-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.catalog-table th { text-align: left; color: var(--muted); font-weight: normal; font-size: 12px; border-bottom: 1px solid var(--line); padding: 6px; }
+.catalog-table td { border-bottom: 1px solid var(--line); padding: 6px; vertical-align: top; }

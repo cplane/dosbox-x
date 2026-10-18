@@ -33,6 +33,16 @@ type Config struct {
 
 	// The stream sidecar's port in a box pod (tests point it elsewhere).
 	BoxPort int `env:"BOX_PORT" envDefault:"8080"`
+
+	// The catalog (catalog.go): the largest unpacked item, and its master
+	// copies in DO Spaces (all three set, or none: volume only).
+	CatalogMaxItemMB int    `env:"CATALOG_MAX_ITEM_MB" envDefault:"400"`
+	SpacesEndpoint   string `env:"SPACES_ENDPOINT" envDefault:"ams3.digitaloceanspaces.com"`
+	SpacesBucket     string `env:"SPACES_BUCKET"`
+	SpacesKey        string `env:"SPACES_KEY"`
+	SpacesSecret     string `env:"SPACES_SECRET"`
+	// Where archive.org imports come from (tests point it elsewhere).
+	ArchiveOrgURL string `env:"ARCHIVE_ORG_URL" envDefault:"https://archive.org"`
 }
 
 // Labels on box pods. storageLabel is shared with the gateway pod: every pod

@@ -221,7 +221,7 @@ db-pgsql-ams3-80134; tables identity/refresh_token (auth), box (gateway).
 | `web/` | React 18 + Vite + TypeScript, image `dosbox-web`: sign-in (from dunelegacy), box list, file browser, player (canvas + keyboard + pointer-lock mouse, as the stream test page). Routes in the hash: `#/box/<id>`, `#/box/<id>/files`. |
 | `helm/dosbox` | auth (+ keys PVC), gateway (+ ServiceAccount/Role/RoleBinding, `dosbox-boxes` PVC, NetworkPolicy for box pods), web, ingress. PVCs carry `helm.sh/resource-policy: keep`. |
 | `deploy.sh` | `helm upgrade --install`, each image pinned to the build `latest` points at. |
-| Secret `dosbox` | `postgresUrl` (created out of band; optional `googleClientId` enables Google sign-in). |
+| Secret `dosbox` | `postgresUrl` (created out of band); optional `googleClientId` (Google sign-in) and `spacesKey`/`spacesSecret` (catalog master copies in Spaces). |
 
 Gateway API (all need a session cookie or `Authorization: Bearer <access token>`; only the owner, or an admin, sees a box):
 
@@ -233,6 +233,42 @@ Gateway API (all need a session cookie or `Authorization: Bearer <access token>`
 | `/api/boxes/{id}/ctl/{type,keys,mouse,click,rescan,snapshot.png,snapshot.jpg}` | the box control API (see Control API), proxied without the user's credentials |
 | `GET/PUT/DELETE /api/boxes/{id}/files/<path>` | the box's C: drive, served by the gateway from the volume (works while the box is stopped); PUT is checked against the disk allowance and makes a running box rescan |
 | `GET /api/config` | limits, for the UI |
+
+### Software catalog
+
+Ready-made DOS software a box gets a **copy** of on its C: drive — picked
+when creating a box (or "Clean box": nothing), or added later ("Add
+software"). An item lands in `C:\<DIR>` plus `C:\<DIR>.BAT` that starts its
+program; the copy is the box's own (saves, configs, swap files just work)
+and counts against its allowance.
+
+- **Storage:** unpacked on the boxes volume (`<boxes>/_catalog/<slug>`, what
+  boxes are filled from); master copy zipped in DO Spaces
+  (`dosbox-catalog-ams3/catalog/<slug>.zip`). The gateway syncs hourly and at
+  start: a missing volume copy is restored from Spaces, a missing zip is
+  uploaded. Without `spacesKey`/`spacesSecret` in the `dosbox` secret the
+  catalog runs volume-only (the gateway logs it).
+- **Table** `catalog_item` (slug, title, category, dir, run, source, license,
+  size, status `ready|importing|failed`, error).
+- **Seeding** from a local DOS folder: `platform/catalog/seed.sh [dir] [slug…]`
+  streams each folder as a tar into `gateway catalog-put` in the gateway pod
+  (cluster access is the credential). Seeded 2026-10-18 from `C:\dosdrive`:
+  17 items (Keen 1-8, Dune II, Prince of Persia, Stunts, Warcraft II, Turbo
+  C++ 3.0, Turbo Pascal 7.0, MASM 6.11, QBX 7.1, Norton Commander 5, tools).
+- **Admins** (`identity.role = 'admin'`) get a Catalog page: import from
+  archive.org by identifier (the gateway downloads the item's zip — the named
+  one or the largest — and ingests it in the background), upload a zip, edit,
+  delete. Archives are unpacked with path, size (`CATALOG_MAX_ITEM_MB`, 400)
+  and file-count checks; a single top-level folder is unwrapped.
+
+| | |
+|---|---|
+| `GET /api/catalog` | items (players: ready ones) |
+| `POST /api/boxes` `{"name","items":[slug…]}` | create with items copied onto C: (413 if over the allowance, nothing created) |
+| `POST /api/boxes/{id}/attach` `{"items":[slug…]}` | copy into an existing box (409 if `C:\<DIR>` exists); a running box rescans |
+| `PUT /api/catalog/{slug}?title=&dir=&run=&category=&license=` | admin: zip body, 202 |
+| `POST /api/catalog/import` `{"identifier","file"?,"slug"?,"title"?,"dir"?,"run"?,…}` | admin: archive.org, 202 |
+| `PATCH /api/catalog/{slug}`, `DELETE /api/catalog/{slug}` | admin |
 
 Box model and limits (values `gateway.limits`):
 - A box is a folder plus a row; it **runs** while pod `box-<id>` exists.

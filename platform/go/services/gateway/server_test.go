@@ -120,7 +120,7 @@ func newEnv(t *testing.T) *env {
 	e.store = newMemStore()
 	cfg := &Config{BoxesDir: t.TempDir(), BoxesPVC: "dosbox-boxes", PullSecret: "s", IdleMinutes: 15,
 		MaxBoxesPerUser: 2, MaxRunningPerUser: 1, MaxRunningTotal: 2, DiskLimitMB: 1, BoxPort: p}
-	e.srv = NewServer(cfg, e.store, e.kube, tokenVerifier{"alice": alice, "bob": bob})
+	e.srv = NewServer(cfg, e.store, e.kube, tokenVerifier{"alice": alice, "bob": bob, "root": root})
 	e.api = httptest.NewServer(e.srv.Handler())
 	t.Cleanup(e.api.Close)
 	return e
