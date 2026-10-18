@@ -39,13 +39,15 @@ spec:
         - {name: data, mountPath: /data}
         - {name: shm, mountPath: /dev/shm}
     # Reads frames from /dev/shm/DWD_GAMELINK_MMAP_R4 and writes input back;
-    # serves the player + WebSocket on :8080.
+    # serves the player + WebSocket + control API on :8080. Mounts the C:
+    # drive (/data/c on the PVC) for PUT/GET /files.
     - name: stream
       image: registry.digitalocean.com/container-registry-ams3/dosbox-stream:latest
       imagePullPolicy: Always
       env:
         - {name: JPEG_QUALITY, value: "80"}
         - {name: MAX_FPS, value: "30"}
+        - {name: DATA_DIR, value: /data/c}
       ports:
         - {name: http, containerPort: 8080}
       readinessProbe:
@@ -56,6 +58,7 @@ spec:
         limits: {cpu: 500m, memory: 128Mi}
       volumeMounts:
         - {name: shm, mountPath: /dev/shm}
+        - {name: data, mountPath: /data/c, subPath: c}
   volumes:
     - name: data
       persistentVolumeClaim:

@@ -58,6 +58,20 @@ const SC = {
   ArrowDown:0xD0, PageDown:0xD1, Insert:0xD2, Delete:0xD3, MetaLeft:0xDB, MetaRight:0xDC, ContextMenu:0xDD,
 };
 
+// Fallback for events without KeyboardEvent.code (some virtual keyboards
+// and automation): e.key -> [scancode, needs Shift] on a US layout.
+const KEY = {
+  Escape:[0x01], Enter:[0x1C], Tab:[0x0F], Backspace:[0x0E], " ":[0x39], Shift:[0x2A], Control:[0x1D],
+  Alt:[0x38], CapsLock:[0x3A], ArrowUp:[0xC8], ArrowDown:[0xD0], ArrowLeft:[0xCB], ArrowRight:[0xCD],
+  Home:[0xC7], End:[0xCF], PageUp:[0xC9], PageDown:[0xD1], Insert:[0xD2], Delete:[0xD3],
+};
+for (let i = 1; i <= 12; i++) KEY["F" + i] = [SC["F" + i]];
+for (const [sc, plain, shifted] of [[0x02, "1234567890-=", "!@#$%^&*()_+"], [0x10, "qwertyuiop[]", "QWERTYUIOP{}"],
+    [0x1E, "asdfghjkl;'`", "ASDFGHJKL:\"~"], [0x2C, "zxcvbnm,./", "ZXCVBNM<>?"], [0x2B, "\\", "|"]]) {
+  [...plain].forEach((c, i) => { KEY[c] = [sc + i, false]; });
+  [...shifted].forEach((c, i) => { KEY[c] = [sc + i, true]; });
+}
+
 const $ = (id) => document.getElementById(id);
 const canvas = $("c"), ctx = canvas.getContext("2d"), wrap = $("screen-wrap");
 let ws = null, backoff = 500, frames = 0, decoding = false, pending = null;
@@ -108,17 +122,31 @@ setInterval(() => { $("fps").textContent = `${frames} fps`; frames = 0; }, 1000)
 // Keyboard: active while the screen has focus.
 wrap.addEventListener("focus", () => wrap.classList.add("focused"));
 wrap.addEventListener("blur", () => { wrap.classList.remove("focused"); releaseAll(); });
+const synthShift = new Set();               // fallback keys we wrapped in our own Shift press
 function key(e, isDown) {
-  const sc = SC[e.code];
+  let sc = SC[e.code], shift = false;
+  if (sc === undefined && !e.code) [sc, shift] = KEY[e.key] || KEY[(e.key || "").toLowerCase()] || [];
   if (sc === undefined) return;
   e.preventDefault();
   if (isDown && e.repeat) return;           // DOS does its own typematic repeat
-  if (isDown) down.add(sc); else down.delete(sc);
-  send({ k: sc, d: isDown });
+  if (isDown) {
+    // e.g. ":" from a code-less event without a Shift key event before it
+    if (shift && !down.has(0x2A) && !down.has(0x36)) { send({ k: 0x2A, d: true }); synthShift.add(sc); }
+    down.add(sc);
+    send({ k: sc, d: true });
+  } else {
+    down.delete(sc);
+    send({ k: sc, d: false });
+    if (synthShift.delete(sc) && !synthShift.size) send({ k: 0x2A, d: false });
+  }
 }
 wrap.addEventListener("keydown", (e) => key(e, true));
 wrap.addEventListener("keyup", (e) => key(e, false));
-function releaseAll() { for (const sc of down) send({ k: sc, d: false }); down.clear(); send({ b: 0 }); }
+function releaseAll() {
+  for (const sc of down) send({ k: sc, d: false });
+  if (synthShift.size) send({ k: 0x2A, d: false });
+  down.clear(); synthShift.clear(); send({ b: 0 });
+}
 $("release").onclick = () => { releaseAll(); wrap.focus(); };
 $("cad").onclick = () => {
   for (const sc of [0x1D, 0x38, 0xD3]) send({ k: sc, d: true });

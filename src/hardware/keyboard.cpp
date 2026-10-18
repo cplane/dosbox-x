@@ -323,6 +323,22 @@ size_t KEYBOARD_BufferSpaceAvail()   // emendelson from dbDOS
     return (KEYBUFSIZE - keyb.used);
 }                                   // end emendelson from dbDOS
 
+/* Emulated time of the last port 60h read (see KEYBOARD_IdleFor). */
+static pic_tickindex_t keyb_last_p60_read = 0;
+
+/* True once every queued byte has been read from port 60h and at least
+ * gap_ms of emulated time have passed since the last read. Hosts that
+ * inject keys faster than a person types (Game Link) wait for this: with
+ * several bytes queued, the first port 60h read schedules the next byte
+ * KEYDELAY later, so an ISR that reads port 60h and then chains to the
+ * BIOS (which reads it again), e.g. Turbo C++'s IDE, sees the wrong byte
+ * when the guest runs slowly. */
+bool KEYBOARD_IdleFor(double gap_ms) {
+    const pic_tickindex_t since = PIC_FullIndex() - keyb_last_p60_read;
+    return !keyb.used && !keyb.scheduled && !keyb.p60changed &&
+        (since >= gap_ms || since < 0 /* PIC time restarted (reset) */);
+}
+
 static void KEYBOARD_Add8042Response(uint8_t data) {
     if (keyb.buf8042_pos >= keyb.buf8042_len)
         keyb.buf8042_pos = keyb.buf8042_len = 0;
@@ -397,6 +413,7 @@ static Bitu read_p60(Bitu port,Bitu iolen) {
 
     keyb.p60changed=false;
     keyb.auxchanged=false;
+    keyb_last_p60_read = PIC_FullIndex();
     if (!keyb.scheduled && keyb.used && !(machine == MCH_PCJR)) {
         keyb.scheduled=true;
         PIC_AddEvent(KEYBOARD_TransferBuffer,KEYDELAY);

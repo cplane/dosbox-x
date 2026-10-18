@@ -29,6 +29,8 @@
 
 typedef GameLink::sSharedMMapBuffer_R1	Buffer;
 
+void DOS_RescanAll( bool pressed ); // dos/dos.cpp
+
 //==============================================================================
 
 //------------------------------------------------------------------------------
@@ -188,6 +190,13 @@ static void proc_mech( Buffer* cmd, uint16_t payload )
 //		printf( "do shutdown\n" );
 
 		DoKillSwitch();
+	}
+	else if ( strcmp( com, ":rescan" ) == 0 )
+	{
+		// Same as the "Rescan all drives" menu item: lets a host that
+		// changed a mounted directory make DOS see it without typing
+		// RESCAN at the prompt.
+		DOS_RescanAll( true );
 	}
 }
 

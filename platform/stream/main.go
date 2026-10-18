@@ -11,6 +11,9 @@
 //	                  {"m":[dx,dy]} relative mouse, {"b":<mask>} buttons
 //	GET /snapshot.jpg latest frame
 //	GET /healthz      200 once frames are flowing
+//
+// Control API for agents and scripts (control.go): POST /type, /keys,
+// /mouse, /click, /rescan; GET /snapshot.png; GET|PUT /files/<path>.
 package main
 
 import (
@@ -49,10 +52,17 @@ func main() {
 	in := NewInputWriter(gl)
 	go hub.Run()
 	go in.Run()
+	ctl := &Control{
+		gl:        gl,
+		in:        in,
+		dataDir:   env("DATA_DIR", "/data/c"),
+		maxUpload: int64(envInt("MAX_UPLOAD_MB", 512)) << 20,
+	}
 
 	web, _ := fs.Sub(webFS, "web")
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(web))
+	ctl.Register(mux)
 	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) { serveWS(hub, in, w, r) })
 	mux.HandleFunc("GET /snapshot.jpg", func(w http.ResponseWriter, r *http.Request) {
 		jpg, _ := hub.Latest()
