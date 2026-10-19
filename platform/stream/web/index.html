@@ -88,17 +88,33 @@ function setMeta(m) {
   $("geom").textContent = `${m.w}×${m.h}`;
 }
 
+// Strip updates (hub.go): "S" 1 count:u16 w:u16 h:u16, then count x
+// (y:u16 h:u16 len:u32 jpeg). Only changed strips come, so none may be
+// skipped: drawn in order, each acked (the sidecar keeps a few in flight).
+const queue = [];
+async function drawUpdate(buf) {
+  const dv = new DataView(buf);
+  if (buf.byteLength < 8 || dv.getUint8(0) !== 0x53) return;
+  const n = dv.getUint16(2, true), w = dv.getUint16(4, true), h = dv.getUint16(6, true);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const parts = [];
+  for (let i = 0, p = 8; i < n; i++) {
+    const y = dv.getUint16(p, true), len = dv.getUint32(p + 4, true);
+    parts.push({ y, blob: new Blob([new Uint8Array(buf, p + 8, len)], { type: "image/jpeg" }) });
+    p += 8 + len;
+  }
+  const bmps = await Promise.all(parts.map((s) => createImageBitmap(s.blob)));
+  bmps.forEach((b, i) => { ctx.drawImage(b, 0, parts[i].y); b.close(); });
+}
 async function draw(buf) {
-  if (decoding) { pending = buf; return; }   // keep only the newest frame
+  queue.push(buf);
+  if (decoding) return;
   decoding = true;
-  try {
-    const bmp = await createImageBitmap(new Blob([buf], { type: "image/jpeg" }));
-    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    bmp.close();
-    frames++;
-  } catch (e) { /* ignore a bad frame */ }
+  while (queue.length) {
+    try { await drawUpdate(queue.shift()); frames++; } catch (e) { /* ignore a bad update */ }
+    send({ ack: 1 });
+  }
   decoding = false;
-  if (pending) { const p = pending; pending = null; draw(p); }
 }
 
 function connect() {

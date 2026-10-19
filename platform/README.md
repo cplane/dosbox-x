@@ -33,13 +33,17 @@ kubectl -n dosbox port-forward pod/dosbox-test 8080:8080   # open http://localho
 | Endpoint | |
 |---|---|
 | `GET /` | test player: canvas, focus it to type; "Capture mouse" uses pointer lock |
-| `GET /ws` | server -> client: binary JPEG frames, text `{"type":"meta","w","h","parX","parY","program"}` on change. client -> server text JSON: `{"k":<scancode>,"d":true\|false}`, `{"m":[dx,dy]}`, `{"b":<mask>}` |
+| `GET /ws` | server -> client: binary **strip updates** — `"S" 1 count:u16 w:u16 h:u16` then count × `(y:u16 h:u16 len:u32 jpeg)`, only the 32-row strips that changed; text `{"type":"meta",…}` on mode change, `{"type":"pong","t","encodeMs","fps"}`. client -> server text JSON: `{"k":<scancode>,"d":true\|false}`, `{"a":[x,y]}` absolute mouse (0..1 of the frame), `{"m":[dx,dy]}` relative mouse, `{"b":<mask>}`, `{"ack":1}` per update drawn, `{"ping":t}` |
 | `GET /snapshot.jpg` | latest frame |
 | `GET /healthz` | 200 while frames flow (readiness probe) |
 
 - Scancodes are PC set-1, `0x80|code` for E0-extended keys (arrows, right Ctrl/Alt, keypad Enter...), matching `src/gamelink/scancodes_windows.h`. The page maps `KeyboardEvent.code`, so layout-independent physical keys are sent (`KeyboardEvent.key` when `code` is missing); text inserted without key events (paste, IME) is ignored — use `POST /type`.
 - DOSBox-X only sees key *state* per poll, so the sidecar publishes one transition at a time and waits for DOSBox-X to clear the `ready` flag; mouse motion is coalesced. Keys a client holds are released when it disconnects.
-- Frames are polled every 5 ms (`seq` change), encoded only while someone watches (plus one every 2 s for `/snapshot.jpg`), capped by `MAX_FPS` (30); each client gets only the newest frame. Env: `JPEG_QUALITY` (80), `MAX_FPS` (30), `LISTEN` (`:8080`), `GAMELINK_SHM`.
+- Frames are polled every 2 ms (`seq` change), capped by `MAX_FPS` (60). Each frame is diffed against the previous one in 32-row strips; only changed strips are JPEG-encoded (in parallel) — a moving cursor costs one or two strips (WC2 menu: ~3 ms encode, ~16 KB per update, vs 16 ms for a full 640×480 frame). Each client keeps the set of strips it still needs, so updates skipped under flow control are merged, never lost.
+- **Flow control:** a client that acks (`{"ack":1}` per update drawn) has at most `FRAME_WINDOW` (3) updates in flight; a slow or stalling link shows the newest screen late instead of a growing backlog. Clients draw updates in order.
+- **Native cursor:** the player sends the browser cursor's position (`{"a"}`); DOSBox-X places the DOS cursor exactly there (Game Link extension, see "Why Game Link"), so clicks land where the user's arrow is regardless of video delay. "Capture mouse" switches to relative motion (pointer lock).
+- Latency meter: the player pings once a second; the toolbar shows fps and round trip (tooltip: server encode time and fps). Measured 2026-10-19 (WC2 main menu, via port-forward, 60 ms RTT): mouse move -> updated strips received, median 87 ms.
+- Env: `JPEG_QUALITY` (75), `MAX_FPS` (60), `FRAME_WINDOW` (3), `LISTEN` (`:8080`), `GAMELINK_SHM`.
 - **No auth**: reach it only via port-forward until the gateway fronts it.
 - `go test ./...` in `stream/` (also run by the image build) checks the shm offsets, the text -> scancode mapping and the control API against a fake Game Link file and a fake DOSBox-X.
 
@@ -167,7 +171,7 @@ pod can stream video out and feed input in **without patching DOSBox-X**.
 
 Limits to rework later:
 - max frame 1280x1024; the full frame is copied every refresh (no dirty rects)
-- input is a key-state bitmap (Windows scancodes), mouse is relative only
+- input is a key-state bitmap (Windows scancodes); mouse is relative, plus our extension: bit 7 of `mouse_btn` marks `mouse_dx/dy` as an absolute 0..1 position (`output_gamelink.cpp` feeds it to DOSBox-X's seamless-mouse path, still counting mickeys)
 - no audio over Game Link (only volume) — needs a mixer hook or PulseAudio sink
 - one Game Link instance per IPC namespace -> one box per pod (fine)
 - the INT 33h software cursor isn't drawn in VESA 256-color modes, so in

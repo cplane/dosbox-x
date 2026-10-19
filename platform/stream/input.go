@@ -13,6 +13,11 @@ type InputEvent struct {
 	DX, DY  float32
 	Buttons int // mouse button mask (bit0 L, bit1 R, bit2 M), -1 if unchanged
 
+	// Abs: the mouse is at (X, Y), 0..1 across the frame (a client that
+	// draws its own cursor). Relative motion (DX/DY) switches back.
+	Abs  bool
+	X, Y float32
+
 	// Done, if set, makes this a barrier: it carries no input and is closed
 	// once every event queued before it has been published (and consumed,
 	// or timed out waiting for DOSBox-X).
@@ -30,6 +35,9 @@ type InputWriter struct {
 	gl     *Gamelink
 	events chan InputEvent
 	state  InputState
+
+	abs    bool // the last mouse input was a position, not a delta
+	ax, ay float32
 }
 
 func NewInputWriter(gl *Gamelink) *InputWriter {
@@ -94,6 +102,11 @@ func (w *InputWriter) Run() {
 				w.state.Buttons = uint8(ev.Buttons)
 				changed = true
 			}
+			if ev.Abs {
+				w.abs, w.ax, w.ay = true, ev.X, ev.Y
+			} else if ev.DX != 0 || ev.DY != 0 {
+				w.abs = false
+			}
 			dx += ev.DX
 			dy += ev.DY
 		}
@@ -110,7 +123,11 @@ func (w *InputWriter) Run() {
 				break
 			}
 		}
-		if err := w.gl.WriteInput(w.state, dx, dy); err != nil {
+		write := func() error { return w.gl.WriteInput(w.state, dx, dy) }
+		if w.abs {
+			write = func() error { return w.gl.WriteInputAbs(w.state, w.ax, w.ay) }
+		}
+		if err := write(); err != nil {
 			log.Printf("input: %v", err)
 		} else if changed {
 			w.waitConsumed(2 * time.Second)

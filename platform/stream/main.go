@@ -5,10 +5,15 @@
 // Endpoints:
 //
 //	GET /             test player page
-//	GET /ws           WebSocket: server->client binary JPEG frames and text
+//	GET /ws           WebSocket: server->client binary strip updates (hub.go)
+//	                  and text
 //	                  {"type":"meta",...}; client->server text JSON
 //	                  {"k":<scancode>,"d":true|false} key down/up,
-//	                  {"m":[dx,dy]} relative mouse, {"b":<mask>} buttons
+//	                  {"m":[dx,dy]} relative mouse, {"a":[x,y]} absolute mouse
+//	                  (0..1 across the frame), {"b":<mask>} buttons,
+//	                  {"ack":1} per frame drawn (enables flow control: at most
+//	                  FRAME_WINDOW frames in flight), {"ping":t} -> text
+//	                  {"type":"pong","t":t,"encodeMs":…,"fps":…}
 //	GET /snapshot.jpg latest frame
 //	GET /healthz      200 once frames are flowing
 //
@@ -48,7 +53,8 @@ func envInt(key string, def int) int {
 
 func main() {
 	gl := NewGamelink(env("GAMELINK_SHM", "/dev/shm/DWD_GAMELINK_MMAP_R4"))
-	hub := NewHub(gl, envInt("JPEG_QUALITY", 80), envInt("MAX_FPS", 30))
+	hub := NewHub(gl, envInt("JPEG_QUALITY", 75), envInt("MAX_FPS", 60))
+	frameWindow = envInt("FRAME_WINDOW", 3)
 	in := NewInputWriter(gl)
 	go hub.Run()
 	go in.Run()
@@ -90,11 +96,19 @@ func main() {
 var upgrader = websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 64 * 1024}
 
 type clientMsg struct {
-	K *int        `json:"k"`
-	D bool        `json:"d"`
-	M *[2]float32 `json:"m"`
-	B *int        `json:"b"`
+	K    *int        `json:"k"`
+	D    bool        `json:"d"`
+	M    *[2]float32 `json:"m"`
+	A    *[2]float32 `json:"a"`
+	B    *int        `json:"b"`
+	Ack  *int        `json:"ack"`
+	Ping *float64    `json:"ping"`
 }
+
+// frameWindow is how many frames may be on their way to a client that acks
+// them. A slow or stalled link then holds a few frames, not seconds of them:
+// while the window is full, the frame waiting to go is replaced by newer ones.
+var frameWindow = 3
 
 func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -120,21 +134,42 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 		log.Printf("client %s disconnected", r.RemoteAddr)
 	}()
 
+	acks := make(chan int, 64)
+	pongs := make(chan []byte, 8)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		ping := time.NewTicker(30 * time.Second)
 		defer ping.Stop()
+		dirty := false // the hub has strips this client still needs
+		flow, inFlight := false, 0
 		for {
 			var err error
-			select {
-			case m := <-c.meta:
-				err = conn.WriteMessage(websocket.TextMessage, m)
-			case f := <-c.frames:
-				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				err = conn.WriteMessage(websocket.BinaryMessage, f)
-			case <-ping.C:
-				err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			if dirty && (!flow || inFlight < frameWindow) {
+				dirty = false
+				if msg := hub.take(c); msg != nil {
+					conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+					err = conn.WriteMessage(websocket.BinaryMessage, msg)
+					inFlight++
+				}
+			} else {
+				select {
+				case m := <-c.meta:
+					err = conn.WriteMessage(websocket.TextMessage, m)
+				case <-c.notify:
+					dirty = true
+				case n := <-acks:
+					if !flow {
+						flow, inFlight = true, 0 // the client acks: count from here
+					} else if inFlight -= n; inFlight < 0 {
+						inFlight = 0
+					}
+					dirty = true // strips may have piled up while the window was full
+				case p := <-pongs:
+					err = conn.WriteMessage(websocket.TextMessage, p)
+				case <-ping.C:
+					err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+				}
 			}
 			if err != nil {
 				conn.Close()
@@ -161,11 +196,25 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 				delete(pressed, *m.K)
 			}
 			in.Send(InputEvent{Key: *m.K, Down: m.D, Buttons: -1})
+		case m.A != nil:
+			in.Send(InputEvent{Key: -1, Buttons: -1, Abs: true, X: m.A[0], Y: m.A[1]})
 		case m.M != nil:
 			in.Send(InputEvent{Key: -1, DX: m.M[0], DY: m.M[1], Buttons: -1})
 		case m.B != nil:
 			held = *m.B & 7
 			in.Send(InputEvent{Key: -1, Buttons: held})
+		case m.Ack != nil:
+			select {
+			case acks <- max(*m.Ack, 1):
+			default:
+			}
+		case m.Ping != nil:
+			enc, fps := hub.Stats()
+			p, _ := json.Marshal(map[string]any{"type": "pong", "t": *m.Ping, "encodeMs": enc, "fps": fps})
+			select {
+			case pongs <- p:
+			default:
+			}
 		}
 	}
 	conn.Close()
