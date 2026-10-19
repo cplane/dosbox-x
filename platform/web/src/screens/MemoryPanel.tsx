@@ -106,7 +106,7 @@ export function MemoryPanel({ rpc, sessionId, stopped, regs }: Props) {
 
   useEffect(() => {
     if (!stopped) return
-    rpc('debugger.execute_command', { session_id: sessionId, command: 'MCBS' })
+    rpc('debugger.execute_command', { session_id: sessionId, command: 'DOS MCBS' })
       .then((r) => setBlocks(parseMCBS(commandText(r))))
       .catch(() => setBlocks([]))
   }, [stopped, regs, rpc, sessionId])

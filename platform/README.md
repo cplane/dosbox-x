@@ -210,7 +210,7 @@ the machine presets use:
 - **Memory** (`MemoryPanel.tsx`): a hex window at any segment:offset with
   DS / ES / SS:SP / CS:IP presets, pointers outlined, bytes changed since
   the last stop in red, a byte written on click; and the first megabyte as
-  a bar — DOS's MCB chain (`debugger.execute_command MCBS`, allow-listed)
+  a bar — DOS's MCB chain (`debugger.execute_command "DOS MCBS"`, allow-listed)
   with the program's block marked, video memory, BIOS ROM.
 - **Timeline** (`TracePanel.tsx`): record N instructions with the CPU trace
   (`trace.start`, continue until it is full, `trace.read`), shown as a strip
