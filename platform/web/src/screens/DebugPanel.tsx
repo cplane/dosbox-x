@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  */
 
 import { MemoryPanel } from './MemoryPanel'
+import { TracePanel } from './TracePanel'
 
 export type RPC = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
@@ -62,6 +63,7 @@ export function DebugPanel({ rpc, available }: Props) {
   // breakpoints by "SEG:OFF8" -> breakpoint_id
   const [bps, setBps] = useState<Record<string, string>>({})
   const [showMem, setShowMem] = useState(false)
+  const [showTrace, setShowTrace] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<string[]>([])
@@ -169,6 +171,24 @@ export function DebugPanel({ rpc, available }: Props) {
     await afterStop(next)
   })
 
+  // Record n instructions: start a CPU trace and continue; the agent pauses
+  // the target when the trace is full (the TracePanel then reads it).
+  const recordTrace = async (n: number) => {
+    const s = sessionRef.current
+    if (!s || s.state !== 'stopped') throw new Error('the target must be stopped')
+    setBusy(true)
+    try {
+      await rpc('trace.start', { session_id: s.session_id, detail: 'normal', instruction_count: n })
+      const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
+      setSession({ ...s, state: 'running' })
+      const next = await waitOp(s, op.operation_id)
+      note(`trace: ${next.stop_reason?.kind ?? next.state}`)
+      await afterStop(next)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const pause = run('pause', async () => {
     const s = sessionRef.current
     if (!s) return
@@ -269,6 +289,7 @@ export function DebugPanel({ rpc, available }: Props) {
             <button onClick={pause} disabled={busy || session.state !== 'running'}>Pause</button>
             <button className="danger" onClick={stop} disabled={busy}>{session.state === 'exited' ? 'Close' : 'Stop'}</button>
             <button className={showMem ? 'on' : ''} onClick={() => setShowMem(!showMem)}>Memory</button>
+            <button className={showTrace ? 'on' : ''} onClick={() => setShowTrace(!showTrace)}>Timeline</button>
           </>
         )}
       </div>
@@ -313,6 +334,7 @@ export function DebugPanel({ rpc, available }: Props) {
         </div>
       )}
       {showMem && session && regs && <MemoryPanel rpc={rpc} sessionId={session.session_id} stopped={stopped} regs={regs} />}
+      {showTrace && session && <TracePanel rpc={rpc} sessionId={session.session_id} stopped={stopped} regs={regs} onRecord={recordTrace} />}
       {log.length > 0 && <pre className="debug-log small">{log.join('\n')}</pre>}
     </div>
   )

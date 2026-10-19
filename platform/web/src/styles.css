@@ -179,3 +179,24 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .memmap td { padding: 1px 8px; white-space: nowrap; }
 .memmap tr.me td { color: var(--warn); }
 .memmap tr:hover { background: var(--line); }
+
+/* execution timeline (TracePanel.tsx) */
+.trace { display: grid; gap: 8px; }
+.trace .bar input[type=number] { flex: 0 0 auto; width: 80px; min-width: 80px; }
+.trace-strip { display: flex; height: 18px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: #222; cursor: pointer; }
+.trace-strip span { display: block; height: 100%; min-width: 1px; background: #555; }
+.trace-strip span.int { background: #ffff55; }
+.trace-strip span.io { background: #ff55ff; }
+.trace-strip span.jump, .trace-strip span.call, .trace-strip span.ret { background: #55aaff; }
+.trace-strip span.sel { outline: 2px solid #fff; }
+.trace-table { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0000aa; color: #ffff55; }
+.trace-table table { border-collapse: collapse; width: 100%; }
+.trace-table td { padding: 1px 8px; white-space: pre; vertical-align: top; }
+.trace-table td.addr { color: #55ffff; }
+.trace-table td.note { color: #ffffff; }
+.trace-table td.chg { color: #aaaaaa; }
+.trace-table tr.int td.note { color: #ffff55; font-weight: bold; }
+.trace-table tr.io td.note { color: #ff55ff; }
+.trace-table tr.jump td:nth-child(3), .trace-table tr.call td:nth-child(3), .trace-table tr.ret td:nth-child(3) { color: #55aaff; }
+.trace-table tr:hover { background: #000088; }
+.trace-table tr.sel { background: #0000ff; }
