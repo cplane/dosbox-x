@@ -74,8 +74,8 @@ func TestStripUpdates(t *testing.T) {
 	f3[0] ^= 0xff // strip y=0
 	push(f2, f3)
 	f4 := append([]byte(nil), f3...)
-	f4[0] ^= 0x0f             // strip y=0 again
-	f4[99*W*4] ^= 0xff        // strip y=96
+	f4[0] ^= 0x0f      // strip y=0 again
+	f4[99*W*4] ^= 0xff // strip y=96
 	push(f3, f4)
 	if _, _, s := parseUpdate(t, h.take(c)); len(s) != 2 || s[0] == 0 || s[96] == 0 {
 		t.Fatalf("merged update, got %v", s)

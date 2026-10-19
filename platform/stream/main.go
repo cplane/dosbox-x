@@ -59,6 +59,7 @@ func main() {
 	gl := NewGamelink(env("GAMELINK_SHM", "/dev/shm/DWD_GAMELINK_MMAP_R4"))
 	hub := NewHub(gl, envInt("JPEG_QUALITY", 75), envInt("MAX_FPS", 60))
 	hub.text = NewTextMirror(env("GAMELINK_TEXT", "/dev/shm/DWD_GAMELINK_TEXT_R1"))
+	con := NewConStream(env("GAMELINK_CON", "/dev/shm/DWD_GAMELINK_CON_R1"))
 	frameWindow = envInt("FRAME_WINDOW", 3)
 	in := NewInputWriter(gl)
 	go hub.Run()
@@ -67,6 +68,8 @@ func main() {
 	ctl := &Control{
 		gl:        gl,
 		in:        in,
+		text:      hub.text,
+		con:       con,
 		dataDir:   env("DATA_DIR", "/data/c"),
 		maxUpload: int64(envInt("MAX_UPLOAD_MB", 512)) << 20,
 	}
@@ -136,12 +139,12 @@ func main() {
 var upgrader = websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 64 * 1024}
 
 type clientMsg struct {
-	K    *int        `json:"k"`
-	D    bool        `json:"d"`
-	M    *[2]float32 `json:"m"`
-	A    *[2]float32 `json:"a"`
-	B    *int        `json:"b"`
-	Ack  *int        `json:"ack"`
+	K     *int        `json:"k"`
+	D     bool        `json:"d"`
+	M     *[2]float32 `json:"m"`
+	A     *[2]float32 `json:"a"`
+	B     *int        `json:"b"`
+	Ack   *int        `json:"ack"`
 	Ping  *float64    `json:"ping"`
 	Hello *struct {
 		Text int `json:"text"`

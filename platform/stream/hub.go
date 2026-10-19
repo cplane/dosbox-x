@@ -49,13 +49,13 @@ type client struct {
 
 	// Text mode (text.go), for clients that said {"hello":{"text":1}}:
 	// while the screen is in a text mode they get text updates, not strips.
-	text      bool
-	mode      byte // what the client last got: 0 nothing, 'S' strips, 'T' text
-	txtGen    int
-	txtRows   []bool
-	needPal   bool
-	needFont  bool
-	needHdr   bool
+	text     bool
+	mode     byte // what the client last got: 0 nothing, 'S' strips, 'T' text
+	txtGen   int
+	txtRows  []bool
+	needPal  bool
+	needFont bool
+	needHdr  bool
 }
 
 // Hub polls Game Link for new frames and fans strip updates out to clients.

@@ -22,6 +22,8 @@ void OUTPUT_GAMELINK_Shutdown();
 void OUTPUT_GAMELINK_InputEvent();
 void OUTPUT_GAMELINK_Transfer();
 bool OUTPUT_GAMELINK_InitTrackingMode();
+// bytes a DOS program writes to CON, for the console stream (dev_con.h)
+void OUTPUT_GAMELINK_ConsoleWrite(const uint8_t* data, size_t n);
 
 #endif
 

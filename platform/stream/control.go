@@ -25,7 +25,9 @@ import (
 type Control struct {
 	gl        *Gamelink
 	in        *InputWriter
-	dataDir   string // host directory mounted as C: (/data/c)
+	text      *TextMirror // the text screen (run.go reads a command's output from it)
+	con       *ConStream  // the console stream (what DOS writes to CON; run.go)
+	dataDir   string      // host directory mounted as C: (/data/c)
 	maxUpload int64
 
 	mu sync.Mutex // one input sequence at a time, so two /type calls don't interleave
@@ -33,6 +35,7 @@ type Control struct {
 
 func (c *Control) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /type", c.handleType)
+	mux.HandleFunc("POST /run", c.handleRun)
 	mux.HandleFunc("POST /keys", c.handleKeys)
 	mux.HandleFunc("POST /mouse", c.handleMouse)
 	mux.HandleFunc("POST /click", c.handleMouse)
@@ -172,8 +175,22 @@ func (c *Control) handleType(w http.ResponseWriter, r *http.Request) {
 	defer c.mu.Unlock()
 
 	start := time.Now()
+	typed, flow, err := c.typeChars(r.Context(), chars, hold, gap)
+	if err != nil {
+		log.Printf("type: cancelled after %d chars", typed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"typed": typed, "ms": time.Since(start).Milliseconds(), "paced": flow,
+	})
+}
+
+// typeChars types chars with the pacing described at handleType; the
+// caller holds c.mu. Returns how many characters went in and whether the
+// keyboard-buffer pacing stayed on. On a cancelled context the keys held
+// at that moment are released.
+func (c *Control) typeChars(ctx context.Context, chars []rune, hold, gap time.Duration) (int, bool, error) {
 	flow := true
-	ctx := r.Context()
 	for i, ch := range chars {
 		used, size, caps, err := c.kbdBuffer()
 		for waitStart := time.Now(); flow && err == nil && used > size/2; used, size, caps, err = c.kbdBuffer() {
@@ -182,8 +199,8 @@ func (c *Control) handleType(w http.ResponseWriter, r *http.Request) {
 				flow = false
 				break
 			}
-			if sleepCtx(ctx, 5*time.Millisecond) != nil {
-				return
+			if err := sleepCtx(ctx, 5*time.Millisecond); err != nil {
+				return i, flow, err
 			}
 		}
 		evs, _ := CharEvents(ch, caps)
@@ -198,14 +215,11 @@ func (c *Control) handleType(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				c.releaseAll([]int{scLShift, ev.Key})
-				log.Printf("type: cancelled after %d chars", i)
-				return
+				return i, flow, err
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"typed": len(chars), "ms": time.Since(start).Milliseconds(), "paced": flow,
-	})
+	return len(chars), flow, nil
 }
 
 type keysReq struct {

@@ -27,6 +27,9 @@
 #include "timer.h"
 #include "shiftjis.h"
 #include "callback.h"
+#if C_GAMELINK
+#include "output/output_gamelink.h"
+#endif
 
 #define NUMBER_ANSI_DATA 10
 
@@ -1075,6 +1078,9 @@ extern bool dbcs_sbcs;
 
 bool device_CON::Write(const uint8_t * data,uint16_t * size) {
 	uint16_t count=0;
+#if C_GAMELINK
+	OUTPUT_GAMELINK_ConsoleWrite(data, *size); // the console stream, see output_gamelink.cpp
+#endif
 #if defined(USE_TTF)
 	if (IS_DOSV || ttf_dosv) {
 #else
