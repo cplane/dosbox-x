@@ -39,6 +39,7 @@ kubectl -n dosbox port-forward pod/dosbox-test 8080:8080   # open http://localho
 | `GET /screen.ansi` | the same text with 24-bit colour escapes from the screen's own palette (blink: SGR 5), for a terminal: `curl …/screen.ansi` |
 | `GET /screen.json` | `cols, rows, cellW, cellH, codepage, cursor{x,y,visible}, blinkAttribute, palette[16] ("#rrggbb"), lines[{text, fg[], bg[], blink[]}]` — `text` has exactly `cols` characters, so `text[i]` goes with `fg[i]`/`bg[i]`; `blink` lists blinking columns. Control bytes 01-1F show as the DOS glyphs (☺ ► ↑ …) in all three |
 | `GET /agent`, `POST /agent` | the DOSBox-X **RPC debugger agent** (debug image only; see "Debugger"): GET → `{"available"}`; POST body = one JSON-RPC 2.0 request, the agent's response as is (409 without the agent). Over the player socket: `{"rpc": <request>}` → `{"type":"rpc","response":…}`. Through the gateway: `POST /api/boxes/{id}/ctl/agent` |
+| `POST /run` | run one command line at the DOS prompt and return what it printed, like a terminal: `{"cmd":"ml /AT hello.asm","timeout_ms":60000}` (or a text/plain body) → `{"output","errorlevel","ms","timed_out","prompt","source":"con"\|"screen","truncated"?}`. 409 when DOS is not at a prompt (a program is running, or a graphics mode). The output comes from the console stream (`/dev/shm/DWD_GAMELINK_CON_R1`, every byte DOS wrote to CON) when DOSBox-X publishes one, else from the text screen; a program that never returns to the prompt ends in `timed_out` with what was captured. Through the gateway: `/api/boxes/{id}/ctl/run` |
 | `GET /healthz` | 200 while frames flow (readiness probe) |
 
 - Scancodes are PC set-1, `0x80|code` for E0-extended keys (arrows, right Ctrl/Alt, keypad Enter...), matching `src/gamelink/scancodes_windows.h`. The page maps `KeyboardEvent.code`, so layout-independent physical keys are sent (`KeyboardEvent.key` when `code` is missing); text inserted without key events (paste, IME) is ignored — use `POST /type`.
@@ -173,7 +174,12 @@ map, disassembly, instruction traces — so a learner sees everything an
 (MASM, TC, TP, batch) do the work; nothing needs the DOS screen.
 
 What exists (first milestone; the platform's boxes run this image now, see
-`images.dosbox` in the chart — the plain image is a little faster):
+`images.dosbox` in the chart). Measured 2026-10-19 with a 13.1M-iteration `loop`
+(`BENCH.COM`, through `/run`): at `cycles=auto` both images take 4.85 s (the
+rate is fixed, the host keeps up); at `cycles=max` the plain image took
+0.86-1.45 s and the debug image 0.93-1.94 s on a shared node, i.e. the
+debugger costs roughly 10-30 % at full speed and nothing at the fixed rates
+the machine presets use:
 
 - **`dosbox-x-debug` image** (`build.sh dosbox-debug`): the same emulator
   configured `--enable-debug=heavy --enable-dosbox_agent`, i.e. DOSBox-X's
@@ -196,14 +202,48 @@ What exists (first milestone; the platform's boxes run this image now, see
   other calls), `POST /agent` for scripts and `{"rpc":…}` over the player
   socket for the browser.
 - **Player "Debug" panel** (`web/src/screens/DebugPanel.tsx`): start a
-  program at its entry, step into/over, continue, pause, stop; registers
-  (changed ones highlighted), flags by name, the bytes at CS:IP.
+  program at its entry, step into/over (F7/F8), continue (F9), pause, stop;
+  registers (changed ones highlighted), flags by name, and a **disassembly
+  window** that follows CS:IP (`code.disassemble`, added to the agent: the
+  debugger's own DasmI386, so 8086-386 opcodes come out right) with
+  breakpoints in the gutter and run-to-cursor on an address.
+- **Memory** (`MemoryPanel.tsx`): a hex window at any segment:offset with
+  DS / ES / SS:SP / CS:IP presets, pointers outlined, bytes changed since
+  the last stop in red, a byte written on click; and the first megabyte as
+  a bar — DOS's MCB chain (`debugger.execute_command MCBS`, allow-listed)
+  with the program's block marked, video memory, BIOS ROM.
+- **Timeline** (`TracePanel.tsx`): record N instructions with the CPU trace
+  (`trace.start`, continue until it is full, `trace.read`), shown as a strip
+  and a table: INT 21h/10h/16h/33h calls decoded by function (AX/DX are
+  reconstructed from the register changes), port I/O named (PIC, PIT,
+  keyboard, VGA, Sound Blaster...), branches marked; filter by kind.
+- **Console** (`Console.tsx`): a terminal for the DOS prompt. Line editing
+  and history are local; Enter runs the line through the sidecar's
+  `POST /run`, which types it, waits for the prompt to come back and
+  answers with the output, DOS's errorlevel (text mirror v2 carries
+  `dos.return_code`), the time taken and the new prompt. The output comes
+  from the **console stream**: DOSBox-X mirrors every byte written to the
+  CON device (programs' stdout/stderr, the shell's echo and prompt) into a
+  ring buffer in `/dev/shm/DWD_GAMELINK_CON_R1` (`output_gamelink.cpp`,
+  hooked in `dev_con.h`), so fast output that scrolls off between frames is
+  complete; the text screen is the fallback for programs that draw directly.
+- **Editor** (`Editor.tsx`): a browser over C: and Monaco (bundled, lazy)
+  with a MASM tokenizer, C/C++, Pascal and batch highlighting and the
+  Borland blue theme; files are read and written byte for byte (CP437 kept)
+  with CRLF line ends. **Build & Run** saves and hands the console
+  `CD` + build + run steps for the file's toolchain (`ML /AT` for .ASM,
+  `TCC` for .C/.CPP, `TPC` for .PAS; .BAT/.EXE/.COM just run); the build
+  command is editable and remembered per language; a program whose
+  errorlevel is not 0 stops the list.
+- **Machine per box** (`gateway/machine.go`, the Boxes screen): CPU model
+  (8086, 186, 286, 386, 486, Pentium or the default), memory (1-64 MB) and
+  speed (cycles, with presets named after the PCs they approximate),
+  stored with the box and passed to the pod as `-set` arguments; changed
+  while the box is stopped.
 - Example: `platform/examples/asm/HELLO.ASM` (MASM 6.11: `ML /AT HELLO.ASM`).
 
-Next for it: a modern editor (Monaco, DOS theme) + a console with local line
-editing and a command runner (`POST /run`), then disassembly (client-side
-from `memory.read`), a 1 MB memory map, a trace timeline with INT 21h calls
-decoded, and per-box CPU model (`cputype` 8086/286/386).
+Next for it: a live memory read/write heatmap (needs access counters in
+DOSBox-X), watch expressions, source-level stepping from MASM listings.
 
 ## Why Game Link
 
