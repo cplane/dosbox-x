@@ -3,6 +3,7 @@
 # namespace dosbox, https://dosbox.pocket-maze.app.
 #
 #   platform/deploy.sh [extra helm args...]
+#   RESTART_BOXES="creative" platform/deploy.sh   also restarts those boxes
 #
 # Each image is pinned to the build platform/build.sh last pushed
 # (its newest tag), so a rollout is reproducible and box
@@ -43,3 +44,10 @@ helm upgrade --install dosbox helm/dosbox -n "$NS" "${args[@]}" "$@"
 kubectl -n "$NS" rollout status deploy/dosbox-auth --timeout=180s
 kubectl -n "$NS" rollout status deploy/dosbox-gateway --timeout=180s
 kubectl -n "$NS" rollout status deploy/dosbox-web --timeout=180s
+
+# RESTART_BOXES="creative ..." (or "--all"): put those running boxes on the
+# new box images right away instead of at their next start.
+if [ -n "${RESTART_BOXES:-}" ]; then
+  # shellcheck disable=SC2086
+  ./restart-boxes.sh $RESTART_BOXES
+fi

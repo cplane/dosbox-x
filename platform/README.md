@@ -226,7 +226,7 @@ db-pgsql-ams3-80134; tables identity/refresh_token (auth), box (gateway).
 | `go/` | One Go module, one image `dosbox-platform` (`/app/auth`, `/app/gateway`). `core/auth` + `services/auth` are a copy of dunelegacy's auth service (cookies renamed `dbx_*`, issuer `dosbox-auth`). `services/gateway` is new. |
 | `web/` | React 18 + Vite + TypeScript, image `dosbox-web`: sign-in (from dunelegacy), box list, file browser, player (canvas + keyboard + pointer-lock mouse, as the stream test page). Routes in the hash: `#/box/<id>`, `#/box/<id>/files`. |
 | `helm/dosbox` | auth (+ keys PVC), gateway (+ ServiceAccount/Role/RoleBinding, `dosbox-boxes` PVC, NetworkPolicy for box pods), web, ingress. PVCs carry `helm.sh/resource-policy: keep`. |
-| `deploy.sh` | `helm upgrade --install`, each image pinned to the build `latest` points at. |
+| `deploy.sh` | `helm upgrade --install`, each image pinned to its newest pushed tag. `RESTART_BOXES="creative"` (or `--all`) also restarts those running boxes onto the new box images (`restart-boxes.sh`: recreates the pod from its own spec with the images swapped; C: kept; skipped if already current). |
 | Secret `dosbox` | `postgresUrl` (created out of band); optional `googleClientId` (Google sign-in) and `spacesKey`/`spacesSecret` (catalog master copies in Spaces). |
 
 Gateway API (all need a session cookie or `Authorization: Bearer <access token>`; only the owner, or an admin, sees a box):
