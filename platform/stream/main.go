@@ -134,6 +134,9 @@ type clientMsg struct {
 // while the window is full, the frame waiting to go is replaced by newer ones.
 var frameWindow = 3
 
+// writeTimeout bounds each write to a client (a stuck link is dropped).
+var writeTimeout = 10 * time.Second
+
 func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -173,6 +176,12 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 		case <-hello:
 		case <-time.After(250 * time.Millisecond):
 		}
+		// Every write gets its own deadline: one left over from an earlier
+		// write would make a later one (a pong on a still screen) fail.
+		write := func(kind int, b []byte) error {
+			conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			return conn.WriteMessage(kind, b)
+		}
 		dirty := false // the hub has strips this client still needs
 		flow, inFlight := false, 0
 		for {
@@ -180,14 +189,13 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 			if dirty && (!flow || inFlight < frameWindow) {
 				dirty = false
 				if msg := hub.take(c); msg != nil {
-					conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-					err = conn.WriteMessage(websocket.BinaryMessage, msg)
+					err = write(websocket.BinaryMessage, msg)
 					inFlight++
 				}
 			} else {
 				select {
 				case m := <-c.meta:
-					err = conn.WriteMessage(websocket.TextMessage, m)
+					err = write(websocket.TextMessage, m)
 				case <-c.notify:
 					dirty = true
 				case n := <-acks:
@@ -198,7 +206,7 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 					}
 					dirty = true // strips may have piled up while the window was full
 				case p := <-pongs:
-					err = conn.WriteMessage(websocket.TextMessage, p)
+					err = write(websocket.TextMessage, p)
 				case <-ping.C:
 					err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 				}
