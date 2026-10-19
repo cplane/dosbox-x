@@ -65,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/boxes", s.signedIn(s.handleCreate))
 	mux.HandleFunc("GET /api/boxes/{id}", s.owned(s.handleGet))
 	mux.HandleFunc("DELETE /api/boxes/{id}", s.owned(s.handleDelete))
+	mux.HandleFunc("PATCH /api/boxes/{id}", s.owned(s.handleEdit))
 	mux.HandleFunc("POST /api/boxes/{id}/start", s.owned(s.handleStart))
 	mux.HandleFunc("POST /api/boxes/{id}/stop", s.owned(s.handleStop))
 	mux.HandleFunc("GET /api/boxes/{id}/ws", s.owned(s.handleWS))
@@ -207,6 +208,35 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, ident auth.I
 	writeJSON(w, http.StatusOK, out)
 }
 
+// PATCH /api/boxes/{id} {"machine": {...}}: the machine a box emulates; it
+// applies when the box next starts, so the box must be stopped.
+func (s *Server) handleEdit(w http.ResponseWriter, r *http.Request, _ auth.Identity, b *Box) {
+	var req struct{ Machine *Machine }
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil || req.Machine == nil {
+		httpErr(w, http.StatusBadRequest, "expected {\"machine\": {...}}")
+		return
+	}
+	if err := req.Machine.Validate(); err != nil {
+		httpErr(w, http.StatusBadRequest, "machine: %v", err)
+		return
+	}
+	p, err := s.pod(r.Context(), b.ID)
+	if err != nil {
+		httpErr(w, http.StatusBadGateway, "%v", err)
+		return
+	}
+	if st, _ := podState(p); st != StateStopped && st != StateFailed {
+		httpErr(w, http.StatusConflict, "stop the box to change its machine")
+		return
+	}
+	if err := s.store.SetMachine(r.Context(), b.ID, *req.Machine); err != nil {
+		httpErr(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	b.Machine = *req.Machine
+	writeJSON(w, http.StatusOK, s.view(*b, p))
+}
+
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ auth.Identity, b *Box) {
 	p, err := s.pod(r.Context(), b.ID)
 	if err != nil {
@@ -230,11 +260,16 @@ func validName(n string) bool {
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request, ident auth.Identity) {
 	var req struct {
-		Name  string
-		Items []string // catalog items to copy onto the new C:
+		Name    string
+		Items   []string // catalog items to copy onto the new C:
+		Machine Machine
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil || !validName(req.Name) {
 		httpErr(w, http.StatusBadRequest, "name: 1-40 printable characters")
+		return
+	}
+	if err := req.Machine.Validate(); err != nil {
+		httpErr(w, http.StatusBadRequest, "machine: %v", err)
 		return
 	}
 	items, err := s.readyItems(r.Context(), req.Items)
@@ -259,7 +294,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request, ident auth
 	}
 	now := s.now().UTC()
 	b := &Box{ID: uuid.New(), Owner: ident.Id, OwnerName: ident.Username, Name: strings.TrimSpace(req.Name),
-		CreatedAt: now, LastActiveAt: now, DiskLimitMB: s.cfg.DiskLimitMB}
+		CreatedAt: now, LastActiveAt: now, DiskLimitMB: s.cfg.DiskLimitMB, Machine: req.Machine}
 	if err := os.MkdirAll(s.cDir(b.ID), 0o755); err != nil {
 		httpErr(w, http.StatusInternalServerError, "creating the box folder: %v", err)
 		return

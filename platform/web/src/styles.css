@@ -135,3 +135,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .editor-box { min-height: 0; }
 .editor-empty { display: grid; place-items: center; height: 100%; }
 @media (max-width: 700px) { .editor { grid-template-columns: 1fr; grid-template-rows: 140px 1fr; } .editor-side { border-right: 0; border-bottom: 1px solid var(--line); } }
+/* machine picker (MachinePicker.tsx) */
+.machine-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.machine-picker { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.machine-picker select { font-size: 13px; }

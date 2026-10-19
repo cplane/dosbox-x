@@ -27,6 +27,7 @@ type Box struct {
 	LastActiveAt time.Time `json:"lastActiveAt"`
 	DiskLimitMB  int       `json:"diskLimitMB"`
 	UsedBytes    int64     `json:"usedBytes"`
+	Machine      Machine   `json:"machine"` // what it emulates (machine.go)
 }
 
 type Store interface {
@@ -37,6 +38,7 @@ type Store interface {
 	DeleteBox(ctx context.Context, id uuid.UUID) error
 	Touch(ctx context.Context, id uuid.UUID, at time.Time) error
 	SetUsage(ctx context.Context, id uuid.UUID, used int64) error
+	SetMachine(ctx context.Context, id uuid.UUID, m Machine) error
 
 	ListCatalog(ctx context.Context) ([]CatalogItem, error)
 	GetCatalogItem(ctx context.Context, slug string) (*CatalogItem, error) // ErrNotFound
@@ -81,14 +83,14 @@ func OpenStore(ctx context.Context, url string) (Store, *sql.DB, error) {
 	return &pgStore{db}, db, nil
 }
 
-const boxCols = `id, owner, owner_name, name, created_at, last_active_at, disk_limit_mb, used_bytes`
+const boxCols = `id, owner, owner_name, name, created_at, last_active_at, disk_limit_mb, used_bytes, machine`
 
 func scanBoxes(rows *sql.Rows) ([]Box, error) {
 	defer rows.Close()
 	out := []Box{}
 	for rows.Next() {
 		var b Box
-		if err := rows.Scan(&b.ID, &b.Owner, &b.OwnerName, &b.Name, &b.CreatedAt, &b.LastActiveAt, &b.DiskLimitMB, &b.UsedBytes); err != nil {
+		if err := rows.Scan(&b.ID, &b.Owner, &b.OwnerName, &b.Name, &b.CreatedAt, &b.LastActiveAt, &b.DiskLimitMB, &b.UsedBytes, &b.Machine); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -128,8 +130,13 @@ func (s *pgStore) GetBox(ctx context.Context, id uuid.UUID) (*Box, error) {
 }
 
 func (s *pgStore) CreateBox(ctx context.Context, b *Box) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO box (`+boxCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		b.ID, b.Owner, b.OwnerName, b.Name, b.CreatedAt, b.LastActiveAt, b.DiskLimitMB, b.UsedBytes)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO box (`+boxCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		b.ID, b.Owner, b.OwnerName, b.Name, b.CreatedAt, b.LastActiveAt, b.DiskLimitMB, b.UsedBytes, b.Machine)
+	return err
+}
+
+func (s *pgStore) SetMachine(ctx context.Context, id uuid.UUID, m Machine) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE box SET machine = $2 WHERE id = $1`, id, m)
 	return err
 }
 
@@ -295,6 +302,16 @@ func (m *memStore) DeleteBox(_ context.Context, id uuid.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.boxes, id)
+	return nil
+}
+
+func (m *memStore) SetMachine(_ context.Context, id uuid.UUID, mc Machine) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if b, ok := m.boxes[id]; ok {
+		b.Machine = mc
+		m.boxes[id] = b
+	}
 	return nil
 }
 
