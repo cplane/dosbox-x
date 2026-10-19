@@ -618,6 +618,11 @@ public:
                             std::vector<std::uint8_t>* data,
                             MemoryAccessError* access_error,
                             std::string* error) const = 0;
+    virtual bool Disassemble(const MemoryAddress& address,
+                             std::size_t count,
+                             std::vector<DisassembledLine>* lines,
+                             MemoryAccessError* access_error,
+                             std::string* error) const = 0;
     virtual bool WriteMemory(const MemoryAddress& address,
                              const std::vector<std::uint8_t>& data,
                              std::vector<std::uint8_t>* after,
@@ -722,6 +727,7 @@ public:
     AGENT_RUNTIME_UNAVAILABLE(GetRegisters, bool GetRegisters(RegisterSnapshot*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(Step, bool Step(StepMode, bool*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(ReadMemory, bool ReadMemory(const MemoryAddress&, std::size_t, std::vector<std::uint8_t>*, MemoryAccessError*, std::string* error) const)
+    AGENT_RUNTIME_UNAVAILABLE(Disassemble, bool Disassemble(const MemoryAddress&, std::size_t, std::vector<DisassembledLine>*, MemoryAccessError*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(WriteMemory, bool WriteMemory(const MemoryAddress&, const std::vector<std::uint8_t>&, std::vector<std::uint8_t>*, MemoryAccessError*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(CreateBreakpoint, bool CreateBreakpoint(BreakpointKind, const MemoryAddress&, bool, NativeBreakpoint*, MemoryAccessError*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(DeleteBreakpoint, bool DeleteBreakpoint(const NativeBreakpoint&, std::string* error) const)
