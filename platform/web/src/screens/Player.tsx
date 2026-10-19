@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { getBox, NeedsSignIn, screenText, snapshotURL, startBox, stopBox, typeText, wsURL, type Box } from '../api/client'
 import { scancodeFor, SHIFT } from '../player/keys'
 import { TextScreen } from '../player/textmode'
 import { DebugPanel, type RPC } from './DebugPanel'
-import { Console } from './Console'
+import { Console, type ConsoleHandle, type Step } from './Console'
+
+// Monaco is big; it loads the first time the editor opens.
+const Editor = lazy(() => import('./Editor').then((m) => ({ default: m.Editor })))
 
 interface Props {
   boxId: string
@@ -53,6 +56,16 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [textMode, setTextMode] = useState(false)
   const [showDebug, setShowDebug] = useState(false)
   const [showConsole, setShowConsole] = useState(false)
+  const [showEditor, setShowEditor] = useState(false)
+  const consoleRef = useRef<ConsoleHandle>(null)
+
+  // The editor's Build & Run: open the console (mounting it if needed) and
+  // run the steps there, so the output lands where commands are typed.
+  const runSteps = useCallback(async (steps: Step[]) => {
+    setShowConsole(true)
+    for (let i = 0; i < 20 && !consoleRef.current; i++) await new Promise((r) => setTimeout(r, 50))
+    return consoleRef.current?.run(steps) ?? false
+  }, [])
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   // JSON-RPC calls to the debugger agent ride the player socket: id -> settler.
   const rpcWaiters = useRef(new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>())
@@ -389,6 +402,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           </>
         )}
         <button onClick={onFiles}>Files</button>
+        {running && <button className={showEditor ? 'on' : ''} onClick={() => setShowEditor(!showEditor)}>Editor</button>}
         {running && <button className={showConsole ? 'on' : ''} onClick={() => setShowConsole(!showConsole)}>Console</button>}
         {running && <button className={showDebug ? 'on' : ''} onClick={() => setShowDebug(!showDebug)}>Debug</button>}
         {running || box?.state === 'starting'
@@ -421,7 +435,12 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           <div className="hint">Click the screen to type · your arrow is the DOS mouse · Capture mouse for relative motion (Esc releases)</div>
         )}
       </div>
-      {showConsole && running && <Console boxId={boxId} running={running} />}
+      {showEditor && running && (
+        <Suspense fallback={<p className="muted">Loading the editor…</p>}>
+          <Editor boxId={boxId} running={running} onRun={runSteps} />
+        </Suspense>
+      )}
+      {showConsole && running && <Console ref={consoleRef} boxId={boxId} running={running} />}
       {showDebug && running && <DebugPanel rpc={rpc} available={agentAvailable} />}
     </div>
   )

@@ -1,0 +1,230 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import MonacoEditor, { type OnMount } from '@monaco-editor/react'
+import { listFiles, readTextFile, writeTextFile, type FileEntry } from '../api/client'
+import { languageFor, monaco } from '../player/monaco'
+import type { Step } from './Console'
+
+/**
+ * The workbench editor: a file browser over the box's C: drive and Monaco
+ * with the DOS theme. Editing is entirely local; Save PUTs the file, Build &
+ * Run saves and hands the console a CD + build + run list for the file's
+ * toolchain (ML for .ASM, TCC for .C/.CPP, TPC for .PAS; batch files and
+ * programs just run).
+ */
+
+interface Props {
+  boxId: string
+  running: boolean
+  /** Runs steps in the console (opening it); false when one failed. */
+  onRun: (steps: Step[]) => Promise<boolean>
+}
+
+type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
+
+/** The build command for a source file, {} is the bare file name. */
+const defaultBuild: Record<string, string> = {
+  asm: 'C:\\MASM611\\BIN\\ML /AT /nologo {}',
+  c: 'C:\\TCC\\TCC -IC:\\TCC\\INCLUDE -LC:\\TCC\\LIB {}',
+  pas: 'C:\\TP70\\TPC {}',
+}
+
+function langOf(name: string): Lang {
+  switch (name.toLowerCase().replace(/^.*\./, '')) {
+    case 'asm': return 'asm'
+    case 'c': case 'cpp': return 'c'
+    case 'pas': return 'pas'
+    case 'bat': return 'bat'
+    case 'exe': case 'com': return 'prog'
+    default: return 'none'
+  }
+}
+
+function loadBuild(lang: string): string {
+  try { return localStorage.getItem(`dosbox.build.${lang}`) ?? defaultBuild[lang] ?? '' } catch { return defaultBuild[lang] ?? '' }
+}
+
+function saveBuild(lang: string, cmd: string) {
+  try { localStorage.setItem(`dosbox.build.${lang}`, cmd) } catch { /* private mode */ }
+}
+
+/** "ASM/HELLO.ASM" -> ["ASM", "HELLO.ASM"] */
+const split = (path: string) => {
+  const i = path.lastIndexOf('/')
+  return i < 0 ? ['', path] : [path.slice(0, i), path.slice(i + 1)]
+}
+
+/** The DOS form of a /files/ directory: "" -> "C:\", "ASM/SRC" -> "C:\ASM\SRC". */
+const dosDir = (dir: string) => 'C:\\' + dir.replace(/\//g, '\\')
+
+export function buildSteps(path: string, buildCmd: string): Step[] {
+  const [dir, name] = split(path)
+  const base = name.replace(/\.[^.]*$/, '')
+  const steps: Step[] = [{ cmd: `CD ${dosDir(dir)}` }]
+  switch (langOf(name)) {
+    case 'asm': case 'c': case 'pas':
+      steps.push({ cmd: buildCmd.replace('{}', name), check: true }, { cmd: base, check: true })
+      break
+    case 'bat': case 'prog':
+      steps.push({ cmd: name, check: true })
+      break
+  }
+  return steps
+}
+
+export function Editor({ boxId, running, onRun }: Props) {
+  const [dir, setDir] = useState('')
+  const [entries, setEntries] = useState<FileEntry[]>([])
+  const [path, setPath] = useState<string | null>(null)
+  const [text, setText] = useState('')
+  const [saved, setSaved] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+  const [buildCmd, setBuildCmd] = useState('')
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const saveRef = useRef<() => Promise<boolean>>(async () => false)
+  const dirty = text !== saved
+  const lang = path ? langOf(split(path)[1]) : 'none'
+
+  const refresh = useCallback(async (d: string) => {
+    try {
+      const es = await listFiles(boxId, d)
+      es.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
+      setEntries(es)
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+    }
+  }, [boxId])
+
+  useEffect(() => { refresh(dir) }, [dir, refresh, running])
+
+  async function open(p: string) {
+    if (dirty && !confirm('Discard the unsaved changes?')) return
+    setBusy(true)
+    try {
+      const t = await readTextFile(boxId, p)
+      setPath(p)
+      setText(t)
+      setSaved(t)
+      setBuildCmd(loadBuild(langOf(split(p)[1])))
+      setStatus('')
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function create() {
+    const name = prompt('New file name (8.3, e.g. HELLO.ASM):')?.trim().toUpperCase()
+    if (!name || !/^[A-Z0-9_$~!#%&\-{}@`'()^]{1,8}(\.[A-Z0-9_$~!#%&\-{}@`'()^]{1,3})?$/.test(name)) return
+    if (dirty && !confirm('Discard the unsaved changes?')) return
+    const p = dir ? `${dir}/${name}` : name
+    setPath(p)
+    setText('')
+    setSaved('\0') // never equal: a new file is dirty until saved
+    setBuildCmd(loadBuild(langOf(name)))
+    setStatus('')
+  }
+
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!path) return false
+    const t = (editorRef.current?.getValue() ?? text).replace(/\r?\n/g, '\r\n')
+    setBusy(true)
+    try {
+      await writeTextFile(boxId, path, t)
+      setText(t)
+      setSaved(t)
+      setStatus(`saved ${split(path)[1]}`)
+      refresh(dir)
+      return true
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }, [boxId, path, text, dir, refresh])
+  saveRef.current = save
+
+  async function buildAndRun() {
+    if (!path || !running) return
+    if (dirty && !(await save())) return
+    setStatus('running…')
+    const ok = await onRun(buildSteps(path, buildCmd))
+    setStatus(ok ? 'done' : 'failed (see the console)')
+  }
+
+  const onMount: OnMount = (editor) => {
+    editorRef.current = editor
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { saveRef.current() })
+    editor.focus()
+  }
+
+  const name = path ? split(path)[1] : ''
+  return (
+    <div className="editor">
+      <div className="editor-side">
+        <div className="bar">
+          <button disabled={!dir} onClick={() => setDir(split(dir)[0])} title="Up">↑</button>
+          <span className="mono">{dosDir(dir)}</span>
+          <button onClick={create} title="New file in this directory">New</button>
+        </div>
+        <ul className="editor-files">
+          {entries.map((e) => (
+            <li key={e.name} className={e.dir ? 'dir' : path === (dir ? `${dir}/${e.name}` : e.name) ? 'on' : ''}>
+              <button onClick={() => (e.dir ? setDir(dir ? `${dir}/${e.name}` : e.name) : open(dir ? `${dir}/${e.name}` : e.name))}>
+                {e.dir ? `[${e.name}]` : e.name}
+              </button>
+            </li>
+          ))}
+          {entries.length === 0 && <li className="muted">empty</li>}
+        </ul>
+      </div>
+      <div className="editor-main">
+        <div className="bar">
+          <strong className="mono">{path ? `${dosDir(split(path)[0])}${split(path)[0] ? '\\' : ''}${name}` : 'no file'}</strong>
+          {dirty && <span className="lag">•</span>}
+          <button disabled={!path || !dirty || busy} onClick={save} title="Ctrl+S">Save</button>
+          {(lang === 'asm' || lang === 'c' || lang === 'pas') && (
+            <input
+              className="mono"
+              value={buildCmd}
+              onChange={(e) => { setBuildCmd(e.target.value); saveBuild(lang, e.target.value) }}
+              title="The build command; {} is the file name"
+            />
+          )}
+          {lang !== 'none' && <button className="primary" disabled={!path || busy || !running} onClick={buildAndRun}>{lang === 'bat' || lang === 'prog' ? 'Run' : 'Build & Run'}</button>}
+          <span className="muted">{status}</span>
+        </div>
+        <div className="editor-box">
+          {path ? (
+            <MonacoEditor
+              height="100%"
+              path={`c:/${path}`}
+              language={languageFor(name)}
+              value={text}
+              theme="dos"
+              onChange={(v) => setText(v ?? '')}
+              onMount={onMount}
+              options={{
+                fontFamily: 'ui-monospace, Consolas, "Lucida Console", monospace',
+                fontSize: 14,
+                lineHeight: 20,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                tabSize: 8,
+                insertSpaces: lang !== 'asm',
+                renderLineHighlight: 'line',
+                wordWrap: 'off',
+                rulers: [80],
+                automaticLayout: true,
+              }}
+            />
+          ) : (
+            <div className="editor-empty muted">Pick a file on the left, or New.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
