@@ -31,7 +31,8 @@ COMPONENT=${1:-dosbox}
 
 cd "$(dirname "$0")/.."
 GIT_DIR=$(git rev-parse --git-dir)   # relative paths: Windows git/kubectl choke on /tmp and C:
-case "$GIT_DIR" in /*|?:*) GIT_DIR=.git-build; mkdir -p "$GIT_DIR" ;; esac   # a worktree: --git-dir is absolute
+TMP_DIR=$GIT_DIR
+case "$GIT_DIR" in /*|?:*) TMP_DIR=.git-build; mkdir -p "$TMP_DIR" ;; esac   # a worktree: --git-dir is absolute, kubectl cp would read C: as a pod
 
 case "$COMPONENT" in
   dosbox|dosbox-debug) DIRTY_PATHS=(. ':!platform/stream' ':!platform/go' ':!platform/web' ':!platform/helm' ':!platform/k8s' ':!platform/README.md') ;;
@@ -43,7 +44,7 @@ esac
 TAG=${2:-$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- "${DIRTY_PATHS[@]}" || echo -dirty)}
 
 # Temp files are per component, so a stream and a dosbox build can run at once.
-tmp="$GIT_DIR/$COMPONENT-build"
+tmp="$TMP_DIR/$COMPONENT-build"
 trap 'rm -f "$tmp".*' EXIT
 
 retry() {
