@@ -84,23 +84,39 @@ func main() {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Write(jpg)
 	})
-	// The text screen as UTF-8 (the DOS codepage decoded), one line per row;
-	// 409 in graphics modes. X-Cursor: "col,row" (0-based) when visible.
-	mux.HandleFunc("GET /screen.txt", func(w http.ResponseWriter, r *http.Request) {
-		t, err := hub.Screen()
-		if err != nil || t == nil {
-			http.Error(w, "the screen is not in a text mode", http.StatusConflict)
-			return
+	// The text screen, 409 in graphics modes (headers: X-Text-Size,
+	// X-Codepage, X-Cursor "col,row" 0-based when visible):
+	//   /screen.txt   UTF-8 text (DOS codepage decoded), one line per row
+	//   /screen.ansi  the same with 24-bit colour escapes, for a terminal
+	//   /screen.json  per cell: text, fg, bg, blink; palette; cursor
+	screen := func(render func(http.ResponseWriter, *TextScreen)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			t, err := hub.Screen()
+			if err != nil || t == nil {
+				http.Error(w, "the screen is not in a text mode", http.StatusConflict)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Text-Size", fmt.Sprintf("%dx%d", t.Cols, t.Rows))
+			w.Header().Set("X-Codepage", strconv.Itoa(int(t.Codepage)))
+			if t.Flags&txtCursorVisible != 0 {
+				w.Header().Set("X-Cursor", fmt.Sprintf("%d,%d", t.CursorX, t.CursorY))
+			}
+			render(w, t)
 		}
+	}
+	mux.HandleFunc("GET /screen.txt", screen(func(w http.ResponseWriter, t *TextScreen) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Text-Size", fmt.Sprintf("%dx%d", t.Cols, t.Rows))
-		w.Header().Set("X-Codepage", strconv.Itoa(int(t.Codepage)))
-		if t.Flags&txtCursorVisible != 0 {
-			w.Header().Set("X-Cursor", fmt.Sprintf("%d,%d", t.CursorX, t.CursorY))
-		}
 		io.WriteString(w, t.Text())
-	})
+	}))
+	mux.HandleFunc("GET /screen.ansi", screen(func(w http.ResponseWriter, t *TextScreen) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, t.ANSI())
+	}))
+	mux.HandleFunc("GET /screen.json", screen(func(w http.ResponseWriter, t *TextScreen) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(t.JSON())
+	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if _, at := hub.Latest(); time.Since(at) > 10*time.Second {
 			http.Error(w, "no recent frames", http.StatusServiceUnavailable)

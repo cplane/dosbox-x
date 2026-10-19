@@ -36,6 +36,8 @@ kubectl -n dosbox port-forward pod/dosbox-test 8080:8080   # open http://localho
 | `GET /ws` | server -> client: binary **strip updates** — `"S" 1 count:u16 w:u16 h:u16` then count × `(y:u16 h:u16 len:u32 jpeg)`, only the 32-row strips that changed; text `{"type":"meta",…}` on mode change, `{"type":"pong","t","encodeMs","fps"}`. client -> server text JSON: `{"k":<scancode>,"d":true\|false}`, `{"a":[x,y]}` absolute mouse (0..1 of the frame), `{"m":[dx,dy]}` relative mouse, `{"b":<mask>}`, `{"ack":1}` per update drawn, `{"ping":t}` |
 | `GET /snapshot.jpg` | latest frame |
 | `GET /screen.txt` | the text screen as UTF-8 (codepage decoded), one line per row; headers `X-Text-Size`, `X-Codepage`, `X-Cursor`; 409 in graphics modes. Through the gateway: `/api/boxes/{id}/ctl/screen.txt` |
+| `GET /screen.ansi` | the same text with 24-bit colour escapes from the screen's own palette (blink: SGR 5), for a terminal: `curl …/screen.ansi` |
+| `GET /screen.json` | `cols, rows, cellW, cellH, codepage, cursor{x,y,visible}, blinkAttribute, palette[16] ("#rrggbb"), lines[{text, fg[], bg[], blink[]}]` — `text` has exactly `cols` characters, so `text[i]` goes with `fg[i]`/`bg[i]`; `blink` lists blinking columns. Control bytes 01-1F show as the DOS glyphs (☺ ► ↑ …) in all three |
 | `GET /healthz` | 200 while frames flow (readiness probe) |
 
 - Scancodes are PC set-1, `0x80|code` for E0-extended keys (arrows, right Ctrl/Alt, keypad Enter...), matching `src/gamelink/scancodes_windows.h`. The page maps `KeyboardEvent.code`, so layout-independent physical keys are sent (`KeyboardEvent.key` when `code` is missing); text inserted without key events (paste, IME) is ignored — use `POST /type`.
