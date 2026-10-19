@@ -435,7 +435,11 @@ void OUTPUT_GAMELINK_PublishText()
     const uint16_t page_start = real_readw( 0x40, 0x4E );
     const uint16_t seg = real_readb( 0x40, 0x49 ) == 7 ? 0xB000 : 0xB800;
     const uint16_t cursor = real_readw( 0x40, 0x50 + ( page & 7 ) * 2 );
-    const uint16_t shape = real_readw( 0x40, 0x60 );
+    // Cursor shape: the scanlines the CRTC actually draws (vga.draw.cursor),
+    // not the BIOS value at 40:60, which keeps the CGA-style shape (e.g. 6-7)
+    // that the VGA BIOS scales to the real cell height.
+    const uint8_t cur_start = vga.draw.cursor.sline & 0x1f;
+    const uint8_t cur_end = vga.draw.cursor.eline & 0x1f;
 
     static uint8_t font[256][32];
     bool font_changed = false;
@@ -451,7 +455,7 @@ void OUTPUT_GAMELINK_PublishText()
         }
         flags |= TEXT_FONT;
     }
-    if ( !( shape & 0x2000 ) && ( shape >> 8 & 0x1f ) <= ( shape & 0x1f ) ) flags |= TEXT_CURSOR_VISIBLE;
+    if ( vga.draw.cursor.enabled && cur_start <= cur_end ) flags |= TEXT_CURSOR_VISIBLE;
     if ( vga.draw.blinking ) flags |= TEXT_BLINK;
     if ( vga.attr.mode_control & 0x04 ) flags |= TEXT_LINE_GRAPHICS;
 
@@ -463,8 +467,8 @@ void OUTPUT_GAMELINK_PublishText()
     t.cell_h = cell_h;
     t.cursor_x = cursor & 0xff;
     t.cursor_y = cursor >> 8;
-    t.cursor_start = ( shape >> 8 ) & 0x1f;
-    t.cursor_end = shape & 0x1f;
+    t.cursor_start = cur_start;
+    t.cursor_end = cur_end;
     t.codepage = dos.loaded_codepage ? dos.loaded_codepage : 437;
     for ( unsigned i = 0; i < 16; ++i ) {
         const RGBEntry& e = vga.dac.rgb[ vga.dac.combine[i] ];
