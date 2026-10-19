@@ -1,6 +1,8 @@
 #ifndef DOSBOX_AGENT_SERVER_H
 #define DOSBOX_AGENT_SERVER_H
 
+#include "config.h"
+
 #include "agent/agent_protocol.h"
 
 #include <cstdint>

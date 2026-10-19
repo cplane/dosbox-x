@@ -1,6 +1,8 @@
 #ifndef DOSBOX_AGENT_DEBUGGER_ADAPTER_H
 #define DOSBOX_AGENT_DEBUGGER_ADAPTER_H
 
+#include "config.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>

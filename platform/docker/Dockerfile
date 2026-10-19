@@ -19,9 +19,14 @@ COPY --from=bin /usr /usr
 COPY dosbox-x.conf /etc/dosbox/dosbox-x.conf
 COPY entrypoint.sh /usr/local/bin/dosbox-entrypoint
 COPY gl-snap.py /usr/local/bin/gl-snap
+# AGENT=1 (the dosbox-x-debug image): keep the RPC debugger agent config;
+# the entrypoint starts the agent when the file is there.
+ARG AGENT=0
+COPY agent.env /etc/dosbox/agent.env
 RUN chmod +x /usr/local/bin/dosbox-entrypoint /usr/local/bin/gl-snap \
     && mkdir -p /data \
-    && ! ldd /usr/bin/dosbox-x | grep "not found"
+    && ! ldd /usr/bin/dosbox-x | grep "not found" \
+    && if [ "$AGENT" != 1 ]; then rm /etc/dosbox/agent.env; fi
 
 ENV SDL_VIDEODRIVER=dummy \
     SDL_AUDIODRIVER=dummy \

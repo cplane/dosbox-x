@@ -490,6 +490,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, _ auth.Identit
 var ctlOps = map[string]string{
 	"type": "POST", "keys": "POST", "mouse": "POST", "click": "POST", "rescan": "POST",
 	"snapshot.png": "GET", "snapshot.jpg": "GET", "screen.txt": "GET", "screen.ansi": "GET", "screen.json": "GET",
+	"agent": "POST", // one JSON-RPC request for the debugger agent (debug image only)
 }
 
 // /api/boxes/{id}/ctl/<op>: the box control API (see stream/control.go).

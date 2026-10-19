@@ -12,4 +12,9 @@ if [ -n "${C_FREESIZE_MB:-}" ]; then
     sed "s|^mount c /data/c\$|mount c /data/c -freesize ${C_FREESIZE_MB}|" "$conf" > /tmp/dosbox-x.conf
     conf=/tmp/dosbox-x.conf
 fi
-exec /usr/bin/dosbox-x -conf "$conf" -nomenu -fastlaunch -nopromptfolder "$@"
+agent=""
+if [ -f /etc/dosbox/agent.env ]; then   # the dosbox-x-debug image
+    agent="-agent-config /etc/dosbox/agent.env"
+fi
+# shellcheck disable=SC2086
+exec /usr/bin/dosbox-x -conf "$conf" -nomenu -fastlaunch -nopromptfolder $agent "$@"
