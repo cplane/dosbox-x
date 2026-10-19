@@ -1,6 +1,8 @@
 #ifndef DOSBOX_AGENT_DEBUGGER_OUTPUT_PARSER_H
 #define DOSBOX_AGENT_DEBUGGER_OUTPUT_PARSER_H
 
+#include "config.h"
+
 #include <map>
 #include <string>
 

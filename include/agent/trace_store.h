@@ -1,6 +1,8 @@
 #ifndef DOSBOX_AGENT_TRACE_STORE_H
 #define DOSBOX_AGENT_TRACE_STORE_H
 
+#include "config.h"
+
 #include "agent/debugger_adapter.h"
 
 #include <cstddef>

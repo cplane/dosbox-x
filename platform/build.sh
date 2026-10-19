@@ -2,7 +2,7 @@
 # Build a dos-box platform image inside the DOKS cluster (no local Docker)
 # and push it to the DigitalOcean registry.
 #
-#   platform/build.sh [dosbox|stream|platform|web] [tag]
+#   platform/build.sh [dosbox|dosbox-debug|stream|platform|web] [tag]
 #
 #   dosbox  headless DOSBox-X -> dosbox-x, in up to three steps, each skipped
 #           when its result already exists in the registry:
@@ -10,6 +10,8 @@
 #             2. compile Job    dosbox-x-bin:<hash of emulator sources+recipe>
 #                (builder image + persistent ccache PVC, see compile.sh)
 #             3. runtime image  dosbox-x:<tag> = bin + platform/docker files
+#   dosbox-debug  the same with the internal debugger and RPC agent compiled
+#           in -> dosbox-x-debug (CONFIGURE_FLAGS, see compile.sh)
 #   stream  Game Link streaming sidecar (platform/stream) -> dosbox-stream
 #   platform  auth + gateway Go services (platform/go) -> dosbox-platform
 #   web     browser client + nginx (platform/web) -> dosbox-web
@@ -31,11 +33,11 @@ cd "$(dirname "$0")/.."
 GIT_DIR=$(git rev-parse --git-dir)   # relative paths: Windows git/kubectl choke on /tmp and C:
 
 case "$COMPONENT" in
-  dosbox) DIRTY_PATHS=(. ':!platform/stream' ':!platform/go' ':!platform/web' ':!platform/helm' ':!platform/k8s' ':!platform/README.md') ;;
+  dosbox|dosbox-debug) DIRTY_PATHS=(. ':!platform/stream' ':!platform/go' ':!platform/web' ':!platform/helm' ':!platform/k8s' ':!platform/README.md') ;;
   stream) DIRTY_PATHS=(platform/stream) ;;
   platform) DIRTY_PATHS=(platform/go) ;;
   web) DIRTY_PATHS=(platform/web) ;;
-  *) echo "usage: $0 [dosbox|stream|platform|web] [tag]" >&2; exit 2 ;;
+  *) echo "usage: $0 [dosbox|dosbox-debug|stream|platform|web] [tag]" >&2; exit 2 ;;
 esac
 TAG=${2:-$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- "${DIRTY_PATHS[@]}" || echo -dirty)}
 
@@ -202,7 +204,7 @@ if [ -z "${2:-}" ] && [ "${TAG%-dirty}" != "$TAG" ]; then
   TAG="$TAG-${tree:0:8}"
 fi
 
-if [ "$COMPONENT" != dosbox ]; then
+if [[ "$COMPONENT" != dosbox* ]]; then
   sub=$COMPONENT
   [ "$COMPONENT" = platform ] && sub=go
   IMAGE=${IMAGE:-$REGISTRY/dosbox-$COMPONENT}
@@ -212,6 +214,15 @@ if [ "$COMPONENT" != dosbox ]; then
   exit 0
 fi
 
+# dosbox-debug: the same emulator with the internal debugger (heavy) and the
+# RPC debugger agent compiled in -> dosbox-x-debug.
+CONFIGURE_FLAGS="--disable-debug"
+AGENT=0
+if [ "$COMPONENT" = dosbox-debug ]; then
+  CONFIGURE_FLAGS="--enable-debug=heavy --enable-dosbox_agent"
+  AGENT=1
+  IMAGE=${IMAGE:-$REGISTRY/dosbox-x-debug}
+fi
 IMAGE=${IMAGE:-$REGISTRY/dosbox-x}
 BUILDER=$REGISTRY/dosbox-x-builder
 BIN=$REGISTRY/dosbox-x-bin
@@ -235,7 +246,7 @@ UPLOAD_EXCLUDES=(":!platform/stream" ":!platform/go" ":!platform/web" ":!platfor
 # (git ls-tree takes no exclude pathspecs: filter its "<mode> <type> <id>\t<path>" lines.)
 src_re=$(printf '%s|' "${SRC_EXCLUDES[@]#:!}")
 src_re=$'\t'"(${src_re%|})(/|\$)"
-bin_tag=$( { git ls-tree -r "$tree" | grep -vE "$src_re"; git cat-file -p "$tree:platform/docker/compile.sh"; git cat-file -p "$tree:platform/docker/pch.h"; echo "$builder_tag pch=$PCH"; } \
+bin_tag=$( { git ls-tree -r "$tree" | grep -vE "$src_re"; git cat-file -p "$tree:platform/docker/compile.sh"; git cat-file -p "$tree:platform/docker/pch.h"; echo "$builder_tag pch=$PCH $CONFIGURE_FLAGS"; } \
           | sha256sum | cut -c1-12)
 if published dosbox-x-bin "$bin_tag"; then
   echo "compile: $BIN:$bin_tag (exists, sources unchanged)"
@@ -260,6 +271,7 @@ $CONTEXT_INIT
             - {name: JOBS, value: \"$JOBS\"}
             - {name: CACHE_KEY, value: \"$builder_tag\"}
             - {name: PCH, value: \"$PCH\"}
+            - {name: CONFIGURE_FLAGS, value: \"$CONFIGURE_FLAGS\"}
             - {name: OUT, value: /workspace/out}
           resources:
             requests: {cpu: \"2\", memory: 3Gi}
@@ -287,5 +299,5 @@ fi
 
 # 3. Runtime image: the binary on an Ubuntu base plus platform/docker files.
 archive "$tree:platform/docker"
-run_job dosbox-runtime "$(kaniko_spec Dockerfile "$IMAGE:$TAG" "$IMAGE:latest" -- "--build-arg=BIN_IMAGE=$BIN:$bin_tag")"
+run_job dosbox-runtime "$(kaniko_spec Dockerfile "$IMAGE:$TAG" "$IMAGE:latest" -- "--build-arg=BIN_IMAGE=$BIN:$bin_tag" "--build-arg=AGENT=$AGENT")"
 echo "pushed $IMAGE:$TAG (bin $bin_tag, builder $builder_tag)"

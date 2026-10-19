@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getBox, NeedsSignIn, screenText, snapshotURL, startBox, stopBox, typeText, wsURL, type Box } from '../api/client'
 import { scancodeFor, SHIFT } from '../player/keys'
 import { TextScreen } from '../player/textmode'
+import { DebugPanel, type RPC } from './DebugPanel'
 
 interface Props {
   boxId: string
@@ -49,6 +50,11 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [fps, setFps] = useState(0)
   const [latency, setLatency] = useState<Latency | null>(null)
   const [textMode, setTextMode] = useState(false)
+  const [showDebug, setShowDebug] = useState(false)
+  const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
+  // JSON-RPC calls to the debugger agent ride the player socket: id -> settler.
+  const rpcWaiters = useRef(new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>())
+  const rpcSeq = useRef(0)
   const [captured, setCaptured] = useState(false)
   const [focused, setFocused] = useState(false)
   const [generation, setGeneration] = useState(0) // bump to restart polling/connecting
@@ -154,6 +160,14 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
             const canvas = canvasRef.current
             if (canvas && (canvas.width !== m.w || canvas.height !== m.h)) { canvas.width = m.w; canvas.height = m.h }
             setMeta(m)
+          } else if (m.type === 'rpc') {
+            const resp = m.response ?? {}
+            const w = rpcWaiters.current.get(Number(resp.id))
+            if (w) {
+              rpcWaiters.current.delete(Number(resp.id))
+              if (resp.error) w.reject(new Error(resp.error.message ?? 'rpc error'))
+              else w.resolve(resp.result)
+            }
           } else if (m.type === 'pong') {
             setLatency({ rtt: performance.now() - m.t, encodeMs: m.encodeMs ?? 0, serverFps: m.fps ?? 0 })
           }
@@ -161,6 +175,8 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       }
       ws.onclose = () => {
         setConnected(false)
+        for (const w of rpcWaiters.current.values()) w.reject(new Error('disconnected'))
+        rpcWaiters.current.clear()
         queue.length = 0
         down.clear()
         synth.clear()
@@ -314,6 +330,18 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     await navigator.clipboard.writeText(await screenText(boxId))
     wrapRef.current?.focus()
   })
+  // One JSON-RPC call to the debugger agent over the player socket.
+  const rpc: RPC = useCallback((method, params = {}) => new Promise((resolve, reject) => {
+    const id = ++rpcSeq.current
+    rpcWaiters.current.set(id, { resolve, reject })
+    sendRef.current({ rpc: { jsonrpc: '2.0', id, method, params } })
+    window.setTimeout(() => { if (rpcWaiters.current.delete(id)) reject(new Error(`: no answer`)) }, 65000)
+  }), [])
+  useEffect(() => {
+    if (!showDebug || !connected) return
+    rpc('agent.capabilities').then(() => setAgentAvailable(true)).catch((e: Error) => setAgentAvailable(!/no debugger agent/.test(e.message)))
+  }, [showDebug, connected, rpc])
+
   const ctrlAltDel = () => {
     const send = sendRef.current
     for (const sc of [0x1d, 0x38, 0xd3]) send({ k: sc, d: true })
@@ -359,6 +387,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           </>
         )}
         <button onClick={onFiles}>Files</button>
+        {running && <button className={showDebug ? 'on' : ''} onClick={() => setShowDebug(!showDebug)}>Debug</button>}
         {running || box?.state === 'starting'
           ? <button className="danger" onClick={stop}>Stop</button>
           : box && box.state !== 'stopping' && <button className="primary" onClick={start}>Start</button>}
@@ -389,6 +418,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           <div className="hint">Click the screen to type · your arrow is the DOS mouse · Capture mouse for relative motion (Esc releases)</div>
         )}
       </div>
+      {showDebug && running && <DebugPanel rpc={rpc} available={agentAvailable} />}
     </div>
   )
 }

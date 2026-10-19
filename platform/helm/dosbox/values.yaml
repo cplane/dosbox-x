@@ -12,7 +12,9 @@ images:
   platform: {repository: dosbox-platform, tag: latest}
   web: {repository: dosbox-web, tag: latest}
   # the two containers of every box pod
-  dosbox: {repository: dosbox-x, tag: latest}
+  # dosbox-x-debug = the emulator with its debugger + RPC agent (the learning
+  # workbench); the plain, slightly faster dosbox-x image works here too.
+  dosbox: {repository: dosbox-x-debug, tag: latest}
   stream: {repository: dosbox-stream, tag: latest}
   pullPolicy: IfNotPresent
 

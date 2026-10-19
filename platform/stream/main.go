@@ -22,6 +22,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,7 @@ func main() {
 	in := NewInputWriter(gl)
 	go hub.Run()
 	go in.Run()
+	agent := NewAgent(env("AGENT_SOCK", "/dev/shm/dosbox-agent.sock"))
 	ctl := &Control{
 		gl:        gl,
 		in:        in,
@@ -73,7 +75,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(web))
 	ctl.Register(mux)
-	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) { serveWS(hub, in, w, r) })
+	agent.Register(mux)
+	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) { serveWS(hub, in, agent, w, r) })
 	mux.HandleFunc("GET /snapshot.jpg", func(w http.ResponseWriter, r *http.Request) {
 		jpg, _ := hub.Latest()
 		if jpg == nil {
@@ -143,6 +146,9 @@ type clientMsg struct {
 	Hello *struct {
 		Text int `json:"text"`
 	} `json:"hello"`
+	// RPC: a JSON-RPC request for the debugger agent (agent.go); answered
+	// with {"type":"rpc","response":…}.
+	RPC json.RawMessage `json:"rpc"`
 }
 
 // frameWindow is how many frames may be on their way to a client that acks
@@ -153,7 +159,7 @@ var frameWindow = 3
 // writeTimeout bounds each write to a client (a stuck link is dropped).
 var writeTimeout = 10 * time.Second
 
-func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) {
+func serveWS(hub *Hub, in *InputWriter, agent *Agent, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -271,6 +277,13 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 			case pongs <- p:
 			default:
 			}
+		case len(m.RPC) > 0:
+			go func(req json.RawMessage) {
+				select {
+				case pongs <- agent.wsRPC(context.Background(), req):
+				case <-done:
+				}
+			}(m.RPC)
 		case m.Hello != nil:
 			if m.Hello.Text != 0 {
 				hub.wantText(c)

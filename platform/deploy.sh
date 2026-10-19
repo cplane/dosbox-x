@@ -33,7 +33,7 @@ pinned() {
 }
 
 args=()
-for img in platform:dosbox-platform web:dosbox-web dosbox:dosbox-x stream:dosbox-stream; do
+for img in platform:dosbox-platform web:dosbox-web dosbox:dosbox-x-debug stream:dosbox-stream; do
   key=${img%%:*} repo=${img#*:}
   tag=$(pinned "$repo") || { echo "no pinned tag for $repo (build it first)" >&2; exit 1; }
   echo "$key: $repo:$tag"

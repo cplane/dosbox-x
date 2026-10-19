@@ -1,3 +1,5 @@
+// config.h first: C_DEBUG / C_DOSBOX_AGENT come from it in autotools builds
+#include "config.h"
 #if defined(C_DEBUG) && defined(C_DOSBOX_AGENT)
 #include "agent/debugger_output_parser.h"
 

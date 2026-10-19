@@ -38,6 +38,7 @@ kubectl -n dosbox port-forward pod/dosbox-test 8080:8080   # open http://localho
 | `GET /screen.txt` | the text screen as UTF-8 (codepage decoded), one line per row; headers `X-Text-Size`, `X-Codepage`, `X-Cursor`; 409 in graphics modes. Through the gateway: `/api/boxes/{id}/ctl/screen.txt` |
 | `GET /screen.ansi` | the same text with 24-bit colour escapes from the screen's own palette (blink: SGR 5), for a terminal: `curl …/screen.ansi` |
 | `GET /screen.json` | `cols, rows, cellW, cellH, codepage, cursor{x,y,visible}, blinkAttribute, palette[16] ("#rrggbb"), lines[{text, fg[], bg[], blink[]}]` — `text` has exactly `cols` characters, so `text[i]` goes with `fg[i]`/`bg[i]`; `blink` lists blinking columns. Control bytes 01-1F show as the DOS glyphs (☺ ► ↑ …) in all three |
+| `GET /agent`, `POST /agent` | the DOSBox-X **RPC debugger agent** (debug image only; see "Debugger"): GET → `{"available"}`; POST body = one JSON-RPC 2.0 request, the agent's response as is (409 without the agent). Over the player socket: `{"rpc": <request>}` → `{"type":"rpc","response":…}`. Through the gateway: `POST /api/boxes/{id}/ctl/agent` |
 | `GET /healthz` | 200 while frames flow (readiness probe) |
 
 - Scancodes are PC set-1, `0x80|code` for E0-extended keys (arrows, right Ctrl/Alt, keypad Enter...), matching `src/gamelink/scancodes_windows.h`. The page maps `KeyboardEvent.code`, so layout-independent physical keys are sent (`KeyboardEvent.key` when `code` is missing); text inserted without key events (paste, IME) is ignored — use `POST /type`.
@@ -162,6 +163,47 @@ still means a near-cold build. The Windows checkout is CRLF
 build still needs `vs/sdl/{include,src/cdrom}` and `vs/zlib`; only the big
 vendored libs under `vs/` are left out. Concurrent `build.sh stream` and
 `build.sh dosbox` runs are fine (per-component temp files).
+
+## Debugger (the learning workbench)
+
+The longer-term goal: DOS as a **headless execution core** in the pod and a
+rich browser workbench around it — editor, console, CPU registers, memory
+map, disassembly, instruction traces — so a learner sees everything an
+8086/286/386 machine does, which a real DOS box never shows. Console tools
+(MASM, TC, TP, batch) do the work; nothing needs the DOS screen.
+
+What exists (first milestone; the platform's boxes run this image now, see
+`images.dosbox` in the chart — the plain image is a little faster):
+
+- **`dosbox-x-debug` image** (`build.sh dosbox-debug`): the same emulator
+  configured `--enable-debug=heavy --enable-dosbox_agent`, i.e. DOSBox-X's
+  internal debugger (heavy: CPU trace, memory-change breakpoints) plus its
+  RPC debugger agent (`src/agent`, protocol in `docs/rpc-agent-usage.md`),
+  started by the entrypoint with `-agent-config /etc/dosbox/agent.env`.
+  Changes made for this: a **Unix socket transport** for the agent (upstream
+  only had Windows named pipes) and a **headless debugger** (without a
+  terminal the curses console is skipped: `initscr()` would exit the
+  process; every drawing routine already tolerates no window).
+- **Agent** = JSON-RPC 2.0 as JSON Lines on `/dev/shm/dosbox-agent.sock`:
+  `session.start` (runs `DEBUGBOX <program>` on C: and stops at its entry),
+  `state.get_registers`, `memory.read/write` (segmented / linear / physical),
+  `breakpoints.create/list/delete`, `execution.step/continue/pause/wait`,
+  `trace.start/read/stop`, `debugger.execute_command` (allow-listed),
+  `session.stop`. Numbers are hex strings; continue/pause/stop return an
+  operation to `execution.wait` on. One session per box at a time.
+- **Sidecar bridge** (`stream/agent.go`): a connection per request (the
+  agent serves each on its own thread, so a blocking wait doesn't stall
+  other calls), `POST /agent` for scripts and `{"rpc":…}` over the player
+  socket for the browser.
+- **Player "Debug" panel** (`web/src/screens/DebugPanel.tsx`): start a
+  program at its entry, step into/over, continue, pause, stop; registers
+  (changed ones highlighted), flags by name, the bytes at CS:IP.
+- Example: `platform/examples/asm/HELLO.ASM` (MASM 6.11: `ML /AT HELLO.ASM`).
+
+Next for it: a modern editor (Monaco, DOS theme) + a console with local line
+editing and a command runner (`POST /run`), then disassembly (client-side
+from `memory.read`), a 1 MB memory map, a trace timeline with INT 21h calls
+decoded, and per-box CPU model (`cputype` 8086/286/386).
 
 ## Why Game Link
 

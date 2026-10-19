@@ -32,6 +32,8 @@
 # endif
 #endif
 
+// config.h first: C_DOSBOX_AGENT comes from it in autotools builds
+#include "config.h"
 #if defined(C_DOSBOX_AGENT)
 #include "agent/agent_bridge.h"
 #include "agent/agent_server.h"

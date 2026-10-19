@@ -5417,6 +5417,15 @@ void DEBUG_Enable_Handler(bool pressed) {
     if (!isatty(0) || !isatty(1) || !isatty(2))
 	    allow = false;
 
+    // Headless: driven through the RPC agent (or asked for explicitly), the
+    // debugger runs without its console (see DEBUG_SetupConsole).
+    if (!allow && (getenv("DOSBOX_DEBUG_HEADLESS") != NULL
+#if defined(C_DOSBOX_AGENT)
+                   || !control->opt_agent_config.empty()
+#endif
+                   ))
+	    allow = true;
+
     if (!allow) {
 # if defined(MACOSX)
 	    LOG_MSG("Debugger in Mac OS X is not available unless you start DOSBox-X from a terminal or from the Terminal application");
@@ -6194,8 +6203,19 @@ void DEBUG_SetupConsole(void) {
 #ifdef WIN32
 		WIN32_Console();
 #else
+		// Headless (no terminal, e.g. a container driven through the RPC
+		// agent): no curses UI. initscr() would exit the process without a
+		// terminal; everything that draws checks for a NULL window.
+		if (!isatty(STDIN_FILENO) || getenv("DOSBOX_DEBUG_HEADLESS") != NULL) {
+			static bool said = false;
+			if (!said) {
+				said = true;
+				LOG_MSG("DEBUG: no terminal, running the debugger without its console");
+			}
+			return;
+		}
 		tcgetattr(0,&consolesettings);
-#endif	
+#endif
 		//	dbg.active_win=3;
 		/* Start the Debug Gui */
 		DBGUI_StartUp();

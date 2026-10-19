@@ -10,7 +10,9 @@
 #   $OUT     rootfs/usr + rootfs/runtime-packages.txt + Dockerfile for the
 #            binary-only image (dosbox-x-bin) Kaniko pushes next
 #
-# Env: JOBS (4), CACHE_KEY (builder image tag; part of every cache key).
+# Env: JOBS (4), CACHE_KEY (builder image tag; part of every cache key),
+#      CONFIGURE_FLAGS (extra ./configure flags; default --disable-debug.
+#      The debug variant passes --enable-debug=heavy --enable-dosbox_agent).
 set -euo pipefail
 
 SRC=/src
@@ -18,6 +20,7 @@ CACHE=${CACHE:-/cache}
 OUT=${OUT:-/workspace/out}
 JOBS=${JOBS:-4}
 CACHE_KEY=${CACHE_KEY:-none}
+CONFIGURE_FLAGS=${CONFIGURE_FLAGS:---disable-debug}
 
 export CCACHE_DIR=$CACHE/ccache
 export CCACHE_MAXSIZE=5G
@@ -53,8 +56,9 @@ else
 fi
 
 phase configure
-cfg_cache=$CACHE/configure/$(echo "$CACHE_KEY" | cat - configure | sha256sum | cut -c1-16).cache
-./configure --prefix=/usr --enable-sdl2 --disable-debug --cache-file="$cfg_cache" \
+cfg_cache=$CACHE/configure/$(echo "$CACHE_KEY $CONFIGURE_FLAGS" | cat - configure | sha256sum | cut -c1-16).cache
+# shellcheck disable=SC2086
+./configure --prefix=/usr --enable-sdl2 $CONFIGURE_FLAGS --cache-file="$cfg_cache" \
     CC="ccache gcc" CXX="ccache g++" >/tmp/configure.log \
     || { tail -50 /tmp/configure.log; exit 1; }
 

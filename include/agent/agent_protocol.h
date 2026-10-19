@@ -1,6 +1,8 @@
 #ifndef DOSBOX_AGENT_PROTOCOL_H
 #define DOSBOX_AGENT_PROTOCOL_H
 
+#include "config.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <map>

@@ -100,3 +100,14 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .catalog-table th { text-align: left; color: var(--muted); font-weight: normal; font-size: 12px; border-bottom: 1px solid var(--line); padding: 6px; }
 .catalog-table td { border-bottom: 1px solid var(--line); padding: 6px; vertical-align: top; }
 .lag { color: var(--warn); }
+
+/* debugger panel (DebugPanel.tsx) */
+.debug { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-top: 10px; display: grid; gap: 8px; }
+.debug .bar { padding: 0; }
+.debug input { flex: 1; min-width: 180px; max-width: 320px; }
+.debug-grid { display: grid; gap: 8px; }
+.regs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 4px 12px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.regs b { color: var(--muted); font-weight: normal; margin-right: 4px; }
+.regs .changed { color: var(--warn); }
+.mono { font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+.debug-log { margin: 0; max-height: 120px; overflow: auto; color: var(--muted); font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; }

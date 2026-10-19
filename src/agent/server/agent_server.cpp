@@ -1,3 +1,5 @@
+// config.h first: C_DEBUG / C_DOSBOX_AGENT come from it in autotools builds
+#include "config.h"
 #if defined(C_DEBUG) && defined(C_DOSBOX_AGENT)
 #include "agent/agent_server.h"
 
@@ -2906,12 +2908,42 @@ void AgentServer::StartTargetOnEmulationThread(const std::shared_ptr<Impl>& impl
 
     std::string launch_error;
     if (adapter.StartTargetAtEntry(target_command, target_arguments, workdir, &launch_error)) {
+        // DEBUGBOX runs the target inside a nested emulation loop (the shell
+        // executes it through INT 21h/4Bh), so this returns only once the
+        // target has terminated -- the entry stop, every RPC and the whole
+        // run happened in the meantime.
         std::lock_guard<std::mutex> command_lock(impl->mutex);
-        if (impl->session && impl->session->id == session_id &&
-            impl->session->state == Impl::SessionState::Starting) {
-            impl->session->startup_phase = "launch_returned";
-            impl->session->startup_entry_breakpoint_created =
-                    adapter.EntryBreakpointSequence() > impl->session->startup_entry_breakpoint_baseline;
+        if (!impl->session || impl->session->id != session_id)
+            return;
+        Impl::Session& active = *impl->session;
+        if (active.state == Impl::SessionState::Starting) {
+            active.startup_phase = "launch_returned";
+            active.startup_entry_breakpoint_created =
+                    adapter.EntryBreakpointSequence() > active.startup_entry_breakpoint_baseline;
+            // It never stopped at its entry: not a program, not found, or
+            // ran without the debugger. Fail now rather than at the timeout.
+            active.state = Impl::SessionState::Failed;
+            active.failure_message = "Target finished without stopping at its entry (not found, or not a program?)";
+            impl->state_changed.notify_all();
+        } else if (active.state == Impl::SessionState::Running ||
+                   active.state == Impl::SessionState::Stopped) {
+            // Normal exit (INT 21h/4Ch, INT 20h, RET to the PSP).
+            active.state = Impl::SessionState::Exited;
+            active.trace.Stop();
+            active.last_stop_kind = "program_exit";
+            active.last_stop_breakpoint_id.clear();
+            active.has_last_stop_breakpoint_address = false;
+            ++active.state_revision;
+            for (std::map<std::string, Impl::Operation>::iterator operation = active.operations.begin();
+                 operation != active.operations.end(); ++operation) {
+                if (!operation->second.complete) {
+                    operation->second.terminal_state = Impl::SessionState::Exited;
+                    operation->second.stop_kind = "program_exit";
+                    operation->second.complete = true;
+                }
+            }
+            active.pending_stop_kind.clear();
+            impl->state_changed.notify_all();
         }
         return;
     }
