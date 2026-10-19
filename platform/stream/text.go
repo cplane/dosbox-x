@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -217,26 +218,123 @@ var codepages = map[uint16]*charmap.Charmap{
 	866: charmap.CodePage866,
 }
 
-// Text renders the screen as UTF-8 lines (trailing blanks trimmed), the
-// character bytes read through the screen's codepage (437 if unknown).
-func (t *TextScreen) Text() string {
+// The glyphs DOS fonts draw for bytes 0x00-0x1F and 0x7F. A plain codepage
+// decode yields control characters there, which a terminal would act on.
+var dosControlGlyphs = []rune(" ☺☻♥♦♣♠•◘○◙♂♀♪♫☼►◄↕‼¶§▬↨↑↓→←∟↔▲▼")
+
+// runes decodes the screen's character bytes to Unicode, as a DOS font
+// shows them: the codepage, with the DOS glyphs for control bytes.
+func (t *TextScreen) runes() []rune {
 	cm := codepages[t.Codepage]
 	if cm == nil {
 		cm = charmap.CodePage437
 	}
+	out := make([]rune, t.Cols*t.Rows)
+	for i := range out {
+		switch ch := t.Cells[i*2]; {
+		case ch < 0x20:
+			out[i] = dosControlGlyphs[ch]
+		case ch == 0x7f:
+			out[i] = '⌂'
+		default:
+			out[i] = cm.DecodeByte(ch)
+		}
+	}
+	return out
+}
+
+// colors splits an attribute byte: background 0-7 plus blink when the
+// screen blinks (attribute bit 7), else background 0-15.
+func (t *TextScreen) colors(attr byte) (fg, bg int, blink bool) {
+	fg, bg = int(attr&0x0f), int(attr>>4)
+	if t.Flags&txtBlink != 0 {
+		return fg, bg & 7, attr&0x80 != 0
+	}
+	return fg, bg, false
+}
+
+// Text renders the screen as UTF-8 lines, trailing blanks trimmed.
+func (t *TextScreen) Text() string {
+	rs := t.runes()
 	var sb strings.Builder
 	for r := 0; r < t.Rows; r++ {
-		line := make([]rune, t.Cols)
-		for c := 0; c < t.Cols; c++ {
-			ch := t.Cells[(r*t.Cols+c)*2]
-			if ch == 0 {
-				line[c] = ' '
-			} else {
-				line[c] = cm.DecodeByte(ch)
-			}
-		}
-		sb.WriteString(strings.TrimRight(string(line), " "))
+		sb.WriteString(strings.TrimRight(string(rs[r*t.Cols:(r+1)*t.Cols]), " "))
 		sb.WriteByte('\n')
 	}
 	return sb.String()
+}
+
+// ANSI renders the screen for a terminal: 24-bit colour escapes from the
+// screen's own palette (so redefined colours show too), SGR 5 for blinking
+// cells, a reset at the end of every line.
+func (t *TextScreen) ANSI() string {
+	rs := t.runes()
+	var sb strings.Builder
+	for r := 0; r < t.Rows; r++ {
+		last := -1
+		for c := 0; c < t.Cols; c++ {
+			i := r*t.Cols + c
+			if attr := int(t.Cells[i*2+1]); attr != last {
+				fg, bg, blink := t.colors(byte(attr))
+				p := t.Palette[:]
+				fmt.Fprintf(&sb, "\x1b[0;38;2;%d;%d;%d;48;2;%d;%d;%dm", p[fg*3], p[fg*3+1], p[fg*3+2], p[bg*3], p[bg*3+1], p[bg*3+2])
+				if blink {
+					sb.WriteString("\x1b[5m")
+				}
+				last = attr
+			}
+			sb.WriteRune(rs[i])
+		}
+		sb.WriteString("\x1b[0m\n")
+	}
+	return sb.String()
+}
+
+// ScreenJSON is /screen.json: everything about the text screen, per cell.
+// Row text has exactly Cols characters, so text[i] goes with fg[i], bg[i].
+type ScreenJSON struct {
+	Cols     int    `json:"cols"`
+	Rows     int    `json:"rows"`
+	CellW    int    `json:"cellW"`
+	CellH    int    `json:"cellH"`
+	Codepage uint16 `json:"codepage"`
+	Cursor   struct {
+		X       int  `json:"x"`
+		Y       int  `json:"y"`
+		Visible bool `json:"visible"`
+	} `json:"cursor"`
+	// BlinkAttribute: attribute bit 7 blinks (background 0-7); else it
+	// selects bright backgrounds (8-15).
+	BlinkAttribute bool        `json:"blinkAttribute"`
+	Palette        []string    `json:"palette"` // "#rrggbb" for colours 0-15
+	Lines          []ScreenRow `json:"lines"`
+}
+
+type ScreenRow struct {
+	Text  string `json:"text"`
+	FG    []int  `json:"fg"`
+	BG    []int  `json:"bg"`
+	Blink []int  `json:"blink,omitempty"` // columns that blink
+}
+
+func (t *TextScreen) JSON() ScreenJSON {
+	s := ScreenJSON{Cols: t.Cols, Rows: t.Rows, CellW: t.CellW, CellH: t.CellH, Codepage: t.Codepage,
+		BlinkAttribute: t.Flags&txtBlink != 0}
+	s.Cursor.X, s.Cursor.Y, s.Cursor.Visible = t.CursorX, t.CursorY, t.Flags&txtCursorVisible != 0
+	for i := 0; i < 16; i++ {
+		s.Palette = append(s.Palette, fmt.Sprintf("#%02x%02x%02x", t.Palette[i*3], t.Palette[i*3+1], t.Palette[i*3+2]))
+	}
+	rs := t.runes()
+	for r := 0; r < t.Rows; r++ {
+		row := ScreenRow{Text: string(rs[r*t.Cols : (r+1)*t.Cols]), FG: make([]int, t.Cols), BG: make([]int, t.Cols)}
+		for c := 0; c < t.Cols; c++ {
+			fg, bg, blink := t.colors(t.Cells[(r*t.Cols+c)*2+1])
+			row.FG[c], row.BG[c] = fg, bg
+			if blink {
+				row.Blink = append(row.Blink, c)
+			}
+		}
+		s.Lines = append(s.Lines, row)
+	}
+	return s
 }

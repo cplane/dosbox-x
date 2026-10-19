@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -130,5 +131,50 @@ func TestTextUpdatesAndModeSwitch(t *testing.T) {
 		t.Fatalf("after leaving text mode: %q", m)
 	} else if _, _, s := parseUpdate(t, m); len(s) != 1 {
 		t.Fatalf("want every strip, got %v", s)
+	}
+}
+
+func TestScreenRenderings(t *testing.T) {
+	if n := len(dosControlGlyphs); n != 32 {
+		t.Fatalf("control glyph table has %d entries", n)
+	}
+	ts := &TextScreen{Flags: txtActive | txtCursorVisible | txtBlink, Cols: 3, Rows: 1, CellW: 9, CellH: 16,
+		Codepage: 437, CursorX: 1, Cells: []byte{0x01, 0x1E, 'h', 0x9E, 0xC9, 0x07}}
+	for i, rgb := range [][3]byte{1: {0, 0, 0xaa}, 7: {0xaa, 0xaa, 0xaa}, 14: {0xff, 0xff, 0x55}} {
+		copy(ts.Palette[i*3:], rgb[:])
+	}
+
+	if got := ts.Text(); got != "☺h╔\n" {
+		t.Fatalf("text %q", got)
+	}
+
+	ansi := ts.ANSI()
+	for _, want := range []string{
+		"\x1b[0;38;2;255;255;85;48;2;0;0;170m☺", // yellow on blue (attr 1E)
+		"\x1b[5mh",                              // attr 9E: blinking, same colours
+		"\x1b[0;38;2;170;170;170;48;2;0;0;0m╔",  // grey on black (attr 07)
+		"\x1b[0m\n",
+	} {
+		if !strings.Contains(ansi, want) {
+			t.Fatalf("ansi lacks %q:\n%q", want, ansi)
+		}
+	}
+
+	j := ts.JSON()
+	row := j.Lines[0]
+	if row.Text != "☺h╔" || len([]rune(row.Text)) != 3 || len(row.FG) != 3 {
+		t.Fatalf("row %+v", row)
+	}
+	if row.FG[0] != 14 || row.BG[0] != 1 || row.BG[1] != 1 || len(row.Blink) != 1 || row.Blink[0] != 1 {
+		t.Fatalf("colours %+v", row)
+	}
+	if j.Palette[14] != "#ffff55" || !j.Cursor.Visible || j.Cursor.X != 1 || !j.BlinkAttribute {
+		t.Fatalf("screen %+v", j)
+	}
+
+	// Without blinking, bit 7 selects bright backgrounds.
+	ts.Flags &^= txtBlink
+	if r := ts.JSON().Lines[0]; r.BG[1] != 9 || len(r.Blink) != 0 {
+		t.Fatalf("bright background: %+v", r)
 	}
 }
