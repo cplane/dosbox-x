@@ -125,6 +125,23 @@ export async function uploadFile(id: string, path: string, file: Blob): Promise<
   await json(await request(filePath(id, path), { method: 'PUT', body: file }))
 }
 
+/**
+ * A DOS text file as a string: each byte becomes the character with that
+ * code (latin1), so saving it back with writeTextFile keeps every byte,
+ * including CP437 box-drawing characters, exactly as it was.
+ */
+export async function readTextFile(id: string, path: string): Promise<string> {
+  const response = await request(filePath(id, path))
+  if (!response.ok) throw new Error(`${path}: ${response.status}`)
+  return new TextDecoder('latin1').decode(await response.arrayBuffer())
+}
+
+/** Writes a string read with readTextFile (characters above 0xFF become '?'). */
+export async function writeTextFile(id: string, path: string, text: string): Promise<void> {
+  const bytes = Uint8Array.from(text, (c) => { const n = c.charCodeAt(0); return n > 0xff ? 0x3f : n })
+  await uploadFile(id, path, new Blob([bytes]))
+}
+
 export async function deleteFile(id: string, path: string, recursive: boolean): Promise<void> {
   await json(await request(filePath(id, path) + (recursive ? '?recursive=1' : ''), { method: 'DELETE' }))
 }
