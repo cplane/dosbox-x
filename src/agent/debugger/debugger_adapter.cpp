@@ -17,6 +17,7 @@ extern bool ParseCommand(char* str);
 extern char appname[];
 extern char appargs[];
 extern bool dos_program_running;
+extern Bitu DasmI386(char* buffer, PhysPt pc, uint32_t cur_ip, bool bit32); // debug_disasm.cpp
 #endif
 
 #include <cctype>
@@ -421,6 +422,57 @@ bool DebuggerAdapter::ReadMemory(const MemoryAddress& address,
 #else
     (void)address;
     (void)length;
+    (void)access_error;
+    return false;
+#endif
+}
+
+bool DebuggerAdapter::Disassemble(const MemoryAddress& address,
+                                  const std::size_t count,
+                                  std::vector<DisassembledLine>* lines,
+                                  MemoryAccessError* access_error,
+                                  std::string* error) const
+{
+    if (!RequireAvailable(error) || !RequireEmulationThread(error) || lines == NULL || count == 0)
+        return false;
+
+#if C_DEBUG
+    if (access_error != NULL)
+        *access_error = MemoryAccessError();
+    lines->clear();
+    const bool big = cpu.code.big;
+    std::uint32_t offset = address.offset;
+    for (std::size_t n = 0; n < count; ++n) {
+        MemoryAddress at = address;
+        at.offset = offset;
+        std::uint32_t linear = 0;
+        std::uint8_t probe = 0;
+        if (!ResolveMemoryByte(at, 0, &linear, access_error) || !ReadResolvedByte(at, linear, &probe, access_error))
+            return !lines->empty(); // past the end of what is mapped: what we have
+        char text[256];
+        text[0] = 0;
+        const Bitu size = DasmI386(text, static_cast<PhysPt>(linear), offset, big);
+        if (size == 0 || size > 16)
+            break;
+        DisassembledLine line;
+        line.offset = offset;
+        line.text = text;
+        for (Bitu i = 0; i < size; ++i) {
+            std::uint32_t resolved = 0;
+            std::uint8_t value = 0;
+            if (!ResolveMemoryByte(at, i, &resolved, NULL) || !ReadResolvedByte(at, resolved, &value, NULL))
+                break;
+            line.bytes.push_back(value);
+        }
+        lines->push_back(line);
+        offset += static_cast<std::uint32_t>(size);
+        if (address.space == MemorySpace::Segmented && !big && offset > 0xFFFF)
+            break; // wrapped the 64 KiB segment
+    }
+    return true;
+#else
+    (void)address;
+    (void)count;
     (void)access_error;
     return false;
 #endif

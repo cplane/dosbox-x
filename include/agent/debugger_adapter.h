@@ -75,6 +75,13 @@ struct NativeBreakpoint {
     bool once = false;
 };
 
+// One instruction as the debugger's disassembler prints it.
+struct DisassembledLine {
+    std::uint32_t offset = 0;        // within the requested address space/segment
+    std::vector<std::uint8_t> bytes; // the instruction's encoding
+    std::string text;                // e.g. "mov ax,1234"
+};
+
 class DebuggerAdapter {
 public:
     bool IsAvailable() const;
@@ -95,6 +102,12 @@ public:
                     std::vector<std::uint8_t>* data,
                     MemoryAccessError* access_error,
                     std::string* error) const;
+    // Up to count instructions from address, in the CPU's current code size.
+    bool Disassemble(const MemoryAddress& address,
+                     std::size_t count,
+                     std::vector<DisassembledLine>* lines,
+                     MemoryAccessError* access_error,
+                     std::string* error) const;
     bool WriteMemory(const MemoryAddress& address,
                      const std::vector<std::uint8_t>& data,
                      std::vector<std::uint8_t>* after,

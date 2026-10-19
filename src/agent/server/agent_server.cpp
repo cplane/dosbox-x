@@ -452,6 +452,7 @@ static bool IsKnownMethod(const std::string& method)
            method == "state.get_registers" ||
            method == "memory.read" ||
            method == "memory.write" ||
+           method == "code.disassemble" ||
            method == "breakpoints.create" ||
            method == "breakpoints.list" ||
            method == "breakpoints.delete" ||
@@ -517,6 +518,7 @@ public:
         MemoryAccessError access_error;
         RegisterSnapshot registers;
         std::vector<std::uint8_t> data;
+        std::vector<DisassembledLine> lines;
         NativeBreakpoint breakpoint;
         std::string raw_output;
         std::vector<TraceSample> trace_samples;
@@ -964,6 +966,18 @@ static JsonValue StopReason(const AgentServer::Impl::Session& session)
     return stop;
 }
 
+static std::string HexBytes(const std::vector<std::uint8_t>& bytes)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        out.push_back(digits[bytes[i] >> 4]);
+        out.push_back(digits[bytes[i] & 15]);
+    }
+    return out;
+}
+
 static std::string Hex32(const std::uint32_t value)
 {
     std::ostringstream encoded;
@@ -1193,8 +1207,10 @@ static std::string Capabilities(const AgentConfig& config)
     Add(&result, "protocol_version", String("1.0"));
 #if C_DEBUG
     Add(&result, "debugger", JsonValue::Bool(true));
+    Add(&result, "disassembly", JsonValue::Bool(true)); // code.disassemble
 #else
     Add(&result, "debugger", JsonValue::Bool(false));
+    Add(&result, "disassembly", JsonValue::Bool(false));
 #endif
     JsonValue trace = Object();
 #ifdef C_HEAVY_DEBUG
@@ -1799,6 +1815,79 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
                                      "COMMAND_REJECTED");
                 } else {
                     response = AGENT_MakeJsonRpcResult(parsed.id, RegistersResult(operation->registers, *session));
+                }
+            }
+        }
+    } else if (parsed.method == "code.disassemble") {
+        // {"address": {...}, "count": 32} -> {"lines": [{"offset", "bytes", "text", "size"}]}
+        const JsonValue* count_value = parsed.params.Find("count");
+        std::uint32_t count = 32;
+        MemoryAddress address;
+        std::string validation_error;
+        if (!ParseMemoryAddress(parsed.params, "code.disassemble", &address, &validation_error) ||
+            (count_value != NULL && (!GetUnsignedInteger(*count_value, &count) || count == 0))) {
+            response = InvalidParams(parsed.id, validation_error.empty() ?
+                                     "code.disassemble requires address and an optional positive count" : validation_error);
+        } else if (count > 512) {
+            response = Error(parsed.id, kErrorRequestTooLarge,
+                             "code.disassemble count exceeds 512", "REQUEST_TOO_LARGE");
+        } else if (session->state == Impl::SessionState::Running) {
+            response = SessionError(parsed.id, kErrorTargetRunning,
+                                    "Target must be stopped before disassembling", "TARGET_RUNNING", session);
+        } else if (session->state == Impl::SessionState::Exited) {
+            response = SessionError(parsed.id, kErrorCapabilityUnavailable, "Target has exited", "TARGET_EXITED", session);
+        } else {
+            const std::shared_ptr<Impl::AdapterOperation> operation(new Impl::AdapterOperation());
+            const std::string session_id = session->id;
+            if (SubmitEmulationCommandLocked(impl, [impl, operation, address, count](const std::uint64_t) {
+                    AgentRuntime& adapter = *impl->runtime;
+                    std::string adapter_error;
+                    std::vector<DisassembledLine> lines;
+                    MemoryAccessError access_error;
+                    const bool success = adapter.Disassemble(address, count, &lines, &access_error, &adapter_error);
+                    {
+                        std::lock_guard<std::mutex> operation_lock(operation->mutex);
+                        operation->success = success;
+                        operation->error = adapter_error;
+                        operation->access_error = access_error;
+                        operation->lines.swap(lines);
+                        operation->done = true;
+                    }
+                    operation->completed.notify_all();
+                }) == 0) {
+                response = Error(parsed.id, kErrorCapabilityUnavailable,
+                                 "Emulation-thread bridge is unavailable", "COMMAND_REJECTED");
+            } else {
+                std::unique_lock<std::mutex> operation_lock(operation->mutex);
+                lock.unlock();
+                const bool completed = operation->completed.wait_for(operation_lock,
+                        std::chrono::milliseconds(impl->config.request_timeout_ms),
+                        [operation]() { return operation->done; });
+                lock.lock();
+                if (!RebindSessionAfterWait(impl, session_id, &session, &response, parsed.id))
+                    return response;
+                if (!completed) {
+                    response = Error(parsed.id, kErrorOperationTimeout,
+                                     "Timed out waiting for code.disassemble on the emulation thread", "OPERATION_TIMEOUT");
+                } else if (!operation->success) {
+                    response = AddressError(parsed.id,
+                                            operation->error.empty() ? "Unable to access the requested memory range" : operation->error,
+                                            address, operation->access_error);
+                } else {
+                    JsonValue result = SessionResult(*session);
+                    Add(&result, "address", EncodeMemoryAddress(address));
+                    JsonValue lines = JsonValue::Array();
+                    for (std::size_t i = 0; i < operation->lines.size(); ++i) {
+                        const DisassembledLine& line = operation->lines[i];
+                        JsonValue entry = JsonValue::Object();
+                        Add(&entry, "offset", String(Hex32(line.offset)));
+                        Add(&entry, "size", Number(line.bytes.size()));
+                        Add(&entry, "bytes", String(HexBytes(line.bytes)));
+                        Add(&entry, "text", String(line.text));
+                        lines.array.push_back(entry);
+                    }
+                    Add(&result, "lines", lines);
+                    response = AGENT_MakeJsonRpcResult(parsed.id, result);
                 }
             }
         }
@@ -2464,7 +2553,7 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
                 }
             }
         }
-    } else if (parsed.method == "state.get_registers" || parsed.method == "memory.read" ||
+    } else if (parsed.method == "state.get_registers" || parsed.method == "memory.read" || parsed.method == "code.disassemble" ||
                parsed.method == "breakpoints.create" || parsed.method == "breakpoints.list" || parsed.method == "breakpoints.delete" ||
                parsed.method == "execution.step") {
         if (session->state == Impl::SessionState::Running) {
