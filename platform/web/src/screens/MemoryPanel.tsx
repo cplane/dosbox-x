@@ -147,22 +147,33 @@ export function MemoryPanel({ rpc, sessionId, stopped, regs }: Props) {
   const cs = regs ? parseInt(regs.segments.cs, 16) : -1
   const mine = (b: Block) => cs >= b.seg + 1 && cs < b.seg + 1 + (b.bytes >> 4)
   const cls = (b: Block) => (mine(b) ? 'me' : b.note === '(free)' ? 'free' : b.note === '(DOS)' ? 'dos' : 'prog')
-  // The map: conventional memory from the MCB chain, then fixed regions.
+  // The map: walk the first megabyte by address. MCB blocks (conventional
+  // and upper, which DOSBox-X's chain continues past A000) are drawn where
+  // they are; the gaps are what the address says: DOS below the first
+  // block, free conventional memory, video memory, ROM.
   const MB = 0x100000
   const segs: { from: number; size: number; cls: string; title: string }[] = []
+  const gap = (from: number, to: number) => {
+    let at = from
+    for (const [end, c, title] of [[0xa0000, 'free', 'free'], [0xc0000, 'video', 'A000-BFFF: video memory'], [MB, 'rom', 'C000-FFFF: ROM, adapters']] as [number, string, string][]) {
+      if (at < end && to > at) {
+        const stop = Math.min(to, end)
+        segs.push({ from: at, size: stop - at, cls: at === 0 ? 'dos' : c, title: at === 0 ? 'DOS: interrupt vectors, BIOS data, kernel' : blocks.length || c !== 'free' ? title : 'conventional memory (MCB chain not read)' })
+        at = stop
+      }
+    }
+  }
   let last = 0
-  for (const b of blocks.filter((b) => b.seg < 0xa000).sort((a, b) => a.seg - b.seg)) {
+  for (const b of [...blocks].sort((a, b) => a.seg - b.seg)) {
     const from = (b.seg + 1) << 4
-    if (from > last) segs.push({ from: last, size: from - last, cls: 'dos', title: last === 0 ? 'DOS: interrupt vectors, BIOS data, kernel' : 'DOS' })
-    segs.push({ from, size: b.bytes, cls: cls(b), title: `${h4(b.seg + 1)}: ${b.bytes} bytes ${b.note || b.name || `PSP ${h4(b.psp)}`}` })
-    last = from + b.bytes
+    if (from >= MB || from < last) continue
+    if (from > last) gap(last, from)
+    const size = Math.min(b.bytes, MB - from)
+    const upper = from >= 0xa0000
+    segs.push({ from, size, cls: cls(b) === 'free' && upper ? 'umb' : cls(b), title: `${upper ? 'UMB ' : ''}${h4(b.seg + 1)}: ${b.bytes} bytes ${b.note || b.name || `PSP ${h4(b.psp)}`}` })
+    last = from + size
   }
-  if (last < 0xa0000) segs.push({ from: last, size: 0xa0000 - last, cls: blocks.length ? 'free' : 'dos', title: blocks.length ? 'free' : 'conventional memory (MCB chain not read)' })
-  segs.push({ from: 0xa0000, size: 0x20000, cls: 'video', title: 'A000-BFFF: video memory' })
-  for (const b of blocks.filter((b) => b.seg >= 0xc000).sort((a, b) => a.seg - b.seg)) {
-    segs.push({ from: (b.seg + 1) << 4, size: b.bytes, cls: cls(b) === 'free' ? 'umb' : cls(b), title: `UMB ${h4(b.seg + 1)}: ${b.bytes} bytes ${b.note || b.name}` })
-  }
-  segs.push({ from: 0xf0000, size: 0x10000, cls: 'rom', title: 'F000-FFFF: BIOS ROM' })
+  if (last < MB) gap(last, MB)
 
   return (
     <div className="mem">
