@@ -174,7 +174,12 @@ map, disassembly, instruction traces — so a learner sees everything an
 (MASM, TC, TP, batch) do the work; nothing needs the DOS screen.
 
 What exists (first milestone; the platform's boxes run this image now, see
-`images.dosbox` in the chart — the plain image is a little faster):
+`images.dosbox` in the chart). Measured 2026-10-19 with a 13.1M-iteration `loop`
+(`BENCH.COM`, through `/run`): at `cycles=auto` both images take 4.85 s (the
+rate is fixed, the host keeps up); at `cycles=max` the plain image took
+0.86-1.45 s and the debug image 0.93-1.94 s on a shared node, i.e. the
+debugger costs roughly 10-30 % at full speed and nothing at the fixed rates
+the machine presets use:
 
 - **`dosbox-x-debug` image** (`build.sh dosbox-debug`): the same emulator
   configured `--enable-debug=heavy --enable-dosbox_agent`, i.e. DOSBox-X's
