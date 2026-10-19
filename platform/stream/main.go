@@ -24,11 +24,14 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -54,6 +57,7 @@ func envInt(key string, def int) int {
 func main() {
 	gl := NewGamelink(env("GAMELINK_SHM", "/dev/shm/DWD_GAMELINK_MMAP_R4"))
 	hub := NewHub(gl, envInt("JPEG_QUALITY", 75), envInt("MAX_FPS", 60))
+	hub.text = NewTextMirror(env("GAMELINK_TEXT", "/dev/shm/DWD_GAMELINK_TEXT_R1"))
 	frameWindow = envInt("FRAME_WINDOW", 3)
 	in := NewInputWriter(gl)
 	go hub.Run()
@@ -80,6 +84,23 @@ func main() {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Write(jpg)
 	})
+	// The text screen as UTF-8 (the DOS codepage decoded), one line per row;
+	// 409 in graphics modes. X-Cursor: "col,row" (0-based) when visible.
+	mux.HandleFunc("GET /screen.txt", func(w http.ResponseWriter, r *http.Request) {
+		t, err := hub.Screen()
+		if err != nil || t == nil {
+			http.Error(w, "the screen is not in a text mode", http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Text-Size", fmt.Sprintf("%dx%d", t.Cols, t.Rows))
+		w.Header().Set("X-Codepage", strconv.Itoa(int(t.Codepage)))
+		if t.Flags&txtCursorVisible != 0 {
+			w.Header().Set("X-Cursor", fmt.Sprintf("%d,%d", t.CursorX, t.CursorY))
+		}
+		io.WriteString(w, t.Text())
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if _, at := hub.Latest(); time.Since(at) > 10*time.Second {
 			http.Error(w, "no recent frames", http.StatusServiceUnavailable)
@@ -102,7 +123,10 @@ type clientMsg struct {
 	A    *[2]float32 `json:"a"`
 	B    *int        `json:"b"`
 	Ack  *int        `json:"ack"`
-	Ping *float64    `json:"ping"`
+	Ping  *float64    `json:"ping"`
+	Hello *struct {
+		Text int `json:"text"`
+	} `json:"hello"`
 }
 
 // frameWindow is how many frames may be on their way to a client that acks
@@ -135,12 +159,20 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 	}()
 
 	acks := make(chan int, 64)
+	// The first update waits briefly for the client's hello: one that draws
+	// text then gets text right away, not a full screen of strips first.
+	hello := make(chan struct{})
+	var helloOnce sync.Once
 	pongs := make(chan []byte, 8)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		ping := time.NewTicker(30 * time.Second)
 		defer ping.Stop()
+		select {
+		case <-hello:
+		case <-time.After(250 * time.Millisecond):
+		}
 		dirty := false // the hub has strips this client still needs
 		flow, inFlight := false, 0
 		for {
@@ -215,6 +247,11 @@ func serveWS(hub *Hub, in *InputWriter, w http.ResponseWriter, r *http.Request) 
 			case pongs <- p:
 			default:
 			}
+		case m.Hello != nil:
+			if m.Hello.Text != 0 {
+				hub.wantText(c)
+			}
+			helloOnce.Do(func() { close(hello) })
 		}
 	}
 	conn.Close()

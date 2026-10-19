@@ -87,6 +87,13 @@ export async function typeText(id: string, text: string): Promise<void> {
 
 export const snapshotURL = (id: string) => `${box(id)}/ctl/snapshot.png`
 
+/** The text screen as plain text (409 in graphics modes). */
+export async function screenText(id: string): Promise<string> {
+  const response = await request(`${box(id)}/ctl/screen.txt`)
+  if (!response.ok) throw new Error(response.status === 409 ? 'the screen is in a graphics mode' : `screen.txt: ${response.status}`)
+  return response.text()
+}
+
 const filePath = (id: string, path: string) =>
   `${box(id)}/files/${path.split('/').filter(Boolean).map(encodeURIComponent).join('/')}`
 

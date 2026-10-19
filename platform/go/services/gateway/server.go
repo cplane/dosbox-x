@@ -489,7 +489,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, _ auth.Identit
 // through the gateway's own file API, which enforces the disk limit).
 var ctlOps = map[string]string{
 	"type": "POST", "keys": "POST", "mouse": "POST", "click": "POST", "rescan": "POST",
-	"snapshot.png": "GET", "snapshot.jpg": "GET",
+	"snapshot.png": "GET", "snapshot.jpg": "GET", "screen.txt": "GET",
 }
 
 // /api/boxes/{id}/ctl/<op>: the box control API (see stream/control.go).

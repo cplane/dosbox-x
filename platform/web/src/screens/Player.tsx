@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { getBox, NeedsSignIn, snapshotURL, startBox, stopBox, typeText, wsURL, type Box } from '../api/client'
+import { getBox, NeedsSignIn, screenText, snapshotURL, startBox, stopBox, typeText, wsURL, type Box } from '../api/client'
 import { scancodeFor, SHIFT } from '../player/keys'
+import { TextScreen } from '../player/textmode'
 
 interface Props {
   boxId: string
@@ -47,6 +48,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [meta, setMeta] = useState<Meta | null>(null)
   const [fps, setFps] = useState(0)
   const [latency, setLatency] = useState<Latency | null>(null)
+  const [textMode, setTextMode] = useState(false)
   const [captured, setCaptured] = useState(false)
   const [focused, setFocused] = useState(false)
   const [generation, setGeneration] = useState(0) // bump to restart polling/connecting
@@ -78,9 +80,22 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     // Updates carry only changed strips, so none may be skipped: they are
     // drawn in order (the sidecar keeps at most a few in flight) and each is
     // acked once drawn.
+    //
+    // In text modes the sidecar sends text updates ("T", see textmode.ts)
+    // instead, which the browser draws itself.
+    const text = new TextScreen()
+    let inText = false
     async function drawUpdate(buf: ArrayBuffer) {
       const dv = new DataView(buf)
+      if (buf.byteLength > 0 && dv.getUint8(0) === 0x54) {
+        if (!text.apply(buf)) return
+        if (!inText) { inText = true; setTextMode(true) }
+        const canvas = canvasRef.current
+        if (canvas) text.draw(canvas, performance.now())
+        return
+      }
       if (buf.byteLength < 8 || dv.getUint8(0) !== 0x53) return
+      if (inText) { inText = false; setTextMode(false) }
       const n = dv.getUint16(2, true)
       const w = dv.getUint16(4, true)
       const h = dv.getUint16(6, true)
@@ -131,7 +146,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     function connect() {
       ws = new WebSocket(wsURL(boxId))
       ws.binaryType = 'arraybuffer'
-      ws.onopen = () => { backoff = 500; setConnected(true) }
+      ws.onopen = () => { backoff = 500; setConnected(true); send({ hello: { text: 1 } }) }
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
           const m = JSON.parse(ev.data)
@@ -162,6 +177,13 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       frames = 0
       send({ ping: performance.now() })
     }, 1000)
+    // Text mode blinks locally (cursor, blink attribute): no traffic for it.
+    const blinkTimer = window.setInterval(() => {
+      const canvas = canvasRef.current
+      if (!inText || !canvas) return
+      text.touchCursor()
+      text.draw(canvas, performance.now())
+    }, 133)
 
     // Keyboard, while the screen has focus.
     const wrap = wrapRef.current!
@@ -254,6 +276,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       cancelled = true
       window.clearTimeout(timer)
       window.clearInterval(fpsTimer)
+      window.clearInterval(blinkTimer)
       ws?.close()
       wrap.removeEventListener('keydown', onKeyDown)
       wrap.removeEventListener('keyup', onKeyUp)
@@ -287,6 +310,10 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     if (text) await typeText(boxId, text.replace(/\\n/g, '\n'))
     wrapRef.current?.focus()
   })
+  const copyText = act(async () => {
+    await navigator.clipboard.writeText(await screenText(boxId))
+    wrapRef.current?.focus()
+  })
   const ctrlAltDel = () => {
     const send = sendRef.current
     for (const sc of [0x1d, 0x38, 0xd3]) send({ k: sc, d: true })
@@ -304,7 +331,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <span className={`dot ${connected ? 'on' : ''}`} />
         <span className="muted">{connected ? 'connected' : box ? box.state : 'loading'}</span>
         {meta?.program && <span className="muted">▶ {meta.program}</span>}
-        {meta && <span className="muted">{meta.w}×{meta.h}</span>}
+        {meta && <span className="muted" title={textMode ? "Text mode: drawn by your browser from the screen data" : "Graphics: video from the box"}>{textMode ? "text" : `${meta.w}×${meta.h}`}</span>}
         {connected && (
           <span
             className={`muted ${latency && latency.rtt > 150 ? 'lag' : ''}`}
@@ -327,6 +354,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
             <button onClick={typePrompt}>Type text…</button>
             <button onClick={ctrlAltDel}>Ctrl+Alt+Del</button>
             <button onClick={() => { releaseRef.current(); wrapRef.current?.focus() }}>Release keys</button>
+            {textMode && <button onClick={copyText} title="Copy the screen's text to the clipboard">Copy text</button>}
             <a className="button" href={snapshotURL(boxId)} target="_blank" rel="noreferrer">Snapshot</a>
           </>
         )}
