@@ -5,6 +5,13 @@ export class NeedsSignIn extends Error {}
 
 export type BoxState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed'
 
+/** What a box emulates; empty fields are DOSBox-X's defaults (486-class, 16 MB, auto). */
+export interface Machine {
+  cpu?: '' | 'auto' | '8086' | '186' | '286' | '386' | '486' | 'pentium'
+  memoryMB?: number
+  cycles?: string
+}
+
 export interface Box {
   id: string
   owner: string
@@ -13,6 +20,7 @@ export interface Box {
   lastActiveAt: string
   diskLimitMB: number
   usedBytes: number
+  machine: Machine
   state: BoxState
   reason?: string
   viewers: number
@@ -64,11 +72,20 @@ export const limits = async () => json<Limits>(await request('/api/config'))
 export const listBoxes = async () => json<Box[]>(await request('/api/boxes'))
 export const getBox = async (id: string) => json<Box>(await request(box(id)))
 
-export async function createBox(name: string, items: string[] = []): Promise<Box> {
+export async function createBox(name: string, items: string[] = [], machine: Machine = {}): Promise<Box> {
   return json<Box>(await request('/api/boxes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, items }),
+    body: JSON.stringify({ name, items, machine }),
+  }))
+}
+
+/** Changes what a stopped box emulates (applies at its next start). */
+export async function setMachine(id: string, machine: Machine): Promise<Box> {
+  return json<Box>(await request(box(id), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ machine }),
   }))
 }
 

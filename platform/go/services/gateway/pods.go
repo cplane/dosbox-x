@@ -97,6 +97,7 @@ func boxPod(cfg *Config, b *Box, freeMB int) *Pod {
 					"name":            "dosbox",
 					"image":           cfg.DosboxImage,
 					"imagePullPolicy": cfg.ImagePullPolicy,
+					"args":            b.Machine.DosboxArgs(), // -set section key=value (entrypoint.sh)
 					"env":             []any{map[string]any{"name": "C_FREESIZE_MB", "value": strconv.Itoa(freeMB)}},
 					"resources": map[string]any{
 						"requests": map[string]any{"cpu": "250m", "memory": "128Mi"},

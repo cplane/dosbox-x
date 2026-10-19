@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  attachItems, createBox, deleteBox, limits, listBoxes, listCatalog, NeedsSignIn, startBox, stopBox,
-  type Box, type CatalogItem, type Limits,
+  attachItems, createBox, deleteBox, limits, listBoxes, listCatalog, NeedsSignIn, setMachine, startBox, stopBox,
+  type Box, type CatalogItem, type Limits, type Machine,
 } from '../api/client'
 import { CatalogPicker, mb } from './CatalogPicker'
+import { describeMachine, MachinePicker } from './MachinePicker'
 
 interface Props {
   username: string
@@ -21,6 +22,9 @@ export function Boxes({ username, isAdmin, onOpen, onFiles, onCatalog, onSignOut
   const [cfg, setCfg] = useState<Limits | null>(null)
   const [catalog, setCatalog] = useState<CatalogItem[]>([])
   const [name, setName] = useState('')
+  const [machine, setNewMachine] = useState<Machine>({})
+  const [editing, setEditing] = useState<string | null>(null) // box id whose machine is being edited
+  const [edited, setEdited] = useState<Machine>({})
   const [picking, setPicking] = useState(false)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [addingTo, setAddingTo] = useState<string | null>(null) // box id with the picker open
@@ -59,8 +63,9 @@ export function Boxes({ username, isAdmin, onOpen, onFiles, onCatalog, onSignOut
   const create = (e: React.FormEvent) => {
     e.preventDefault()
     act('create', async () => {
-      await createBox(name.trim(), picking ? [...chosen] : [])
+      await createBox(name.trim(), picking ? [...chosen] : [], machine)
       setName('')
+      setNewMachine({})
       setChosen(new Set())
       setPicking(false)
     })()
@@ -90,6 +95,10 @@ export function Boxes({ username, isAdmin, onOpen, onFiles, onCatalog, onSignOut
           <button className="primary" disabled={busy === 'create'}>
             {busy === 'create' && chosen.size > 0 ? 'Copying…' : 'Create box'}
           </button>
+        </div>
+        <div className="create machine-row">
+          <span className="muted small">Machine</span>
+          <MachinePicker value={machine} onChange={setNewMachine} />
         </div>
         {picking && (
           <>
@@ -127,7 +136,7 @@ export function Boxes({ username, isAdmin, onOpen, onFiles, onCatalog, onSignOut
                   <div className={`fill ${used > 90 ? 'hot' : ''}`} style={{ width: `${used}%` }} />
                 </div>
                 <div className="muted small">
-                  C: {mb(b.usedBytes)} / {b.diskLimitMB} MB{b.reason ? ` · ${b.reason}` : ''}
+                  C: {mb(b.usedBytes)} / {b.diskLimitMB} MB · {describeMachine(b.machine)}{b.reason ? ` · ${b.reason}` : ''}
                 </div>
                 <div className="actions">
                   {running && <button className="primary" onClick={() => onOpen(b.id)}>Open</button>}
@@ -140,6 +149,11 @@ export function Boxes({ username, isAdmin, onOpen, onFiles, onCatalog, onSignOut
                     <button disabled={busy !== null} onClick={act(b.id, () => stopBox(b.id))}>Stop</button>
                   )}
                   <button onClick={() => onFiles(b.id)}>Files</button>
+                  {(b.state === 'stopped' || b.state === 'failed') && (
+                    <button className={editing === b.id ? 'on' : ''} onClick={() => { setEditing(editing === b.id ? null : b.id); setEdited(b.machine ?? {}) }}>
+                      Machine
+                    </button>
+                  )}
                   {hasCatalog && (
                     <button className={adding ? 'on' : ''} onClick={() => { setAddingTo(adding ? null : b.id); setToAdd(new Set()) }}>
                       Add software
@@ -155,6 +169,15 @@ export function Boxes({ username, isAdmin, onOpen, onFiles, onCatalog, onSignOut
                     Delete
                   </button>
                 </div>
+                {editing === b.id && (
+                  <div className="add-panel machine-row">
+                    <MachinePicker value={edited} onChange={setEdited} disabled={busy !== null} />
+                    <button className="primary" disabled={busy !== null} onClick={act(`machine-${b.id}`, async () => { await setMachine(b.id, edited); setEditing(null) })}>
+                      Save
+                    </button>
+                    <span className="muted small">applies when the box starts</span>
+                  </div>
+                )}
                 {adding && (
                   <div className="add-panel">
                     <CatalogPicker items={catalog} selected={toAdd} onChange={setToAdd} freeBytes={(b.diskLimitMB << 20) - b.usedBytes} />
