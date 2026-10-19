@@ -153,3 +153,29 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .disasm tr:hover { background: #000088; }
 .disasm tr.ip:hover { background: #0000ff; }
 .disasm .hint { padding: 2px 8px; color: #aaaaaa; font-size: 12px; }
+
+/* memory panel (MemoryPanel.tsx) */
+.mem { display: grid; gap: 8px; }
+.mem .bar input { flex: 0 0 auto; width: 60px; min-width: 60px; font-family: ui-monospace, Consolas, monospace; }
+.hexview { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: #0000aa; color: #ffff55; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; overflow: auto; white-space: pre; line-height: 18px; }
+.hexview .a { color: #55ffff; }
+.hexview .b { cursor: pointer; }
+.hexview .b:hover { background: #0000ff; }
+.hexview .b.chg { color: #ffffff; background: #aa0000; }
+.hexview .b.ptr { outline: 1px solid #55ff55; }
+.hexview .t { color: #aaaaaa; }
+.memmap { display: grid; gap: 4px; }
+.memmap-bar { display: flex; height: 22px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: #333; }
+.memmap-bar span { display: block; height: 100%; min-width: 1px; box-sizing: border-box; border-right: 1px solid #0003; }
+.memmap-bar .free { background: #555; }
+.memmap-bar .dos { background: #2255aa; }
+.memmap-bar .prog { background: #55aa55; }
+.memmap-bar .me { background: #ffff55; }
+.memmap-bar .video { background: #aa55aa; }
+.memmap-bar .rom { background: #aa5500; }
+.memmap-bar .umb { background: #444; }
+.memmap-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
+.memmap table { border-collapse: collapse; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.memmap td { padding: 1px 8px; white-space: nowrap; }
+.memmap tr.me td { color: var(--warn); }
+.memmap tr:hover { background: var(--line); }
