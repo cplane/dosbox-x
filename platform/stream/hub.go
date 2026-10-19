@@ -46,6 +46,16 @@ type client struct {
 	// Guarded by Hub.mu.
 	dirty []bool
 	gen   int
+
+	// Text mode (text.go), for clients that said {"hello":{"text":1}}:
+	// while the screen is in a text mode they get text updates, not strips.
+	text      bool
+	mode      byte // what the client last got: 0 nothing, 'S' strips, 'T' text
+	txtGen    int
+	txtRows   []bool
+	needPal   bool
+	needFont  bool
+	needHdr   bool
 }
 
 // Hub polls Game Link for new frames and fans strip updates out to clients.
@@ -65,6 +75,10 @@ type Hub struct {
 	lastFrame time.Time
 	snapSeq   uint64
 	snapJPEG  []byte
+
+	text   *TextMirror
+	txt    *TextScreen // the current text screen; nil in graphics modes
+	txtGen int         // bumped when the text geometry changes
 
 	// For the player's latency meter: encode time of an update (EWMA) and
 	// updates produced in the last second.
@@ -117,11 +131,28 @@ func allTrue(n int) []bool {
 	return b
 }
 
-// take builds the update with every strip c still needs and marks them sent;
-// nil when it has them all.
+// wantText records that c can draw text updates.
+func (h *Hub) wantText(c *client) {
+	h.mu.Lock()
+	c.text = true
+	h.mu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+// take builds the next update for c: text in a text mode (for clients that
+// draw text), else every strip c still needs; nil when it is up to date.
 func (h *Hub) take(c *client) []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if c.text && h.txt != nil {
+		return h.takeText(c)
+	}
+	if c.mode != 'S' { // back from text: the whole screen again
+		c.mode, c.gen = 'S', -1
+	}
 	if c.gen != h.gen {
 		c.gen, c.dirty = h.gen, allTrue(len(h.strips))
 	}
@@ -151,6 +182,88 @@ func (h *Hub) take(c *client) []byte {
 	binary.LittleEndian.PutUint16(msg[4:], uint16(h.w))
 	binary.LittleEndian.PutUint16(msg[6:], uint16(h.h))
 	return append(msg, body.Bytes()...)
+}
+
+func (h *Hub) takeText(c *client) []byte {
+	t := h.txt
+	if c.mode != 'T' || c.txtGen != h.txtGen {
+		c.mode, c.txtGen = 'T', h.txtGen
+		c.txtRows = allTrue(t.Rows)
+		c.needPal, c.needFont, c.needHdr = true, true, true
+	}
+	var rows []int
+	for r, d := range c.txtRows {
+		if d {
+			rows = append(rows, r)
+			c.txtRows[r] = false
+		}
+	}
+	if len(rows) == 0 && !c.needPal && !c.needFont && !c.needHdr {
+		return nil
+	}
+	msg := encodeText(t, c.needPal, c.needFont, rows)
+	c.needPal, c.needFont, c.needHdr = false, false, false
+	return msg
+}
+
+// publishText takes a new text screen (nil: the screen left text mode) and
+// marks what changed for text clients.
+func (h *Hub) publishText(t *TextScreen) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	prev := h.txt
+	if t == nil {
+		if prev == nil {
+			return
+		}
+		h.txt = nil
+		h.notifyText()
+		return
+	}
+	if !sameGeometry(t, prev) {
+		h.txtGen++
+	}
+	h.txt = t
+	rows := changedRows(t, prev)
+	pal := prev == nil || prev.Palette != t.Palette
+	font := prev == nil || prev.FontSeq != t.FontSeq || prev.CellH != t.CellH
+	hdr := prev == nil || prev.CursorX != t.CursorX || prev.CursorY != t.CursorY || prev.Flags != t.Flags ||
+		prev.CursorStart != t.CursorStart || prev.CursorEnd != t.CursorEnd || prev.Codepage != t.Codepage
+	if len(rows) == 0 && !pal && !font && !hdr {
+		return
+	}
+	for c := range h.clients {
+		if !c.text || c.mode != 'T' || c.txtGen != h.txtGen {
+			continue // takeText starts it over
+		}
+		for _, r := range rows {
+			c.txtRows[r] = true
+		}
+		c.needPal = c.needPal || pal
+		c.needFont = c.needFont || font
+		c.needHdr = c.needHdr || hdr
+	}
+	h.notifyText()
+}
+
+func (h *Hub) notifyText() {
+	for c := range h.clients {
+		if c.text {
+			select {
+			case c.notify <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// Screen returns the current text screen straight from the mirror (nil in
+// graphics modes), for /screen.txt.
+func (h *Hub) Screen() (*TextScreen, error) {
+	if h.text == nil {
+		return nil, errNoText
+	}
+	return h.text.Read()
 }
 
 // Latest returns the current frame as one JPEG (for /snapshot.jpg; encoded
@@ -222,6 +335,11 @@ func (h *Hub) Run() {
 			log.Printf("frame %v", hdr)
 			b, _ := json.Marshal(m)
 			h.broadcastMeta(b)
+		}
+
+		if h.text != nil {
+			ts, _ := h.text.Read() // nil in graphics modes or without a mirror
+			h.publishText(ts)
 		}
 
 		changed := changedStrips(cur, prev, hdr.W, hdr.H)

@@ -6,6 +6,8 @@
 #include <assert.h>
 #include <math.h>
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 
 #include "dosbox.h"
 #include "dos_inc.h"
@@ -326,6 +328,164 @@ bool OUTPUT_GAMELINK_StartUpdate(uint8_t* &pixels, Bitu &pitch)
     return true;
 }
 
+// ---- Text screen mirror (an extension to Game Link) -------------------------
+//
+// In text modes the screen is also published as data -- character cells,
+// cursor, palette, font, codepage -- in a shared memory block of its own,
+// /DWD_GAMELINK_TEXT_R1, beside the Game Link frame. A client can then draw
+// the text itself (sharp at any size, in the DOS font or any other) and read
+// the screen as text, instead of decoding pixels. The block is a seqlock:
+// seq is odd while it is being written; a reader copies it and retries if
+// seq was odd or changed meanwhile.
+#if !defined(WIN32)
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+
+enum {
+    TEXT_MAX_COLS  = 132,
+    TEXT_MAX_ROWS  = 60,
+    TEXT_MAX_CELLS = TEXT_MAX_COLS * TEXT_MAX_ROWS,
+};
+
+enum {
+    TEXT_ACTIVE         = 1 << 0, // the screen is in a text mode; the rest is valid
+    TEXT_CURSOR_VISIBLE = 1 << 1,
+    TEXT_BLINK          = 1 << 2, // attribute bit 7 blinks (else: bright background)
+    TEXT_LINE_GRAPHICS  = 1 << 3, // 9-wide cells repeat column 8 for chars C0-DF
+    TEXT_FONT           = 1 << 4, // font[] holds the VGA font
+};
+
+#pragma pack( push, 1 )
+struct sGameLinkText_R1
+{
+    uint32_t magic;            // "DBXT"
+    uint16_t version;          // 1
+    uint16_t flags;            // TEXT_*
+    volatile uint32_t seq;     // even: stable; odd: being written
+    uint16_t cols, rows;
+    uint16_t cell_w, cell_h;   // pixels per character cell (8 or 9 wide)
+    uint16_t cursor_x, cursor_y;
+    uint8_t  cursor_start, cursor_end; // scanlines within the cell
+    uint16_t codepage;         // of the character bytes (437 when none is loaded)
+    uint32_t font_seq;         // bumped whenever font[] changes
+    uint8_t  palette[16][3];   // RGB (8 bits each) of attribute colors 0-15
+    uint8_t  font[256][32];    // glyph scanlines, MSB = leftmost; cell_h of them used
+    uint8_t  cells[TEXT_MAX_CELLS][2]; // character, attribute; row-major
+};
+#pragma pack( pop )
+
+sGameLinkText_R1* text_block = nullptr;
+bool text_unavailable = false;
+
+bool text_open()
+{
+    if ( text_block ) return true;
+    if ( text_unavailable ) return false;
+    const int fd = shm_open( "/DWD_GAMELINK_TEXT_R1", O_CREAT | O_RDWR, 0644 );
+    if ( fd < 0 || ftruncate( fd, sizeof( sGameLinkText_R1 ) ) != 0 ) {
+        LOG_MSG( "GAMELINK: text mirror unavailable (errno %d)", errno );
+        if ( fd >= 0 ) close( fd );
+        text_unavailable = true;
+        return false;
+    }
+    void* p = mmap( nullptr, sizeof( sGameLinkText_R1 ), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    close( fd );
+    if ( p == MAP_FAILED ) {
+        text_unavailable = true;
+        return false;
+    }
+    text_block = static_cast< sGameLinkText_R1* >( p );
+    memset( text_block, 0, sizeof( sGameLinkText_R1 ) );
+    text_block->magic = 0x54584244; // "DBXT"
+    text_block->version = 1;
+    return true;
+}
+
+void text_begin( sGameLinkText_R1& t ) { t.seq = t.seq + 1; __sync_synchronize(); }
+void text_end( sGameLinkText_R1& t ) { __sync_synchronize(); t.seq = t.seq + 1; }
+
+uint8_t dac8( uint8_t v ) { return vga.dac.bits == 8 ? v : (uint8_t)( ( v << 2 ) | ( v >> 4 ) ); }
+
+// The screen as DOS programs see it: the BIOS data area for the mode, size,
+// page and cursor; the active page's cells through normal memory access.
+void OUTPUT_GAMELINK_PublishText()
+{
+    if ( !text_open() ) return;
+    sGameLinkText_R1& t = *text_block;
+
+    const uint16_t cols = real_readw( 0x40, 0x4A );
+    const uint16_t rows = (uint16_t)real_readb( 0x40, 0x84 ) + 1;
+    const uint16_t cell_h = real_readw( 0x40, 0x85 );
+    const bool text = vga.mode == M_TEXT && IS_EGAVGA_ARCH &&
+        cols >= 1 && cols <= TEXT_MAX_COLS && rows >= 1 && rows <= TEXT_MAX_ROWS &&
+        cell_h >= 1 && cell_h <= 32;
+    if ( !text ) {
+        if ( t.flags & TEXT_ACTIVE ) {
+            text_begin( t );
+            t.flags = 0;
+            text_end( t );
+        }
+        return;
+    }
+
+    const uint8_t page = real_readb( 0x40, 0x62 );
+    const uint16_t page_start = real_readw( 0x40, 0x4E );
+    const uint16_t seg = real_readb( 0x40, 0x49 ) == 7 ? 0xB000 : 0xB800;
+    const uint16_t cursor = real_readw( 0x40, 0x50 + ( page & 7 ) * 2 );
+    const uint16_t shape = real_readw( 0x40, 0x60 );
+
+    static uint8_t font[256][32];
+    bool font_changed = false;
+    uint16_t flags = TEXT_ACTIVE;
+    if ( IS_VGA_ARCH && vga.draw.font_tables[0] ) {
+        uint8_t next[256][32] = {};
+        for ( unsigned c = 0; c < 256; ++c )
+            for ( unsigned l = 0; l < cell_h; ++l )
+                next[c][l] = vga.draw.font_tables[0][( ( c << 5 ) + l ) * 4];
+        if ( memcmp( next, font, sizeof( font ) ) != 0 ) {
+            memcpy( font, next, sizeof( font ) );
+            font_changed = true;
+        }
+        flags |= TEXT_FONT;
+    }
+    if ( !( shape & 0x2000 ) && ( shape >> 8 & 0x1f ) <= ( shape & 0x1f ) ) flags |= TEXT_CURSOR_VISIBLE;
+    if ( vga.draw.blinking ) flags |= TEXT_BLINK;
+    if ( vga.attr.mode_control & 0x04 ) flags |= TEXT_LINE_GRAPHICS;
+
+    text_begin( t );
+    t.flags = flags;
+    t.cols = cols;
+    t.rows = rows;
+    t.cell_w = vga.draw.char9dot ? 9 : 8;
+    t.cell_h = cell_h;
+    t.cursor_x = cursor & 0xff;
+    t.cursor_y = cursor >> 8;
+    t.cursor_start = ( shape >> 8 ) & 0x1f;
+    t.cursor_end = shape & 0x1f;
+    t.codepage = dos.loaded_codepage ? dos.loaded_codepage : 437;
+    for ( unsigned i = 0; i < 16; ++i ) {
+        const RGBEntry& e = vga.dac.rgb[ vga.dac.combine[i] ];
+        t.palette[i][0] = dac8( e.red );
+        t.palette[i][1] = dac8( e.green );
+        t.palette[i][2] = dac8( e.blue );
+    }
+    if ( font_changed ) {
+        memcpy( t.font, font, sizeof( font ) );
+        t.font_seq = t.font_seq + 1;
+    }
+    for ( unsigned i = 0, n = (unsigned)cols * rows; i < n; ++i ) {
+        t.cells[i][0] = real_readb( seg, (uint16_t)( page_start + i * 2 ) );
+        t.cells[i][1] = real_readb( seg, (uint16_t)( page_start + i * 2 + 1 ) );
+    }
+    text_end( t );
+}
+
+} // namespace
+#endif // !WIN32
+
 void OUTPUT_GAMELINK_Transfer()
 {
     //LOG_MSG("OUTPUT_GAMELINK: Transfer");
@@ -335,6 +495,9 @@ void OUTPUT_GAMELINK_Transfer()
         RunningProgramHash,
         (const uint8_t*)sdl.gamelink.framebuf,
         MemBase );
+#if !defined(WIN32)
+    if ( sdl.gamelink.enable ) OUTPUT_GAMELINK_PublishText();
+#endif
 }
 
 void OUTPUT_GAMELINK_EndUpdate(const uint16_t *changedLines)
