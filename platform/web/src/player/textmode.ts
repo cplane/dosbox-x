@@ -159,9 +159,9 @@ export class TextScreen {
           let row = (r * cellH + line) * W + c * cellW
           const isCursorLine = cursorHere && line >= this.cursorStart && line <= this.cursorEnd
           for (let x = 0; x < 8; x++, bits <<= 1) px[row++] = isCursorLine || (bits & 0x80) ? fgc : bgc
-          if (cellW === 9) {
+          if (cellW === 9) { // the VGA cursor is 8 pixels wide, even in 9-pixel cells
             const ninth = lineGfx && ch >= 0xc0 && ch <= 0xdf && (font[ch * cellH + line] & 1)
-            px[row] = isCursorLine || ninth ? fgc : bgc
+            px[row] = ninth ? fgc : bgc
           }
         }
       }
