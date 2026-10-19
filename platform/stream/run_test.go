@@ -62,20 +62,21 @@ func TestMergeScreenAndOutput(t *testing.T) {
 func TestConOutput(t *testing.T) {
 	for _, tc := range []struct {
 		raw, prompt, want string
+		complete          bool
 	}{
 		// echo of the typed command, output, blank line, prompt
-		{"ver\r\nDOSBox-X version 2026\r\n\r\nC:\\>", "C:\\>", "DOSBox-X version 2026\n"},
-		// internal command with no output
-		{"cd \\TOOLS\r\n\r\nC:\\TOOLS>", "C:\\TOOLS>", ""},
+		{"ver\r\nDOSBox-X version 2026\r\n\r\nC:\\>", "C:\\>", "DOSBox-X version 2026\n", true},
+		// internal command with no output: complete all the same
+		{"cd \\TOOLS\r\n\r\nC:\\TOOLS>", "C:\\TOOLS>", "", true},
 		// ANSI colours stripped, lone CRs dropped
-		{"x\r\n\x1b[1;33mhello\x1b[0m\r\r\n\r\nC:\\>", "C:\\>", "hello\n"},
+		{"x\r\n\x1b[1;33mhello\x1b[0m\r\r\n\r\nC:\\>", "C:\\>", "hello\n", true},
 		// a program still running: no prompt yet
-		{"prog\r\nworking...", "C:\\>", "working...\n"},
+		{"prog\r\nworking...", "C:\\>", "working...\n", false},
 		// nothing after the echo
-		{"ver", "C:\\>", ""},
+		{"ver", "C:\\>", "", false},
 	} {
-		if got := conOutput([]byte(tc.raw), tc.prompt); got != tc.want {
-			t.Errorf("conOutput(%q) = %q, want %q", tc.raw, got, tc.want)
+		if got, complete := conOutput([]byte(tc.raw), tc.prompt); got != tc.want || complete != tc.complete {
+			t.Errorf("conOutput(%q) = %q, %v; want %q, %v", tc.raw, got, complete, tc.want, tc.complete)
 		}
 	}
 }
