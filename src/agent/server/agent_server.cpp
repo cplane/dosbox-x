@@ -668,6 +668,7 @@ public:
     AGENT_RUNTIME_FORWARD(GetRegisters, bool GetRegisters(RegisterSnapshot* registers, std::string* error) const, (registers, error))
     AGENT_RUNTIME_FORWARD(Step, bool Step(StepMode mode, bool* continued, std::string* error) const, (mode, continued, error))
     AGENT_RUNTIME_FORWARD(ReadMemory, bool ReadMemory(const MemoryAddress& address, std::size_t length, std::vector<std::uint8_t>* data, MemoryAccessError* access_error, std::string* error) const, (address, length, data, access_error, error))
+    AGENT_RUNTIME_FORWARD(Disassemble, bool Disassemble(const MemoryAddress& address, std::size_t count, std::vector<DisassembledLine>* lines, MemoryAccessError* access_error, std::string* error) const, (address, count, lines, access_error, error))
     AGENT_RUNTIME_FORWARD(WriteMemory, bool WriteMemory(const MemoryAddress& address, const std::vector<std::uint8_t>& data, std::vector<std::uint8_t>* after, MemoryAccessError* access_error, std::string* error) const, (address, data, after, access_error, error))
     AGENT_RUNTIME_FORWARD(CreateBreakpoint, bool CreateBreakpoint(BreakpointKind kind, const MemoryAddress& address, bool once, NativeBreakpoint* breakpoint, MemoryAccessError* access_error, std::string* error) const, (kind, address, once, breakpoint, access_error, error))
     AGENT_RUNTIME_FORWARD(DeleteBreakpoint, bool DeleteBreakpoint(const NativeBreakpoint& breakpoint, std::string* error) const, (breakpoint, error))
