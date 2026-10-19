@@ -31,6 +31,7 @@ COMPONENT=${1:-dosbox}
 
 cd "$(dirname "$0")/.."
 GIT_DIR=$(git rev-parse --git-dir)   # relative paths: Windows git/kubectl choke on /tmp and C:
+case "$GIT_DIR" in /*|?:*) GIT_DIR=.git-build; mkdir -p "$GIT_DIR" ;; esac   # a worktree: --git-dir is absolute
 
 case "$COMPONENT" in
   dosbox|dosbox-debug) DIRTY_PATHS=(. ':!platform/stream' ':!platform/go' ':!platform/web' ':!platform/helm' ':!platform/k8s' ':!platform/README.md') ;;
