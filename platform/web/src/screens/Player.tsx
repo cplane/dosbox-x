@@ -17,10 +17,24 @@ interface Meta {
   program: string
 }
 
+interface Latency {
+  rtt: number // ms, ping -> pong over the same socket as the frames
+  encodeMs: number // server JPEG encode time
+  serverFps: number
+}
+
 /**
  * The box's screen: JPEG frames from the box's stream sidecar over the
  * gateway's WebSocket, keyboard (physical keys via KeyboardEvent.code) and
- * pointer-locked relative mouse back.
+ * the mouse back.
+ *
+ * Mouse: by default the browser's own arrow is the cursor and its position
+ * goes to DOS as an absolute point (the DOS cursor is placed exactly there),
+ * so pointing and clicking don't wait for frames. "Capture mouse" switches to
+ * pointer-locked relative motion for programs that need it.
+ *
+ * Frames are acked once drawn (or skipped), which lets the sidecar keep only
+ * a few in flight: a slow link shows the newest frame late, not a backlog.
  */
 export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -32,6 +46,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [connected, setConnected] = useState(false)
   const [meta, setMeta] = useState<Meta | null>(null)
   const [fps, setFps] = useState(0)
+  const [latency, setLatency] = useState<Latency | null>(null)
   const [captured, setCaptured] = useState(false)
   const [focused, setFocused] = useState(false)
   const [generation, setGeneration] = useState(0) // bump to restart polling/connecting
@@ -44,7 +59,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     let backoff = 500
     let frames = 0
     let decoding = false
-    let pending: ArrayBuffer | null = null
+    const queue: ArrayBuffer[] = []
     const down = new Set<number>()
     const synth = new Set<number>()
 
@@ -58,18 +73,43 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       send({ b: 0 })
     }
 
+    // A binary message is a strip update (see the sidecar's hub.go):
+    //   "S" 1 count:u16 frameW:u16 frameH:u16, then count × (y:u16 h:u16 len:u32 jpeg)
+    // Updates carry only changed strips, so none may be skipped: they are
+    // drawn in order (the sidecar keeps at most a few in flight) and each is
+    // acked once drawn.
+    async function drawUpdate(buf: ArrayBuffer) {
+      const dv = new DataView(buf)
+      if (buf.byteLength < 8 || dv.getUint8(0) !== 0x53) return
+      const n = dv.getUint16(2, true)
+      const w = dv.getUint16(4, true)
+      const h = dv.getUint16(6, true)
+      const canvas = canvasRef.current
+      if (!canvas) return
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
+      const parts: { y: number; blob: Blob }[] = []
+      for (let i = 0, p = 8; i < n && p + 8 <= buf.byteLength; i++) {
+        const y = dv.getUint16(p, true)
+        const len = dv.getUint32(p + 4, true)
+        parts.push({ y, blob: new Blob([new Uint8Array(buf, p + 8, len)], { type: 'image/jpeg' }) })
+        p += 8 + len
+      }
+      const bmps = await Promise.all(parts.map((s) => createImageBitmap(s.blob)))
+      const ctx = canvas.getContext('2d')
+      bmps.forEach((b, i) => { ctx?.drawImage(b, 0, parts[i].y); b.close() })
+    }
     async function draw(buf: ArrayBuffer) {
-      if (decoding) { pending = buf; return } // keep only the newest frame
+      queue.push(buf)
+      if (decoding) return
       decoding = true
-      try {
-        const canvas = canvasRef.current
-        const bmp = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }))
-        canvas?.getContext('2d')?.drawImage(bmp, 0, 0, canvas.width, canvas.height)
-        bmp.close()
-        frames++
-      } catch { /* a bad frame */ }
+      while (queue.length) {
+        try {
+          await drawUpdate(queue.shift()!)
+          frames++
+        } catch { /* a bad update */ }
+        send({ ack: 1 })
+      }
       decoding = false
-      if (pending) { const p = pending; pending = null; draw(p) }
     }
 
     async function poll() {
@@ -99,11 +139,14 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
             const canvas = canvasRef.current
             if (canvas && (canvas.width !== m.w || canvas.height !== m.h)) { canvas.width = m.w; canvas.height = m.h }
             setMeta(m)
+          } else if (m.type === 'pong') {
+            setLatency({ rtt: performance.now() - m.t, encodeMs: m.encodeMs ?? 0, serverFps: m.fps ?? 0 })
           }
         } else draw(ev.data)
       }
       ws.onclose = () => {
         setConnected(false)
+        queue.length = 0
         down.clear()
         synth.clear()
         ws = null
@@ -114,7 +157,11 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       }
     }
 
-    const fpsTimer = window.setInterval(() => { setFps(frames); frames = 0 }, 1000)
+    const fpsTimer = window.setInterval(() => {
+      setFps(frames)
+      frames = 0
+      send({ ping: performance.now() })
+    }, 1000)
 
     // Keyboard, while the screen has focus.
     const wrap = wrapRef.current!
@@ -142,31 +189,65 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     wrap.addEventListener('keyup', onKeyUp)
     wrap.addEventListener('blur', onBlur)
 
-    // Mouse: relative motion via pointer lock, batched per animation frame.
+    // Mouse. Native cursor (default): the position over the screen, 0..1,
+    // sent as it changes (at most every 8 ms, the last one always). Captured:
+    // relative motion via pointer lock, sent as it comes.
     const canvas = canvasRef.current!
-    let mdx = 0, mdy = 0, raf = 0
     const locked = () => document.pointerLockElement === canvas
+    let held = 0 // buttons pressed on the screen (native mode)
+    let lastSent = 0, trailing = 0, lastPos: [number, number] | null = null
+    const position = (e: MouseEvent): [number, number] => {
+      const r = canvas.getBoundingClientRect()
+      const clamp = (v: number) => Math.min(1, Math.max(0, v))
+      return [clamp((e.clientX - r.left) / r.width), clamp((e.clientY - r.top) / r.height)]
+    }
+    const sendPos = (p: [number, number]) => {
+      lastPos = p
+      const now = performance.now()
+      window.clearTimeout(trailing)
+      if (now - lastSent >= 8) {
+        lastSent = now
+        send({ a: p })
+      } else {
+        trailing = window.setTimeout(() => { lastSent = performance.now(); send({ a: lastPos }) }, 8)
+      }
+    }
     const onLock = () => {
       setCaptured(locked())
       if (locked()) wrap.focus(); else send({ b: 0 })
     }
     const onMove = (e: MouseEvent) => {
-      if (!locked()) return
-      mdx += e.movementX
-      mdy += e.movementY
-      if (!raf) {
-        raf = requestAnimationFrame(() => {
-          raf = 0
-          if (mdx || mdy) send({ m: [mdx, mdy] })
-          mdx = mdy = 0
-        })
+      if (locked()) {
+        if (e.movementX || e.movementY) send({ m: [e.movementX, e.movementY] })
+        return
       }
+      // Over the screen, or dragging that started on it (a selection box).
+      if (e.target === canvas || held) sendPos(position(e))
     }
-    const onButtons = (e: MouseEvent) => { if (locked()) { e.preventDefault(); send({ b: e.buttons & 7 }) } }
+    const onDown = (e: MouseEvent) => {
+      if (locked()) { e.preventDefault(); send({ b: e.buttons & 7 }); return }
+      if (e.target !== canvas) return
+      e.preventDefault()
+      wrap.focus()
+      window.clearTimeout(trailing)
+      lastSent = performance.now()
+      send({ a: position(e) }) // the click lands exactly here
+      held = e.buttons & 7
+      send({ b: held })
+    }
+    const onUp = (e: MouseEvent) => {
+      if (locked()) { e.preventDefault(); send({ b: e.buttons & 7 }); return }
+      if (!held) return
+      window.clearTimeout(trailing)
+      lastSent = performance.now()
+      send({ a: position(e) })
+      held = e.buttons & 7
+      send({ b: held })
+    }
     document.addEventListener('pointerlockchange', onLock)
     document.addEventListener('mousemove', onMove)
-    document.addEventListener('mousedown', onButtons)
-    document.addEventListener('mouseup', onButtons)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('mouseup', onUp)
 
     poll()
     return () => {
@@ -177,10 +258,11 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       wrap.removeEventListener('keydown', onKeyDown)
       wrap.removeEventListener('keyup', onKeyUp)
       wrap.removeEventListener('blur', onBlur)
+      window.clearTimeout(trailing)
       document.removeEventListener('pointerlockchange', onLock)
       document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mousedown', onButtons)
-      document.removeEventListener('mouseup', onButtons)
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('mouseup', onUp)
       if (locked()) document.exitPointerLock()
     }
   }, [boxId, onSignedOut, generation])
@@ -223,11 +305,23 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <span className="muted">{connected ? 'connected' : box ? box.state : 'loading'}</span>
         {meta?.program && <span className="muted">▶ {meta.program}</span>}
         {meta && <span className="muted">{meta.w}×{meta.h}</span>}
-        {connected && <span className="muted">{fps} fps</span>}
+        {connected && (
+          <span
+            className={`muted ${latency && latency.rtt > 150 ? 'lag' : ''}`}
+            title={latency
+              ? `Round trip ${latency.rtt.toFixed(0)} ms · server encodes a frame in ${latency.encodeMs.toFixed(1)} ms and sent ${latency.serverFps} fps · you drew ${fps} fps`
+              : 'measuring…'}
+          >
+            {fps} fps{latency ? ` · ${latency.rtt.toFixed(0)} ms` : ''}
+          </span>
+        )}
         <span className="spacer" />
         {running && (
           <>
-            <button onClick={() => canvasRef.current?.requestPointerLock()}>
+            <button
+              onClick={() => canvasRef.current?.requestPointerLock()}
+              title="Relative mouse for programs that need it; normally your own arrow is the DOS cursor"
+            >
               {captured ? 'Mouse captured (Esc)' : 'Capture mouse'}
             </button>
             <button onClick={typePrompt}>Type text…</button>
@@ -264,7 +358,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           </div>
         )}
         {running && !focused && (
-          <div className="hint">Click the screen to type · Capture mouse for DOS mouse input · Esc releases the mouse</div>
+          <div className="hint">Click the screen to type · your arrow is the DOS mouse · Capture mouse for relative motion (Esc releases)</div>
         )}
       </div>
     </div>

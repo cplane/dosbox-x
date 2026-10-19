@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <assert.h>
 #include <math.h>
+#include <algorithm>
 
 #include "dosbox.h"
 #include "dos_inc.h"
@@ -28,6 +29,12 @@ using namespace std;
 extern uint32_t RunningProgramHash[4];
 extern bool user_cursor_locked;
 extern MOUSE_EMULATION user_cursor_emulation;
+extern int user_cursor_x, user_cursor_y;
+extern int user_cursor_sw, user_cursor_sh;
+
+// Bit 7 of sSharedMMapInput_R2::mouse_btn (unused by the protocol, whose
+// buttons are bits 0-2): mouse_dx/dy hold an absolute position.
+static const uint8_t GAMELINK_MOUSE_ABSOLUTE = 0x80;
 #if !defined(C_SDL2)
 #error "gamelink output requires SDL2"
 #endif
@@ -98,18 +105,49 @@ void OUTPUT_GAMELINK_InputEvent()
         //
         // -- Input
 
-        // Game Link mouse input is relative only, like a captured host
-        // mouse. These are normally refreshed from SDL motion events, which
-        // never arrive here; without this DOSBox-X snaps the DOS cursor to
-        // the absent host cursor (0,0) and never accumulates mickeys.
+        // The cursor flags below are normally refreshed from SDL motion
+        // events, which never arrive here; without setting them DOSBox-X
+        // snaps the DOS cursor to the absent host cursor (0,0) and never
+        // accumulates mickeys.
         user_cursor_locked = true;
-        user_cursor_emulation = sdl.mouse.emulation;
 
-        Mouse_CursorMoved(
-            sdl.gamelink.input.mouse_dx, 
-            sdl.gamelink.input.mouse_dy, 
-            0, 
-            0, true /*emulate*/ );
+        if ( sdl.gamelink.input.mouse_btn & GAMELINK_MOUSE_ABSOLUTE )
+        {
+            // Extension: mouse_dx/dy are an absolute position, 0..1 across
+            // the frame (a client drawing its own cursor, e.g. a browser).
+            // The DOS cursor goes exactly there, as in seamless mouse
+            // integration on a desktop, so a click lands where the client's
+            // cursor is however late the frames arrive. The movement still
+            // counts as mickeys for programs that read relative motion.
+            static float last_x = -1.0f, last_y = -1.0f;
+            const float nx = std::min( std::max( sdl.gamelink.input.mouse_dx, 0.0f ), 1.0f );
+            const float ny = std::min( std::max( sdl.gamelink.input.mouse_dy, 0.0f ), 1.0f );
+            const int sw = std::max( 2, (int)sdl.draw.width );
+            const int sh = std::max( 2, (int)sdl.draw.height );
+            const float dx = last_x < 0.0f ? 0.0f : ( nx - last_x ) * sw;
+            const float dy = last_y < 0.0f ? 0.0f : ( ny - last_y ) * sh;
+            const bool moved = last_x < 0.0f || nx != last_x || ny != last_y;
+            last_x = nx;
+            last_y = ny;
+
+            user_cursor_sw = sw;
+            user_cursor_sh = sh;
+            user_cursor_x = (int)lroundf( nx * ( sw - 1 ) );
+            user_cursor_y = (int)lroundf( ny * ( sh - 1 ) );
+            user_cursor_emulation = MOUSE_EMULATION_NEVER; // position from user_cursor_*
+            if ( moved )
+                Mouse_CursorMoved( dx, dy, nx, ny, false /*emulate*/ );
+        }
+        else
+        {
+            // Relative motion, like a captured host mouse.
+            user_cursor_emulation = sdl.mouse.emulation;
+            Mouse_CursorMoved(
+                sdl.gamelink.input.mouse_dx,
+                sdl.gamelink.input.mouse_dy,
+                0,
+                0, true /*emulate*/ );
+        }
 
         // Cache old and new
         const uint8_t old = sdl.gamelink.input_prev.mouse_btn;;

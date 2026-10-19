@@ -119,7 +119,7 @@ func boxPod(cfg *Config, b *Box, freeMB int) *Pod {
 					},
 					"resources": map[string]any{
 						"requests": map[string]any{"cpu": "100m", "memory": "32Mi"},
-						"limits":   map[string]any{"cpu": "500m", "memory": "128Mi"},
+						"limits":   map[string]any{"cpu": "1", "memory": "128Mi"},
 					},
 					"volumeMounts": []any{
 						map[string]any{"name": "data", "mountPath": "/data/c", "subPath": id + "/c"},

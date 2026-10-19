@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"image"
 	"image/jpeg"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -21,12 +23,32 @@ type Meta struct {
 	Program string `json:"program"`
 }
 
+// The screen goes out as horizontal strips of stripRows rows, each its own
+// JPEG, and only strips that changed since the previous frame are encoded:
+// a moving mouse cursor or a unit walking costs a strip or two, not a whole
+// frame. The hub keeps the latest JPEG of every strip; each client keeps the
+// set of strips it hasn't been sent since they last changed, so however many
+// updates flow control makes it skip, it always ends up with the newest
+// content of every strip.
+//
+// A binary message is one update:
+//
+//	"S" 1  count:u16  frameW:u16 frameH:u16  then count × (y:u16 h:u16 len:u32 jpeg[len])
+//
+// (little-endian). The frame size travels with it so a client never draws
+// strips of a new mode onto a canvas of the old one.
+const stripRows = 32
+
 type client struct {
-	frames chan []byte // capacity 1: always the latest JPEG
 	meta   chan []byte
+	notify chan struct{} // capacity 1: strips became dirty
+
+	// Guarded by Hub.mu.
+	dirty []bool
+	gen   int
 }
 
-// Hub polls Game Link for new frames and fans JPEGs out to clients.
+// Hub polls Game Link for new frames and fans strip updates out to clients.
 type Hub struct {
 	gl      *Gamelink
 	quality int
@@ -35,8 +57,21 @@ type Hub struct {
 	mu        sync.Mutex
 	clients   map[*client]struct{}
 	lastMeta  []byte
-	lastJPEG  []byte
+	gen       int // bumped when the frame size changes
+	w, h      int
+	strips    [][]byte // latest JPEG per strip
+	frame     []byte   // the latest frame, BGRA (for /snapshot.jpg)
+	frameSeq  uint64
 	lastFrame time.Time
+	snapSeq   uint64
+	snapJPEG  []byte
+
+	// For the player's latency meter: encode time of an update (EWMA) and
+	// updates produced in the last second.
+	encodeMs  float64
+	fps       int
+	fpsCount  int
+	fpsWindow time.Time
 }
 
 func NewHub(gl *Gamelink, quality, fps int) *Hub {
@@ -49,17 +84,16 @@ func NewHub(gl *Gamelink, quality, fps int) *Hub {
 }
 
 func (h *Hub) add() *client {
-	c := &client{frames: make(chan []byte, 1), meta: make(chan []byte, 4)}
+	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1)}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
-	meta, jpg := h.lastMeta, h.lastJPEG
+	meta := h.lastMeta
+	c.gen, c.dirty = h.gen, allTrue(len(h.strips)) // a new client needs everything
 	h.mu.Unlock()
 	if meta != nil {
 		c.meta <- meta
 	}
-	if jpg != nil {
-		c.frames <- jpg
-	}
+	c.notify <- struct{}{}
 	return c
 }
 
@@ -75,11 +109,67 @@ func (h *Hub) viewers() int {
 	return len(h.clients)
 }
 
-// Latest returns the most recent JPEG and when it was produced.
+func allTrue(n int) []bool {
+	b := make([]bool, n)
+	for i := range b {
+		b[i] = true
+	}
+	return b
+}
+
+// take builds the update with every strip c still needs and marks them sent;
+// nil when it has them all.
+func (h *Hub) take(c *client) []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c.gen != h.gen {
+		c.gen, c.dirty = h.gen, allTrue(len(h.strips))
+	}
+	var body bytes.Buffer
+	count := 0
+	for i, d := range c.dirty {
+		if !d || h.strips[i] == nil {
+			continue
+		}
+		y := i * stripRows
+		rows := min(stripRows, h.h-y)
+		var hdr [8]byte
+		binary.LittleEndian.PutUint16(hdr[0:], uint16(y))
+		binary.LittleEndian.PutUint16(hdr[2:], uint16(rows))
+		binary.LittleEndian.PutUint32(hdr[4:], uint32(len(h.strips[i])))
+		body.Write(hdr[:])
+		body.Write(h.strips[i])
+		c.dirty[i] = false
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	msg := make([]byte, 8, 8+body.Len())
+	msg[0], msg[1] = 'S', 1
+	binary.LittleEndian.PutUint16(msg[2:], uint16(count))
+	binary.LittleEndian.PutUint16(msg[4:], uint16(h.w))
+	binary.LittleEndian.PutUint16(msg[6:], uint16(h.h))
+	return append(msg, body.Bytes()...)
+}
+
+// Latest returns the current frame as one JPEG (for /snapshot.jpg; encoded
+// on demand) and when the newest frame arrived.
 func (h *Hub) Latest() ([]byte, time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.lastJPEG, h.lastFrame
+	if h.frame == nil {
+		return nil, h.lastFrame
+	}
+	if h.snapSeq != h.frameSeq || h.snapJPEG == nil {
+		img := image.NewRGBA(image.Rect(0, 0, h.w, h.h))
+		bgraToRGBA(img.Pix, h.frame)
+		var buf bytes.Buffer
+		if jpeg.Encode(&buf, img, &jpeg.Options{Quality: h.quality}) == nil {
+			h.snapJPEG, h.snapSeq = buf.Bytes(), h.frameSeq
+		}
+	}
+	return h.snapJPEG, h.lastFrame
 }
 
 func (h *Hub) Run() {
@@ -88,15 +178,14 @@ func (h *Hub) Run() {
 		haveSeq   bool
 		lastSent  time.Time
 		lastMeta  Meta
-		pixels    []byte
-		img       *image.RGBA
+		cur, prev []byte
 		lastErr   string
 		idleProbe time.Time
 	)
-	tick := time.NewTicker(5 * time.Millisecond)
+	tick := time.NewTicker(2 * time.Millisecond)
 	defer tick.Stop()
 	for range tick.C {
-		// With nobody watching, still produce a frame every 2s so
+		// With nobody watching, still read a frame every 2s so
 		// /snapshot.jpg and /healthz stay meaningful.
 		if h.viewers() == 0 {
 			if time.Since(idleProbe) < 2*time.Second {
@@ -119,29 +208,108 @@ func (h *Hub) Run() {
 		// Seq is bumped before DOSBox-X copies the pixels; give the
 		// memcpy a moment to finish to avoid a torn frame.
 		time.Sleep(time.Millisecond)
-		if pixels, err = h.gl.ReadPixels(hdr, pixels); err != nil {
+		if cur, err = h.gl.ReadPixels(hdr, cur); err != nil {
 			log.Printf("gamelink read: %v", err)
 			continue
 		}
 		lastSeq, haveSeq, lastSent = hdr.Seq, true, time.Now()
 
 		if m := (Meta{"meta", hdr.W, hdr.H, hdr.ParX, hdr.ParY, hdr.Program}); m != lastMeta {
+			if m.W != lastMeta.W || m.H != lastMeta.H {
+				prev = nil // new geometry: every strip changed
+			}
 			lastMeta = m
 			log.Printf("frame %v", hdr)
 			b, _ := json.Marshal(m)
 			h.broadcastMeta(b)
 		}
 
-		if img == nil || img.Rect.Dx() != hdr.W || img.Rect.Dy() != hdr.H {
-			img = image.NewRGBA(image.Rect(0, 0, hdr.W, hdr.H))
+		changed := changedStrips(cur, prev, hdr.W, hdr.H)
+		var jpegs map[int][]byte
+		if len(changed) > 0 {
+			start := time.Now()
+			jpegs = h.encodeStrips(cur, hdr.W, hdr.H, changed)
+			h.noteUpdate(time.Since(start))
 		}
-		bgraToRGBA(img.Pix, pixels)
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: h.quality}); err != nil {
-			log.Printf("jpeg: %v", err)
-			continue
+		h.publish(hdr.W, hdr.H, cur, jpegs)
+		cur, prev = prev, cur // keep this frame to diff the next against
+	}
+}
+
+// changedStrips lists the strips that differ from prev (all of them when
+// there is no previous frame of this size).
+func changedStrips(cur, prev []byte, w, h int) []int {
+	n := (h + stripRows - 1) / stripRows
+	stride := w * 4
+	var out []int
+	for i := 0; i < n; i++ {
+		y0, y1 := i*stripRows*stride, min((i+1)*stripRows, h)*stride
+		if len(prev) != len(cur) || !bytes.Equal(cur[y0:y1], prev[y0:y1]) {
+			out = append(out, i)
 		}
-		h.broadcastFrame(buf.Bytes())
+	}
+	return out
+}
+
+// encodeStrips JPEG-encodes the given strips in parallel.
+func (h *Hub) encodeStrips(px []byte, w, hgt int, idx []int) map[int][]byte {
+	out := make(map[int][]byte, len(idx))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, max(1, runtime.GOMAXPROCS(0)))
+	stride := w * 4
+	for _, i := range idx {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer func() { <-sem; wg.Done() }()
+			y0 := i * stripRows
+			rows := min(stripRows, hgt-y0)
+			img := image.NewRGBA(image.Rect(0, 0, w, rows))
+			bgraToRGBA(img.Pix, px[y0*stride:(y0+rows)*stride])
+			var buf bytes.Buffer
+			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: h.quality}); err != nil {
+				log.Printf("jpeg: %v", err)
+				return
+			}
+			mu.Lock()
+			out[i] = buf.Bytes()
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	return out
+}
+
+// publish stores the frame and new strips and marks them dirty for every
+// client.
+func (h *Hub) publish(w, hgt int, px []byte, jpegs map[int][]byte) {
+	n := (hgt + stripRows - 1) / stripRows
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if w != h.w || hgt != h.h || len(h.strips) != n {
+		h.w, h.h, h.strips = w, hgt, make([][]byte, n)
+		h.gen++
+	}
+	h.frame = append(h.frame[:0], px...)
+	h.frameSeq++
+	h.lastFrame = time.Now()
+	if len(jpegs) == 0 {
+		return
+	}
+	for i, b := range jpegs {
+		h.strips[i] = b
+	}
+	for c := range h.clients {
+		if c.gen == h.gen { // else take() resets it to "everything"
+			for i := range jpegs {
+				c.dirty[i] = true
+			}
+		}
+		select {
+		case c.notify <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -157,19 +325,6 @@ func (h *Hub) broadcastMeta(b []byte) {
 	}
 }
 
-func (h *Hub) broadcastFrame(b []byte) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.lastJPEG, h.lastFrame = b, time.Now()
-	for c := range h.clients {
-		select {
-		case <-c.frames: // drop the stale frame the client hasn't sent yet
-		default:
-		}
-		c.frames <- b
-	}
-}
-
 func bgraToRGBA(dst, src []byte) {
 	for i := 0; i+3 < len(src); i += 4 {
 		dst[i+0] = src[i+2]
@@ -177,4 +332,30 @@ func bgraToRGBA(dst, src []byte) {
 		dst[i+2] = src[i+0]
 		dst[i+3] = 0xff
 	}
+}
+
+func (h *Hub) noteUpdate(enc time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ms := float64(enc.Microseconds()) / 1000
+	if h.encodeMs == 0 {
+		h.encodeMs = ms
+	} else {
+		h.encodeMs += (ms - h.encodeMs) / 8
+	}
+	now := time.Now()
+	if now.Sub(h.fpsWindow) >= time.Second {
+		h.fps, h.fpsCount, h.fpsWindow = h.fpsCount, 0, now
+	}
+	h.fpsCount++
+}
+
+// Stats is what the player's latency meter shows besides its own round trip.
+func (h *Hub) Stats() (encodeMs float64, fps int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if time.Since(h.fpsWindow) > 2*time.Second {
+		return h.encodeMs, 0 // nothing changed lately: a still screen
+	}
+	return h.encodeMs, h.fps
 }

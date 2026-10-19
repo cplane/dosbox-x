@@ -99,3 +99,4 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .catalog-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .catalog-table th { text-align: left; color: var(--muted); font-weight: normal; font-size: 12px; border-bottom: 1px solid var(--line); padding: 6px; }
 .catalog-table td { border-bottom: 1px solid var(--line); padding: 6px; vertical-align: top; }
+.lag { color: var(--warn); }

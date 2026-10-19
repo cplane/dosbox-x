@@ -168,11 +168,30 @@ func (g *Gamelink) WriteInput(s InputState, dx, dy float32) error {
 	}
 	dx += math.Float32frombits(binary.LittleEndian.Uint32(cur[0:]))
 	dy += math.Float32frombits(binary.LittleEndian.Uint32(cur[4:]))
+	return g.writeInput(f, s, dx, dy, 0)
+}
 
+// mouseAbsolute is this platform's Game Link extension (DOSBox-X
+// output_gamelink.cpp): bit 7 of mouse_btn says mouse_dx/dy are an absolute
+// position, 0..1 across the frame.
+const mouseAbsolute = 0x80
+
+// WriteInputAbs publishes state with the mouse at (x, y), 0..1 across the
+// frame: the browser draws its own cursor and DOS puts its cursor there.
+// Unlike deltas, a newer position simply replaces an unconsumed one.
+func (g *Gamelink) WriteInputAbs(s InputState, x, y float32) error {
+	f, err := g.file()
+	if err != nil {
+		return err
+	}
+	return g.writeInput(f, s, x, y, mouseAbsolute)
+}
+
+func (g *Gamelink) writeInput(f *os.File, s InputState, dx, dy float32, flags uint8) error {
 	var b [offInputKeys + 32 - offInput]byte
 	binary.LittleEndian.PutUint32(b[offInputDX-offInput:], math.Float32bits(dx))
 	binary.LittleEndian.PutUint32(b[offInputDY-offInput:], math.Float32bits(dy))
-	b[offInputBtn-offInput] = s.Buttons
+	b[offInputBtn-offInput] = s.Buttons | flags
 	for i, w := range s.Keys {
 		binary.LittleEndian.PutUint32(b[offInputKeys-offInput+4*i:], w)
 	}
@@ -181,7 +200,7 @@ func (g *Gamelink) WriteInput(s InputState, dx, dy float32) error {
 	if _, err := f.WriteAt(b[:], offInput); err != nil {
 		return err
 	}
-	_, err = f.WriteAt([]byte{1}, offInputReady)
+	_, err := f.WriteAt([]byte{1}, offInputReady)
 	return err
 }
 

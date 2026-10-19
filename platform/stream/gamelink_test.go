@@ -102,3 +102,23 @@ func TestOffsetsMatchHeaderLayout(t *testing.T) {
 		t.Fatal("input offset")
 	}
 }
+
+func TestWriteInputAbsReplaces(t *testing.T) {
+	p, f := fakeShm(t)
+	gl := NewGamelink(p)
+	t.Cleanup(gl.Close)
+	s := InputState{Buttons: 1}
+	if err := gl.WriteInputAbs(s, 0.25, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := gl.WriteInputAbs(s, 0.75, 0.125); err != nil { // not consumed yet -> replaces
+		t.Fatal(err)
+	}
+	var b [10]byte
+	f.ReadAt(b[:], offInput)
+	x := math.Float32frombits(binary.LittleEndian.Uint32(b[0:]))
+	y := math.Float32frombits(binary.LittleEndian.Uint32(b[4:]))
+	if x != 0.75 || y != 0.125 || b[8] != 1 || b[9] != 1|mouseAbsolute {
+		t.Fatalf("x=%v y=%v ready=%d btn=%#x", x, y, b[8], b[9])
+	}
+}
