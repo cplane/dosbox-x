@@ -93,6 +93,10 @@ export interface RunResult {
   ms: number
   timed_out: boolean
   prompt: string
+  /** Where the output came from: DOS's CON writes, or the screen's text. */
+  source: 'con' | 'screen'
+  /** The console stream was overrun: output is only its tail. */
+  truncated?: boolean
 }
 
 /** Runs one command line at the DOS prompt and returns what it printed. */

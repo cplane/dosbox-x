@@ -58,3 +58,24 @@ func TestMergeScreenAndOutput(t *testing.T) {
 		t.Fatalf("empty output %q", got)
 	}
 }
+
+func TestConOutput(t *testing.T) {
+	for _, tc := range []struct {
+		raw, prompt, want string
+	}{
+		// echo of the typed command, output, blank line, prompt
+		{"ver\r\nDOSBox-X version 2026\r\n\r\nC:\\>", "C:\\>", "DOSBox-X version 2026\n"},
+		// internal command with no output
+		{"cd \\TOOLS\r\n\r\nC:\\TOOLS>", "C:\\TOOLS>", ""},
+		// ANSI colours stripped, lone CRs dropped
+		{"x\r\n\x1b[1;33mhello\x1b[0m\r\r\n\r\nC:\\>", "C:\\>", "hello\n"},
+		// a program still running: no prompt yet
+		{"prog\r\nworking...", "C:\\>", "working...\n"},
+		// nothing after the echo
+		{"ver", "C:\\>", ""},
+	} {
+		if got := conOutput([]byte(tc.raw), tc.prompt); got != tc.want {
+			t.Errorf("conOutput(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}

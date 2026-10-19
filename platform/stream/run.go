@@ -100,6 +100,32 @@ func runOutput(log []string, cmdRow, promptRow int) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+// ANSI escape sequences (ANSI.SYS colours and cursor moves) in the console stream.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+
+// conOutput is a command's output as the console stream has it: the bytes
+// DOS wrote to CON since the command was typed, without the echo of the
+// command line (everything up to the first newline) and the prompt that
+// ends the run, trailing blank lines dropped.
+func conOutput(raw []byte, prompt string) string {
+	s := ansiRe.ReplaceAllString(string(raw), "")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	} else {
+		return ""
+	}
+	if prompt != "" && strings.HasSuffix(s, prompt) {
+		s = strings.TrimSuffix(s, prompt)
+	}
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return ""
+	}
+	return s + "\n"
+}
+
 type runReq struct {
 	Cmd       string `json:"cmd"`
 	TimeoutMS int    `json:"timeout_ms"`
@@ -157,6 +183,16 @@ func (c *Control) handleRun(w http.ResponseWriter, r *http.Request) {
 	cmdRow := ts.CursorY
 	prompt := strings.TrimRight(prev[cmdRow], " ")
 
+	// The console stream, when DOSBox-X publishes one, has the output
+	// complete; the screen is the fallback (and what direct-video programs
+	// leave behind).
+	conStart, haveCon := uint64(0), false
+	if c.con != nil {
+		if p, err := c.con.Pos(); err == nil {
+			conStart, haveCon = p, true
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	start := time.Now()
@@ -204,14 +240,25 @@ func (c *Control) handleRun(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	output := ""
+	output, source := "", "screen"
 	if promptRow >= 0 {
 		output = runOutput(log, cmdRow, promptRow)
 	} else {
 		output = runOutput(log, cmdRow, len(log))
 	}
+	lost := false
+	if haveCon {
+		if raw, l, err := c.con.ReadFrom(conStart); err == nil {
+			if o := conOutput(raw, prompt); o != "" || output == "" {
+				output, source, lost = o, "con", l
+			}
+		}
+	}
 	resp := map[string]any{
-		"output": output, "ms": time.Since(start).Milliseconds(), "timed_out": timedOut, "prompt": prompt,
+		"output": output, "ms": time.Since(start).Milliseconds(), "timed_out": timedOut, "prompt": prompt, "source": source,
+	}
+	if lost {
+		resp["truncated"] = true
 	}
 	if errorlevel >= 0 {
 		resp["errorlevel"] = errorlevel

@@ -491,7 +491,79 @@ void OUTPUT_GAMELINK_PublishText()
 }
 
 } // namespace
+
+// Console stream: every byte DOS programs write to the CON device (stdout
+// and stderr of programs, the shell's prompt and the echo of what is typed)
+// in order, in /DWD_GAMELINK_CON_R1. A ring buffer: write_pos counts all
+// bytes ever written and the ring holds the last `size` of them, so a
+// reader that keeps its own position has lost data when write_pos moved
+// more than `size` past it. Fast output that scrolls off the screen between
+// two frames is still complete here; what programs put on the screen
+// directly (video memory, INT 10h) is not, the text mirror has that.
+namespace {
+
+enum { CON_RING = 256 * 1024 };
+
+#pragma pack( push, 1 )
+struct sGameLinkCon_R1
+{
+    uint32_t magic;            // "DBXC"
+    uint16_t version;          // 1
+    uint16_t reserved;
+    uint32_t size;             // CON_RING
+    uint32_t reserved2;
+    volatile uint64_t write_pos; // total bytes written so far
+    uint8_t  ring[CON_RING];
+};
+#pragma pack( pop )
+
+sGameLinkCon_R1* con_block = nullptr;
+bool con_unavailable = false;
+
+bool con_open()
+{
+    if ( con_block ) return true;
+    if ( con_unavailable ) return false;
+    const int fd = shm_open( "/DWD_GAMELINK_CON_R1", O_CREAT | O_RDWR, 0644 );
+    if ( fd < 0 || ftruncate( fd, sizeof( sGameLinkCon_R1 ) ) != 0 ) {
+        LOG_MSG( "GAMELINK: console stream unavailable (errno %d)", errno );
+        if ( fd >= 0 ) close( fd );
+        con_unavailable = true;
+        return false;
+    }
+    void* p = mmap( nullptr, sizeof( sGameLinkCon_R1 ), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    close( fd );
+    if ( p == MAP_FAILED ) {
+        con_unavailable = true;
+        return false;
+    }
+    con_block = static_cast< sGameLinkCon_R1* >( p );
+    memset( con_block, 0, sizeof( sGameLinkCon_R1 ) );
+    con_block->size = CON_RING;
+    con_block->version = 1;
+    __sync_synchronize();
+    con_block->magic = 0x43584244; // "DBXC"
+    return true;
+}
+
+} // namespace
 #endif // !WIN32
+
+void OUTPUT_GAMELINK_ConsoleWrite(const uint8_t* data, size_t n)
+{
+#if !defined(WIN32)
+    if ( n == 0 || !sdl.gamelink.enable || sdl.desktop.want_type != SCREEN_GAMELINK ) return;
+    if ( !con_open() ) return;
+    sGameLinkCon_R1& c = *con_block;
+    const uint64_t pos = c.write_pos;
+    for ( size_t i = 0; i < n; ++i )
+        c.ring[ ( pos + i ) % CON_RING ] = data[ i ];
+    __sync_synchronize();
+    c.write_pos = pos + n;
+#else
+    (void)data; (void)n;
+#endif
+}
 
 void OUTPUT_GAMELINK_Transfer()
 {

@@ -26,6 +26,7 @@ type Control struct {
 	gl        *Gamelink
 	in        *InputWriter
 	text      *TextMirror // the text screen (run.go reads a command's output from it)
+	con       *ConStream  // the console stream (what DOS writes to CON; run.go)
 	dataDir   string      // host directory mounted as C: (/data/c)
 	maxUpload int64
 
