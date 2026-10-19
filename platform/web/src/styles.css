@@ -139,3 +139,17 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .machine-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .machine-picker { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .machine-picker select { font-size: 13px; }
+/* disassembly (DebugPanel.tsx) */
+.disasm { font-family: ui-monospace, Consolas, monospace; font-size: 13px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #0000aa; color: #ffff55; outline: none; }
+.disasm table { border-collapse: collapse; width: 100%; }
+.disasm td { padding: 1px 8px; white-space: pre; vertical-align: top; }
+.disasm td.gutter { width: 14px; padding: 1px 4px; color: #aaaaaa; cursor: pointer; user-select: none; }
+.disasm td.gutter.bp { color: #ff5555; }
+.disasm td.addr { color: #55ffff; cursor: pointer; }
+.disasm td.bytes { color: #aaaaaa; }
+.disasm tr.ip { background: #0000ff; }
+.disasm tr.ip td.gutter::before { content: '▶'; color: #ffffff; }
+.disasm tr.ip td.gutter.bp::before { content: '●'; color: #ff5555; }
+.disasm tr:hover { background: #000088; }
+.disasm tr.ip:hover { background: #0000ff; }
+.disasm .hint { padding: 2px 8px; color: #aaaaaa; font-size: 12px; }
