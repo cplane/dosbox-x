@@ -14,7 +14,7 @@ func writeMirror(t *testing.T, path string, seq uint32, cols, rows int, cp uint1
 	b := make([]byte, txtSize)
 	le := binary.LittleEndian
 	le.PutUint32(b, txtMagic)
-	le.PutUint16(b[4:], 1)
+	le.PutUint16(b[4:], 2)
 	le.PutUint16(b[txtOffFlags:], txtActive|txtCursorVisible|txtFont)
 	le.PutUint32(b[txtOffSeq:], seq)
 	le.PutUint16(b[12:], uint16(cols))
@@ -26,7 +26,8 @@ func writeMirror(t *testing.T, path string, seq uint32, cols, rows int, cp uint1
 	b[24], b[25] = 14, 15
 	le.PutUint16(b[26:], cp)
 	le.PutUint32(b[28:], 1)
-	b[32+3*7], b[32+3*7+1], b[32+3*7+2] = 0xaa, 0xaa, 0xaa // light grey
+	b[32] = 3                                              // errorlevel
+	b[36+3*7], b[36+3*7+1], b[36+3*7+2] = 0xaa, 0xaa, 0xaa // light grey
 	b[txtOffFont+'A'*32] = 0x18
 	for i := 0; i < cols*rows; i++ {
 		ch := byte(' ')
@@ -151,8 +152,8 @@ func TestScreenRenderings(t *testing.T) {
 	ansi := ts.ANSI()
 	for _, want := range []string{
 		"\x1b[0;38;2;255;255;85;48;2;0;0;170m☺", // yellow on blue (attr 1E)
-		"\x1b[5mh",                              // attr 9E: blinking, same colours
-		"\x1b[0;38;2;170;170;170;48;2;0;0;0m╔",  // grey on black (attr 07)
+		"\x1b[5mh",                             // attr 9E: blinking, same colours
+		"\x1b[0;38;2;170;170;170;48;2;0;0;0m╔", // grey on black (attr 07)
 		"\x1b[0m\n",
 	} {
 		if !strings.Contains(ansi, want) {

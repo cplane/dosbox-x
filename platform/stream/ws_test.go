@@ -22,7 +22,9 @@ func TestQuietConnectionStaysUp(t *testing.T) {
 
 	hub := NewHub(nil, 75, 60)
 	in := NewInputWriter(nil)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { serveWS(hub, in, NewAgent(filepath.Join(t.TempDir(), "none.sock")), w, r) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveWS(hub, in, NewAgent(filepath.Join(t.TempDir(), "none.sock")), w, r)
+	}))
 	defer srv.Close()
 	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
 	if err != nil {

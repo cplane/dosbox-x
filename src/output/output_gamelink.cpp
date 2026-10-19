@@ -371,6 +371,8 @@ struct sGameLinkText_R1
     uint8_t  cursor_start, cursor_end; // scanlines within the cell
     uint16_t codepage;         // of the character bytes (437 when none is loaded)
     uint32_t font_seq;         // bumped whenever font[] changes
+    uint8_t  errorlevel;       // v2: DOS return code of the last program that ended (IF ERRORLEVEL)
+    uint8_t  reserved[3];
     uint8_t  palette[16][3];   // RGB (8 bits each) of attribute colors 0-15
     uint8_t  font[256][32];    // glyph scanlines, MSB = leftmost; cell_h of them used
     uint8_t  cells[TEXT_MAX_CELLS][2]; // character, attribute; row-major
@@ -400,7 +402,7 @@ bool text_open()
     text_block = static_cast< sGameLinkText_R1* >( p );
     memset( text_block, 0, sizeof( sGameLinkText_R1 ) );
     text_block->magic = 0x54584244; // "DBXT"
-    text_block->version = 1;
+    text_block->version = 2;
     return true;
 }
 
@@ -470,6 +472,7 @@ void OUTPUT_GAMELINK_PublishText()
     t.cursor_start = cur_start;
     t.cursor_end = cur_end;
     t.codepage = dos.loaded_codepage ? dos.loaded_codepage : 437;
+    t.errorlevel = dos.return_code;
     for ( unsigned i = 0; i < 16; ++i ) {
         const RGBEntry& e = vga.dac.rgb[ vga.dac.combine[i] ];
         t.palette[i][0] = dac8( e.red );

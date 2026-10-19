@@ -491,6 +491,7 @@ var ctlOps = map[string]string{
 	"type": "POST", "keys": "POST", "mouse": "POST", "click": "POST", "rescan": "POST",
 	"snapshot.png": "GET", "snapshot.jpg": "GET", "screen.txt": "GET", "screen.ansi": "GET", "screen.json": "GET",
 	"agent": "POST", // one JSON-RPC request for the debugger agent (debug image only)
+	"run": "POST",   // run a DOS command line at the prompt, return its output
 }
 
 // /api/boxes/{id}/ctl/<op>: the box control API (see stream/control.go).

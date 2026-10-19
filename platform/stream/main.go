@@ -67,6 +67,7 @@ func main() {
 	ctl := &Control{
 		gl:        gl,
 		in:        in,
+		text:      hub.text,
 		dataDir:   env("DATA_DIR", "/data/c"),
 		maxUpload: int64(envInt("MAX_UPLOAD_MB", 512)) << 20,
 	}
@@ -136,12 +137,12 @@ func main() {
 var upgrader = websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 64 * 1024}
 
 type clientMsg struct {
-	K    *int        `json:"k"`
-	D    bool        `json:"d"`
-	M    *[2]float32 `json:"m"`
-	A    *[2]float32 `json:"a"`
-	B    *int        `json:"b"`
-	Ack  *int        `json:"ack"`
+	K     *int        `json:"k"`
+	D     bool        `json:"d"`
+	M     *[2]float32 `json:"m"`
+	A     *[2]float32 `json:"a"`
+	B     *int        `json:"b"`
+	Ack   *int        `json:"ack"`
 	Ping  *float64    `json:"ping"`
 	Hello *struct {
 		Text int `json:"text"`

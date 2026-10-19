@@ -20,10 +20,13 @@ const (
 	txtOffFlags = 6
 	txtOffSeq   = 8
 	txtOffCols  = 12
-	txtOffFont  = 80
-	txtOffCells = txtOffFont + 256*32
-	txtMaxCells = 132 * 60
-	txtSize     = txtOffCells + txtMaxCells*2
+	// v1 laid the palette out at 32; v2 (DOSBox-X text mirror with the DOS
+	// errorlevel at 32) moves it to 36. The block is sized for v2.
+	txtOffFontV1 = 80
+	txtOffFont   = 84
+	txtOffCells  = txtOffFont + 256*32
+	txtMaxCells  = 132 * 60
+	txtSize      = txtOffCells + txtMaxCells*2
 
 	txtActive        = 1 << 0
 	txtCursorVisible = 1 << 1
@@ -41,6 +44,7 @@ type TextScreen struct {
 	CursorStart, CursorEnd uint8
 	Codepage               uint16
 	FontSeq                uint32
+	ErrorLevel             int // DOS return code of the last program (v2 mirrors; -1 when unknown)
 	Palette                [48]byte
 	Font                   []byte // 256 glyphs × CellH scanlines
 	Cells                  []byte // Cols×Rows × (char, attr)
@@ -122,15 +126,22 @@ func parseText(b []byte) *TextScreen {
 	t.CursorStart, t.CursorEnd = b[24], b[25]
 	t.Codepage = le.Uint16(b[26:])
 	t.FontSeq = le.Uint32(b[28:])
+	t.ErrorLevel = -1
+	pal, font := 32, txtOffFontV1
+	if le.Uint16(b[4:]) >= 2 {
+		t.ErrorLevel = int(b[32])
+		pal, font = 36, txtOffFont
+	}
 	if t.Cols < 1 || t.Rows < 1 || t.Cols*t.Rows > txtMaxCells || t.CellH < 1 || t.CellH > 32 {
 		return nil
 	}
-	copy(t.Palette[:], b[32:80])
+	copy(t.Palette[:], b[pal:pal+48])
 	t.Font = make([]byte, 256*t.CellH)
 	for c := 0; c < 256; c++ {
-		copy(t.Font[c*t.CellH:(c+1)*t.CellH], b[txtOffFont+c*32:txtOffFont+c*32+t.CellH])
+		copy(t.Font[c*t.CellH:(c+1)*t.CellH], b[font+c*32:font+c*32+t.CellH])
 	}
-	t.Cells = append([]byte(nil), b[txtOffCells:txtOffCells+t.Cols*t.Rows*2]...)
+	cells := font + 256*32
+	t.Cells = append([]byte(nil), b[cells:cells+t.Cols*t.Rows*2]...)
 	return t
 }
 

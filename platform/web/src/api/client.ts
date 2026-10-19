@@ -87,6 +87,23 @@ export async function typeText(id: string, text: string): Promise<void> {
 
 export const snapshotURL = (id: string) => `${box(id)}/ctl/snapshot.png`
 
+export interface RunResult {
+  output: string
+  errorlevel?: number
+  ms: number
+  timed_out: boolean
+  prompt: string
+}
+
+/** Runs one command line at the DOS prompt and returns what it printed. */
+export async function runCommand(id: string, cmd: string, timeoutMs = 120000): Promise<RunResult> {
+  return json<RunResult>(await request(`${box(id)}/ctl/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cmd, timeout_ms: timeoutMs }),
+  }))
+}
+
 /** The text screen as plain text (409 in graphics modes). */
 export async function screenText(id: string): Promise<string> {
   const response = await request(`${box(id)}/ctl/screen.txt`)

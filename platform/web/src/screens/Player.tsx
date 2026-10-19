@@ -3,6 +3,7 @@ import { getBox, NeedsSignIn, screenText, snapshotURL, startBox, stopBox, typeTe
 import { scancodeFor, SHIFT } from '../player/keys'
 import { TextScreen } from '../player/textmode'
 import { DebugPanel, type RPC } from './DebugPanel'
+import { Console } from './Console'
 
 interface Props {
   boxId: string
@@ -51,6 +52,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [latency, setLatency] = useState<Latency | null>(null)
   const [textMode, setTextMode] = useState(false)
   const [showDebug, setShowDebug] = useState(false)
+  const [showConsole, setShowConsole] = useState(false)
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   // JSON-RPC calls to the debugger agent ride the player socket: id -> settler.
   const rpcWaiters = useRef(new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>())
@@ -387,6 +389,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           </>
         )}
         <button onClick={onFiles}>Files</button>
+        {running && <button className={showConsole ? 'on' : ''} onClick={() => setShowConsole(!showConsole)}>Console</button>}
         {running && <button className={showDebug ? 'on' : ''} onClick={() => setShowDebug(!showDebug)}>Debug</button>}
         {running || box?.state === 'starting'
           ? <button className="danger" onClick={stop}>Stop</button>
@@ -418,6 +421,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           <div className="hint">Click the screen to type · your arrow is the DOS mouse · Capture mouse for relative motion (Esc releases)</div>
         )}
       </div>
+      {showConsole && running && <Console boxId={boxId} running={running} />}
       {showDebug && running && <DebugPanel rpc={rpc} available={agentAvailable} />}
     </div>
   )
