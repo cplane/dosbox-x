@@ -13,6 +13,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * own disassembler, so 8086 through 386 opcodes come out right.
  */
 
+import { MemoryPanel } from './MemoryPanel'
+
 export type RPC = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
 interface Registers {
@@ -59,6 +61,7 @@ export function DebugPanel({ rpc, available }: Props) {
   const [codeSeg, setCodeSeg] = useState('')
   // breakpoints by "SEG:OFF8" -> breakpoint_id
   const [bps, setBps] = useState<Record<string, string>>({})
+  const [showMem, setShowMem] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [log, setLog] = useState<string[]>([])
@@ -265,6 +268,7 @@ export function DebugPanel({ rpc, available }: Props) {
             <button onClick={cont} disabled={busy || !stopped} title="F9">Continue</button>
             <button onClick={pause} disabled={busy || session.state !== 'running'}>Pause</button>
             <button className="danger" onClick={stop} disabled={busy}>{session.state === 'exited' ? 'Close' : 'Stop'}</button>
+            <button className={showMem ? 'on' : ''} onClick={() => setShowMem(!showMem)}>Memory</button>
           </>
         )}
       </div>
@@ -308,6 +312,7 @@ export function DebugPanel({ rpc, available }: Props) {
           </div>
         </div>
       )}
+      {showMem && session && regs && <MemoryPanel rpc={rpc} sessionId={session.session_id} stopped={stopped} regs={regs} />}
       {log.length > 0 && <pre className="debug-log small">{log.join('\n')}</pre>}
     </div>
   )

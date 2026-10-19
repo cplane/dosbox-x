@@ -60,7 +60,7 @@ bool IsReadOnlyDiagnosticCommand(const std::string& command)
     std::string normalized = Trim(command);
     for (std::string::iterator it = normalized.begin(); it != normalized.end(); ++it)
         *it = static_cast<char>(std::toupper(static_cast<unsigned char>(*it)));
-    return normalized == "HELP" || normalized == "CPU" || normalized == "PIC";
+    return normalized == "HELP" || normalized == "CPU" || normalized == "PIC" || normalized == "MCBS";
 }
 
 #if C_DEBUG
