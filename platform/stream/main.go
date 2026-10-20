@@ -65,6 +65,8 @@ func main() {
 	go hub.Run()
 	go in.Run()
 	agent := NewAgent(env("AGENT_SOCK", "/dev/shm/dosbox-agent.sock"))
+	pump := NewConPump(hub, con)
+	go pump.Run()
 	ctl := &Control{
 		gl:        gl,
 		in:        in,
@@ -79,7 +81,7 @@ func main() {
 	mux.Handle("GET /", http.FileServerFS(web))
 	ctl.Register(mux)
 	agent.Register(mux)
-	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) { serveWS(hub, in, agent, w, r) })
+	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) { serveWS(hub, in, agent, pump, w, r) })
 	mux.HandleFunc("GET /snapshot.jpg", func(w http.ResponseWriter, r *http.Request) {
 		jpg, _ := hub.Latest()
 		if jpg == nil {
@@ -148,6 +150,7 @@ type clientMsg struct {
 	Ping  *float64    `json:"ping"`
 	Hello *struct {
 		Text int `json:"text"`
+		Con  int `json:"con"` // the console stream too (conpump.go)
 	} `json:"hello"`
 	// RPC: a JSON-RPC request for the debugger agent (agent.go); answered
 	// with {"type":"rpc","response":…}.
@@ -162,7 +165,7 @@ var frameWindow = 3
 // writeTimeout bounds each write to a client (a stuck link is dropped).
 var writeTimeout = 10 * time.Second
 
-func serveWS(hub *Hub, in *InputWriter, agent *Agent, w http.ResponseWriter, r *http.Request) {
+func serveWS(hub *Hub, in *InputWriter, agent *Agent, pump *ConPump, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -232,6 +235,8 @@ func serveWS(hub *Hub, in *InputWriter, agent *Agent, w http.ResponseWriter, r *
 					dirty = true // strips may have piled up while the window was full
 				case p := <-pongs:
 					err = write(websocket.TextMessage, p)
+				case b := <-c.conOut:
+					err = write(websocket.BinaryMessage, b)
 				case <-ping.C:
 					err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 				}
@@ -290,6 +295,9 @@ func serveWS(hub *Hub, in *InputWriter, agent *Agent, w http.ResponseWriter, r *
 		case m.Hello != nil:
 			if m.Hello.Text != 0 {
 				hub.wantText(c)
+			}
+			if m.Hello.Con != 0 {
+				pump.wantCon(c)
 			}
 			helloOnce.Do(func() { close(hello) })
 		}

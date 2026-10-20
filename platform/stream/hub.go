@@ -56,6 +56,11 @@ type client struct {
 	needPal  bool
 	needFont bool
 	needHdr  bool
+
+	// Console stream (conpump.go), for clients that said {"hello":{"con":1}}.
+	con     bool
+	conOut  chan []byte
+	conLost bool // a chunk was dropped: say so with the next one
 }
 
 // Hub polls Game Link for new frames and fans strip updates out to clients.
@@ -98,7 +103,7 @@ func NewHub(gl *Gamelink, quality, fps int) *Hub {
 }
 
 func (h *Hub) add() *client {
-	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1)}
+	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1), conOut: make(chan []byte, 64)}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	meta := h.lastMeta

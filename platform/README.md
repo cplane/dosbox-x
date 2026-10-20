@@ -39,6 +39,7 @@ kubectl -n dosbox port-forward pod/dosbox-test 8080:8080   # open http://localho
 | `GET /screen.ansi` | the same text with 24-bit colour escapes from the screen's own palette (blink: SGR 5), for a terminal: `curl …/screen.ansi` |
 | `GET /screen.json` | `cols, rows, cellW, cellH, codepage, cursor{x,y,visible}, blinkAttribute, palette[16] ("#rrggbb"), lines[{text, fg[], bg[], blink[]}]` — `text` has exactly `cols` characters, so `text[i]` goes with `fg[i]`/`bg[i]`; `blink` lists blinking columns. Control bytes 01-1F show as the DOS glyphs (☺ ► ↑ …) in all three |
 | `GET /agent`, `POST /agent` | the DOSBox-X **RPC debugger agent** (debug image only; see "Debugger"): GET → `{"available"}`; POST body = one JSON-RPC 2.0 request, the agent's response as is (409 without the agent). Over the player socket: `{"rpc": <request>}` → `{"type":"rpc","response":…}`. Through the gateway: `POST /api/boxes/{id}/ctl/agent` |
+| `GET /ws` + `{"hello":{"con":1}}` | the **console stream** live: binary `"C" 1 flags bytes…` chunks of what DOS writes to CON as it happens (flags bit 0: bytes were lost before these); the last 8 KB first. The player's Workbench view feeds this to an xterm.js terminal; keys go back as scancodes like the screen's |
 | `POST /run` | run one command line at the DOS prompt and return what it printed, like a terminal: `{"cmd":"ml /AT hello.asm","timeout_ms":60000}` (or a text/plain body) → `{"output","errorlevel","ms","timed_out","prompt","source":"con"\|"screen","truncated"?}`. 409 when DOS is not at a prompt (a program is running, or a graphics mode). The output comes from the console stream (`/dev/shm/DWD_GAMELINK_CON_R1`, every byte DOS wrote to CON) when DOSBox-X publishes one, else from the text screen; a program that never returns to the prompt ends in `timed_out` with what was captured. Through the gateway: `/api/boxes/{id}/ctl/run` |
 | `GET /healthz` | 200 while frames flow (readiness probe) |
 
@@ -227,6 +228,13 @@ the machine presets use:
   ring buffer in `/dev/shm/DWD_GAMELINK_CON_R1` (`output_gamelink.cpp`,
   hooked in `dev_con.h`), so fast output that scrolls off between frames is
   complete; the text screen is the fallback for programs that draw directly.
+- **Workbench view** (the Screen / Workbench select on the player's bar):
+  the editor on top and a **terminal** (`Terminal.tsx`, xterm.js) below, on
+  paper colours, the DOS screen put away. The terminal is the console
+  stream live (`hello con`), so a program's output appears while it runs;
+  every key goes to DOS the way the screen's do (DOS echoes), pasted text
+  is typed. Build & Run types `C:\BUILD` there. Programs that draw the
+  screen directly don't show in it — switch back to Screen for those.
 - **Editor** (`Editor.tsx`): a browser over C: and Monaco (bundled, lazy)
   with a MASM tokenizer, C/C++, Pascal and batch highlighting and the
   Borland blue theme; files are read and written byte for byte (CP437 kept)

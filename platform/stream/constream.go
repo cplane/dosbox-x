@@ -89,19 +89,20 @@ func (c *ConStream) Pos() (uint64, error) {
 	return c.writePos()
 }
 
-// ReadFrom returns the bytes written since pos. lost is true when some of
-// them were already overwritten (the ring is smaller than what was written
-// meanwhile); the bytes returned are then the most recent ones.
-func (c *ConStream) ReadFrom(pos uint64) (data []byte, lost bool, err error) {
+// ReadFrom returns the bytes written since pos and the position after
+// them. lost is true when some were already overwritten (the ring is
+// smaller than what was written meanwhile, or DOSBox-X restarted the
+// stream); the bytes returned are then the most recent ones.
+func (c *ConStream) ReadFrom(pos uint64) (data []byte, next uint64, lost bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.open(); err != nil {
-		return nil, false, err
+		return nil, pos, false, err
 	}
 	for try := 0; try < 4; try++ {
 		end, err := c.writePos()
 		if err != nil {
-			return nil, false, err
+			return nil, pos, false, err
 		}
 		if end < pos { // DOSBox-X restarted: the stream begins again
 			pos, lost = 0, true
@@ -110,25 +111,25 @@ func (c *ConStream) ReadFrom(pos uint64) (data []byte, lost bool, err error) {
 			pos, lost = end-c.size, true
 		}
 		if end == pos {
-			return nil, lost, nil
+			return nil, end, lost, nil
 		}
 		buf := make([]byte, end-pos)
 		start := pos % c.size
 		n := min(uint64(len(buf)), c.size-start)
 		if _, err := c.f.ReadAt(buf[:n], int64(conOffRing+start)); err != nil {
-			return nil, false, err
+			return nil, pos, false, err
 		}
 		if n < uint64(len(buf)) {
 			if _, err := c.f.ReadAt(buf[n:], conOffRing); err != nil {
-				return nil, false, err
+				return nil, pos, false, err
 			}
 		}
 		// Still intact if the writer didn't lap our start meanwhile.
 		if end2, err := c.writePos(); err != nil {
-			return nil, false, err
+			return nil, pos, false, err
 		} else if end2-pos <= c.size {
-			return buf, lost, nil
+			return buf, end, lost, nil
 		}
 	}
-	return nil, true, errors.New("console stream busy")
+	return nil, pos, true, errors.New("console stream busy")
 }

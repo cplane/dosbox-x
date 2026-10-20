@@ -5,6 +5,11 @@ import { TextScreen } from '../player/textmode'
 import { fontReady, loadTextStyle, saveTextStyle, TEXT_STYLES, type TextStyle } from '../player/textstyle'
 import { DebugPanel, type RPC } from './DebugPanel'
 import { Console, type ConsoleHandle, type Step } from './Console'
+import { Terminal, type TerminalHandle } from './Terminal'
+
+/** Screen: the DOS screen with panels under it (as it was). Workbench: editor + terminal on paper, the screen put away. */
+type View = 'screen' | 'workbench'
+const loadView = (): View => { try { return localStorage.getItem('dosbox.view') === 'workbench' ? 'workbench' : 'screen' } catch { return 'screen' } }
 
 // Monaco is big; it loads the first time the editor opens.
 const Editor = lazy(() => import('./Editor').then((m) => ({ default: m.Editor })))
@@ -64,10 +69,28 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [showConsole, setShowConsole] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
   const consoleRef = useRef<ConsoleHandle>(null)
+  const [view, setView] = useState<View>(loadView)
+  const viewRef = useRef(view)
+  viewRef.current = view
+  const terminalRef = useRef<TerminalHandle>(null)
+  // The console stream (hello con) fans out to whoever listens (the terminal).
+  const conSubs = useRef(new Set<(chunk: Uint8Array, lost: boolean) => void>())
+  const subscribeCon = useCallback((fn: (chunk: Uint8Array, lost: boolean) => void) => {
+    conSubs.current.add(fn)
+    return () => { conSubs.current.delete(fn) }
+  }, [])
+  // The screen's key path, for the terminal to send keys the same way.
+  const keyRef = useRef<(e: KeyboardEvent, down: boolean) => void>(() => undefined)
+  const onTermKey = useCallback((e: KeyboardEvent, down: boolean) => keyRef.current(e, down), [])
 
   // The editor's Build & Run: open the console (mounting it if needed) and
   // run the steps there, so the output lands where commands are typed.
   const runSteps = useCallback(async (steps: Step[]) => {
+    if (viewRef.current === 'workbench') {
+      // The terminal shows the output as it streams; the batch prints its own verdict.
+      for (const s of steps) await terminalRef.current?.run(s.cmd)
+      return true
+    }
     setShowConsole(true)
     for (let i = 0; i < 20 && !consoleRef.current; i++) await new Promise((r) => setTimeout(r, 50))
     return consoleRef.current?.run(steps) ?? false
@@ -180,7 +203,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     function connect() {
       ws = new WebSocket(wsURL(boxId))
       ws.binaryType = 'arraybuffer'
-      ws.onopen = () => { backoff = 500; setConnected(true); send({ hello: { text: 1 } }) }
+      ws.onopen = () => { backoff = 500; setConnected(true); send({ hello: { text: 1, con: 1 } }) }
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
           const m = JSON.parse(ev.data)
@@ -199,6 +222,10 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           } else if (m.type === 'pong') {
             setLatency({ rtt: performance.now() - m.t, encodeMs: m.encodeMs ?? 0, serverFps: m.fps ?? 0 })
           }
+        } else if (new Uint8Array(ev.data, 0, 1)[0] === 0x43) { // "C": console stream chunk
+          const lost = new Uint8Array(ev.data, 2, 1)[0] === 1
+          const chunk = new Uint8Array(ev.data, 3)
+          for (const fn of conSubs.current) fn(chunk, lost)
         } else draw(ev.data)
       }
       ws.onclose = () => {
@@ -248,6 +275,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         if (synth.delete(sc) && !synth.size) send({ k: SHIFT, d: false })
       }
     }
+    keyRef.current = key
     const onKeyDown = (e: KeyboardEvent) => key(e, true)
     const onKeyUp = (e: KeyboardEvent) => key(e, false)
     const onBlur = () => releaseRef.current()
@@ -405,7 +433,18 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <span className="muted">{connected ? 'connected' : box ? box.state : 'loading'}</span>
         {meta?.program && <span className="muted">▶ {meta.program}</span>}
         {meta && <span className="muted" title={textMode ? "Text mode: drawn by your browser from the screen data" : "Graphics: video from the box"}>{textMode ? "text" : `${meta.w}×${meta.h}`}</span>}
-        {textMode && (
+        {running && (
+          <select
+            className="view-select"
+            value={view}
+            onChange={(e) => { const v = e.target.value as View; setView(v); try { localStorage.setItem('dosbox.view', v) } catch { /* private mode */ } }}
+            title="Screen: the DOS screen with panels. Workbench: editor and terminal, the screen put away"
+          >
+            <option value="screen">Screen</option>
+            <option value="workbench">Workbench</option>
+          </select>
+        )}
+        {textMode && view === 'screen' && (
           <select
             className="style"
             value={textStyle.id}
@@ -442,8 +481,8 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           </>
         )}
         <button onClick={onFiles}>Files</button>
-        {running && <button className={showEditor ? 'on' : ''} onClick={() => setShowEditor(!showEditor)}>Editor</button>}
-        {running && <button className={showConsole ? 'on' : ''} onClick={() => setShowConsole(!showConsole)}>Console</button>}
+        {running && view === 'screen' && <button className={showEditor ? 'on' : ''} onClick={() => setShowEditor(!showEditor)}>Editor</button>}
+        {running && view === 'screen' && <button className={showConsole ? 'on' : ''} onClick={() => setShowConsole(!showConsole)}>Console</button>}
         {running && <button className={showDebug ? 'on' : ''} onClick={() => setShowDebug(!showDebug)}>Debug</button>}
         {running || box?.state === 'starting'
           ? <button className="danger" onClick={stop}>Stop</button>
@@ -453,7 +492,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       {box?.reason && !running && <p className="muted">{box.reason}</p>}
       <div
         ref={wrapRef}
-        className={`screen-wrap ${focused ? 'focused' : ''}`}
+        className={`screen-wrap ${focused ? 'focused' : ''} ${view === 'workbench' && running ? 'hidden' : ''}`}
         tabIndex={0}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
@@ -476,12 +515,20 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           <div className="hint">Click the screen to type · your arrow is the DOS mouse · Capture mouse for relative motion (Esc releases)</div>
         )}
       </div>
-      {showEditor && running && (
+      {view === 'workbench' && running && (
+        <div className="workbench">
+          <Suspense fallback={<p className="muted">Loading the editor…</p>}>
+            <Editor boxId={boxId} running={running} onRun={runSteps} look="paper" />
+          </Suspense>
+          <Terminal ref={terminalRef} boxId={boxId} running={running} subscribe={subscribeCon} onKey={onTermKey} />
+        </div>
+      )}
+      {view === 'screen' && showEditor && running && (
         <Suspense fallback={<p className="muted">Loading the editor…</p>}>
           <Editor boxId={boxId} running={running} onRun={runSteps} />
         </Suspense>
       )}
-      {showConsole && running && <Console ref={consoleRef} boxId={boxId} running={running} />}
+      {view === 'screen' && showConsole && running && <Console ref={consoleRef} boxId={boxId} running={running} />}
       {showDebug && running && <DebugPanel rpc={rpc} available={agentAvailable} />}
     </div>
   )

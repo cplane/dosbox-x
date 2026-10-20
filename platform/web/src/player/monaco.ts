@@ -130,3 +130,38 @@ export function languageFor(name: string): string {
 }
 
 export { monaco }
+
+// The workbench's look: paper. Warm light background, brown ink, few
+// colours, nothing shouting.
+monaco.editor.defineTheme('paper', {
+  base: 'vs',
+  inherit: true,
+  rules: [
+    { token: '', foreground: '3a3226' },
+    { token: 'comment', foreground: '9a8c70', fontStyle: 'italic' },
+    { token: 'keyword', foreground: '7a4a1f' },
+    { token: 'keyword.directive', foreground: '6b5a3e' },
+    { token: 'variable', foreground: '5a4a8a' },
+    { token: 'type.identifier', foreground: '4f6b2f' },
+    { token: 'identifier', foreground: '3a3226' },
+    { token: 'number', foreground: '8a5a00' },
+    { token: 'string', foreground: '4f6b2f' },
+    { token: 'delimiter', foreground: '6b5a3e' },
+    { token: 'type', foreground: '5a4a8a' },
+  ],
+  colors: {
+    'editor.background': '#f7f1e3',
+    'editor.foreground': '#3a3226',
+    'editor.lineHighlightBackground': '#efe6d2',
+    'editor.selectionBackground': '#e3d4ad',
+    'editorCursor.foreground': '#3a3226',
+    'editorLineNumber.foreground': '#b9ad93',
+    'editorLineNumber.activeForeground': '#7a6a4f',
+    'editorIndentGuide.background': '#e6dcc6',
+    'editorWhitespace.foreground': '#e6dcc6',
+    'editorGutter.background': '#f7f1e3',
+    'editorRuler.foreground': '#eadfc7',
+    'scrollbarSlider.background': '#d8ccb080',
+    'minimap.background': '#f3ecdb',
+  },
+})
