@@ -30,7 +30,7 @@ input {
 }
 .muted { color: var(--muted); }
 .spacer { flex: 1; }
-.title { font: 700 22px/1 ui-monospace, monospace; letter-spacing: .12em; margin: 0; }
+.title { font: 700 22px/1 "JetBrains Mono", ui-monospace, monospace; letter-spacing: .12em; margin: 0; }
 
 /* sign-in (shared class names with the dunelegacy client) */
 .menu-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -63,10 +63,10 @@ input {
 .usage .fill { height: 100%; background: var(--accent); }
 .usage .fill.hot { background: var(--bad); }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.crumbs { font-family: ui-monospace, monospace; }
+.crumbs { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .files { width: 100%; border-collapse: collapse; }
 .files td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
-.files td:first-child { font-family: ui-monospace, monospace; word-break: break-all; }
+.files td:first-child { font-family: "JetBrains Mono", ui-monospace, monospace; word-break: break-all; }
 
 /* player */
 .player { width: min(100%, 1100px); margin: 0 auto; padding: 8px 16px 16px; }
@@ -106,16 +106,16 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .debug .bar { padding: 0; }
 .debug input { flex: 1; min-width: 180px; max-width: 320px; }
 .debug-grid { display: grid; gap: 8px; }
-.regs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 4px 12px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.regs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 4px 12px; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 13px; }
 .regs b { color: var(--muted); font-weight: normal; margin-right: 4px; }
 .regs .changed { color: var(--warn); }
-.mono { font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; }
-.debug-log { margin: 0; max-height: 120px; overflow: auto; color: var(--muted); font-family: ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+.mono { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+.debug-log { margin: 0; max-height: 120px; overflow: auto; color: var(--muted); font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; white-space: pre-wrap; }
 
 /* command console (Console.tsx) */
 .console { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; display: grid; grid-template-rows: 1fr auto; overflow: hidden; }
-.console-out { margin: 0; padding: 8px 12px; height: 260px; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
-.console-in { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding: 6px 12px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.console-out { margin: 0; padding: 8px 12px; height: 260px; overflow: auto; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+.console-in { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding: 6px 12px; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 13px; }
 .console-in input { flex: 1; min-width: 0; max-width: none; background: transparent; border: 0; outline: 0; color: inherit; font: inherit; padding: 0; }
 .console-prompt { color: var(--muted); }
 
@@ -125,7 +125,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .editor .bar input { flex: 1; min-width: 120px; max-width: none; font-size: 12px; }
 .editor-side { border-right: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-width: 0; }
 .editor-side .bar .mono { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.editor-files { list-style: none; margin: 0; padding: 4px 0; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.editor-files { list-style: none; margin: 0; padding: 4px 0; overflow: auto; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 13px; }
 .editor-files li button { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 0; padding: 2px 10px; color: inherit; font: inherit; cursor: pointer; }
 .editor-files li.dir button { color: var(--muted); }
 .editor-files li.on button { background: var(--line); }
@@ -140,7 +140,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .machine-picker { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .machine-picker select { font-size: 13px; }
 /* disassembly (DebugPanel.tsx) */
-.disasm { font-family: ui-monospace, Consolas, monospace; font-size: 13px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #0000aa; color: #ffff55; outline: none; }
+.disasm { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 13px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #0000aa; color: #ffff55; outline: none; }
 .disasm table { border-collapse: collapse; width: 100%; }
 .disasm td { padding: 1px 8px; white-space: pre; vertical-align: top; }
 .disasm td.gutter { width: 14px; padding: 1px 4px; color: #aaaaaa; cursor: pointer; user-select: none; }
@@ -156,8 +156,8 @@ button.on { border-color: var(--accent); color: var(--accent); }
 
 /* memory panel (MemoryPanel.tsx) */
 .mem { display: grid; gap: 8px; }
-.mem .bar input { flex: 0 0 auto; width: 60px; min-width: 60px; font-family: ui-monospace, Consolas, monospace; }
-.hexview { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: #0000aa; color: #ffff55; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; overflow: auto; white-space: pre; line-height: 18px; }
+.mem .bar input { flex: 0 0 auto; width: 60px; min-width: 60px; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; }
+.hexview { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 13px; background: #0000aa; color: #ffff55; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; overflow: auto; white-space: pre; line-height: 18px; }
 .hexview .a { color: #55ffff; }
 .hexview .b { cursor: pointer; }
 .hexview .b:hover { background: #0000ff; }
@@ -174,8 +174,8 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .memmap-bar .video { background: #aa55aa; }
 .memmap-bar .rom { background: #aa5500; }
 .memmap-bar .umb { background: #444; }
-.memmap-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-family: ui-monospace, Consolas, monospace; }
-.memmap table { border-collapse: collapse; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.memmap-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; }
+.memmap table { border-collapse: collapse; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 12px; }
 .memmap td { padding: 1px 8px; white-space: nowrap; }
 .memmap tr.me td { color: var(--warn); }
 .memmap tr:hover { background: var(--line); }
@@ -189,7 +189,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .trace-strip span.io { background: #ff55ff; }
 .trace-strip span.jump, .trace-strip span.call, .trace-strip span.ret { background: #55aaff; }
 .trace-strip span.sel { outline: 2px solid #fff; }
-.trace-table { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0000aa; color: #ffff55; }
+.trace-table { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 12px; background: #0000aa; color: #ffff55; }
 .trace-table table { border-collapse: collapse; width: 100%; }
 .trace-table td { padding: 1px 8px; white-space: pre; vertical-align: top; }
 .trace-table td.addr { color: #55ffff; }
