@@ -193,6 +193,8 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { saveRef.current() })
+    // The web font may arrive after Monaco measured the fallback: measure again then.
+    if ('fonts' in document) document.fonts.ready.then(() => monaco.editor.remeasureFonts())
     editor.focus()
   }
 
@@ -233,7 +235,7 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
               onChange={(v) => setText(v ?? '')}
               onMount={onMount}
               options={{
-                fontFamily: 'ui-monospace, Consolas, "Lucida Console", monospace',
+                fontFamily: '"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace',
                 fontSize: 14,
                 lineHeight: 20,
                 minimap: { enabled: false },
