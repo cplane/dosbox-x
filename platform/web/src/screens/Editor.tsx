@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
 import { getBox, readTextFile, runCommand, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
@@ -38,6 +38,18 @@ interface Props {
   program?: string
   /** The debugger, when the editor should show the current line and take breakpoints. */
   debug?: EditorDebug
+  /** false: no file tree beside the editor (the workspace has a Files tab that drives it through the handle). */
+  tree?: boolean
+  onPathChange?: (path: string | null) => void
+  onDirChange?: (dir: string) => void
+  onSaved?: () => void
+}
+
+/** What a Files tab (or anything else) can ask the editor to do. */
+export interface EditorHandle {
+  open: (path: string) => void
+  /** New file in the current folder (asks for the name). */
+  create: () => void
 }
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
@@ -129,7 +141,7 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
 /** The one step the console types for a build. */
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
-export function Editor({ boxId, running, onRun, look = 'dos', program, debug }: Props) {
+export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, running, onRun, look = 'dos', program, debug, tree = true, onPathChange, onDirChange, onSaved }: Props, ref) {
   // A program other than the shell has the keyboard: typing C:\BUILD would go to it.
   const busyWith = program && program.toUpperCase() !== 'COMMAND' ? program : null
   // Source lines <-> code offsets of the last debug build (MASM listing).
@@ -142,6 +154,9 @@ export function Editor({ boxId, running, onRun, look = 'dos', program, debug }: 
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0) // bumped when the tree should re-list (a save)
   const [path, setPath] = useState<string | null>(null)
+  useEffect(() => { onPathChange?.(path) }, [path]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onDirChange?.(dir) }, [dir]) // eslint-disable-line react-hooks/exhaustive-deps
+  useImperativeHandle(ref, () => ({ open: (p: string) => { open(p) }, create: () => { create() } }))
   const [text, setText] = useState('')
   const [saved, setSaved] = useState('')
   const [busy, setBusy] = useState(false)
@@ -192,6 +207,7 @@ export function Editor({ boxId, running, onRun, look = 'dos', program, debug }: 
       setText(t)
       setSaved(t)
       setStatus(`saved ${split(path)[1]}`)
+      onSaved?.()
       setTreeKey((k) => k + 1)
       return true
     } catch (err) {
@@ -306,14 +322,16 @@ export function Editor({ boxId, running, onRun, look = 'dos', program, debug }: 
 
   const name = path ? split(path)[1] : ''
   return (
-    <div className="editor">
-      <div className="editor-side">
-        <div className="bar">
-          <span className="mono" title="where New creates a file">{dosDir(dir)}</span>
-          <button onClick={create} title="New file in this folder">New</button>
+    <div className={`editor ${tree ? '' : 'no-tree'}`}>
+      {tree && (
+        <div className="editor-side">
+          <div className="bar">
+            <span className="mono" title="where New creates a file">{dosDir(dir)}</span>
+            <button onClick={create} title="New file in this folder">New</button>
+          </div>
+          <FileTree boxId={boxId} selected={path} refreshKey={treeKey} onOpen={open} onDir={setDir} />
         </div>
-        <FileTree boxId={boxId} selected={path} refreshKey={treeKey} onOpen={open} onDir={setDir} />
-      </div>
+      )}
       <div className="editor-main">
         <div className="bar">
           <strong className="mono">{path ? `${dosDir(split(path)[0])}${split(path)[0] ? '\\' : ''}${name}` : 'no file'}</strong>
@@ -382,4 +400,4 @@ export function Editor({ boxId, running, onRun, look = 'dos', program, debug }: 
       </div>
     </div>
   )
-}
+})
