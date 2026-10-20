@@ -200,3 +200,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .trace-table tr.jump td:nth-child(3), .trace-table tr.call td:nth-child(3), .trace-table tr.ret td:nth-child(3) { color: #55aaff; }
 .trace-table tr:hover { background: #000088; }
 .trace-table tr.sel { background: #0000ff; }
+
+/* text styles (textstyle.ts): the VGA look scales pixelated, web fonts smoothly */
+.screen-wrap canvas.styled { image-rendering: auto; }
+.bar select.style { font-size: 12px; max-width: 220px; }

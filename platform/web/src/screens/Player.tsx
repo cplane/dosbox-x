@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { getBox, NeedsSignIn, screenText, snapshotURL, startBox, stopBox, typeText, wsURL, type Box } from '../api/client'
 import { scancodeFor, SHIFT } from '../player/keys'
 import { TextScreen } from '../player/textmode'
+import { fontReady, loadTextStyle, saveTextStyle, TEXT_STYLES, type TextStyle } from '../player/textstyle'
 import { DebugPanel, type RPC } from './DebugPanel'
 import { Console, type ConsoleHandle, type Step } from './Console'
 
@@ -54,6 +55,11 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [fps, setFps] = useState(0)
   const [latency, setLatency] = useState<Latency | null>(null)
   const [textMode, setTextMode] = useState(false)
+  const [textStyle, setTextStyle] = useState<TextStyle>(() => loadTextStyle())
+  const [textSize, setTextSize] = useState({ w: 720, h: 400 }) // the styled canvas, for the aspect ratio
+  const textRef = useRef<TextScreen | null>(null)
+  const textStyleRef = useRef(textStyle)
+  textStyleRef.current = textStyle
   const [showDebug, setShowDebug] = useState(false)
   const [showConsole, setShowConsole] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
@@ -105,14 +111,21 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     // In text modes the sidecar sends text updates ("T", see textmode.ts)
     // instead, which the browser draws itself.
     const text = new TextScreen()
+    textRef.current = text
+    text.setStyle(textStyleRef.current)
     let inText = false
+    let lastSize = ''
     async function drawUpdate(buf: ArrayBuffer) {
       const dv = new DataView(buf)
       if (buf.byteLength > 0 && dv.getUint8(0) === 0x54) {
         if (!text.apply(buf)) return
         if (!inText) { inText = true; setTextMode(true) }
         const canvas = canvasRef.current
-        if (canvas) text.draw(canvas, performance.now())
+        if (canvas) {
+          text.draw(canvas, performance.now())
+          const size = `${canvas.width}x${canvas.height}`
+          if (size !== lastSize) { lastSize = size; setTextSize({ w: canvas.width, h: canvas.height }) }
+        }
         return
       }
       if (buf.byteLength < 8 || dv.getUint8(0) !== 0x53) return
@@ -364,7 +377,24 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     wrapRef.current?.focus()
   }
 
+  // The style applies to the live screen at once (and when its font arrives).
+  useEffect(() => {
+    const apply = () => {
+      const canvas = canvasRef.current
+      textRef.current?.setStyle(textStyle)
+      if (canvas && textRef.current) {
+        textRef.current.draw(canvas, performance.now())
+        setTextSize({ w: canvas.width, h: canvas.height })
+      }
+    }
+    apply()
+    let live = true
+    fontReady(textStyle).then(() => { if (live) apply() })
+    return () => { live = false }
+  }, [textStyle])
+
   const running = box?.state === 'running'
+  const styled = textMode && !!textStyle.font
   const dispH = meta ? (meta.h * (meta.parY || 1)) / (meta.parX || 1) : 400
   return (
     <div className="player">
@@ -375,6 +405,16 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <span className="muted">{connected ? 'connected' : box ? box.state : 'loading'}</span>
         {meta?.program && <span className="muted">▶ {meta.program}</span>}
         {meta && <span className="muted" title={textMode ? "Text mode: drawn by your browser from the screen data" : "Graphics: video from the box"}>{textMode ? "text" : `${meta.w}×${meta.h}`}</span>}
+        {textMode && (
+          <select
+            className="style"
+            value={textStyle.id}
+            onChange={(e) => { const s = TEXT_STYLES.find((x) => x.id === e.target.value); if (s) { setTextStyle(s); saveTextStyle(s) } }}
+            title="How the text screen is drawn: the VGA font pixel for pixel, or a web font with a colour theme"
+          >
+            {TEXT_STYLES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        )}
         {connected && (
           <span
             className={`muted ${latency && latency.rtt > 150 ? 'lag' : ''}`}
@@ -420,9 +460,10 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       >
         <canvas
           ref={canvasRef}
+          className={styled ? 'styled' : ''}
           width={720}
           height={400}
-          style={{ aspectRatio: `${meta?.w ?? 720} / ${dispH}` }}
+          style={{ aspectRatio: styled ? `${textSize.w} / ${textSize.h}` : `${meta?.w ?? 720} / ${dispH}` }}
           onClick={() => wrapRef.current?.focus()}
           onContextMenu={(e) => e.preventDefault()}
         />
