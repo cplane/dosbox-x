@@ -5,9 +5,9 @@ import { TextScreen } from '../player/textmode'
 import { fontReady, loadTextStyle, saveTextStyle, TEXT_STYLES, type TextStyle } from '../player/textstyle'
 import { DebugPanel, type RPC } from './DebugPanel'
 import { Console, type ConsoleHandle, type Step } from './Console'
-import { Terminal, type TerminalHandle } from './Terminal'
+import type { TerminalHandle } from './Terminal'
 import { useDebugger } from '../workbench/useDebugger'
-import { DebugBar } from '../workbench/DebugBar'
+import { Workspace } from '../workbench/Workspace'
 
 /** Screen: the DOS screen with panels under it (as it was). Workbench: editor + terminal on paper, the screen put away. */
 type View = 'screen' | 'workbench'
@@ -526,23 +526,10 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         )}
       </div>
       {view === 'workbench' && running && (
-        <div className="workbench">
-          <Suspense fallback={<p className="muted">Loading the editor…</p>}>
-            <Editor
-              boxId={boxId}
-              running={running}
-              onRun={runSteps}
-              look="paper"
-              program={meta?.program}
-              debug={{
-                active: !!dbg.session, stopped: dbg.stopped, ip: dbg.ip, breakpoints: dbg.breakpoints,
-                toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, cont: dbg.cont,
-              }}
-            />
-          </Suspense>
-          <DebugBar rpc={rpc} dbg={dbg} available={agentAvailable} />
-          <Terminal ref={terminalRef} boxId={boxId} running={running} subscribe={subscribeCon} onKey={onTermKey} />
-        </div>
+        <Workspace
+          boxId={boxId} running={running} program={meta?.program} rpc={rpc} dbg={dbg} available={agentAvailable}
+          onRun={runSteps} terminalRef={terminalRef} subscribeCon={subscribeCon} onTermKey={onTermKey}
+        />
       )}
       {view === 'screen' && showEditor && running && (
         <Suspense fallback={<p className="muted">Loading the editor…</p>}>

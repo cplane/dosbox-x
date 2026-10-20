@@ -371,3 +371,37 @@ html.paper body { overflow: hidden; }
 .tape-bytes { color: var(--muted); font-size: 10px; }
 .tape-bp { color: var(--muted); text-align: center; }
 .tape-item.bp .tape-bp { color: #b9553f; }
+
+/* the workspace (workbench/Workspace.tsx, flexlayout) on paper */
+.player.wb .workspace { flex: 1; min-height: 0; position: relative; }
+.workspace .flexlayout__layout { position: absolute; inset: 0; background: var(--bg); }
+.workspace .flexlayout__tabset, .workspace .flexlayout__tab { background: var(--panel); color: var(--text); font-family: inherit; }
+.workspace .flexlayout__tabset { border-radius: 8px; border: 1px solid var(--line); }
+.workspace .flexlayout__tab { border-radius: 0 0 8px 8px; padding: 0; overflow: auto; }
+.workspace .flexlayout__tabset_tabbar_outer { background: transparent; border-bottom: 1px solid var(--line); font-family: inherit; }
+.workspace .flexlayout__tabset_tabbar_outer_top { border-bottom: 1px solid var(--line); }
+.workspace .flexlayout__tab_button { color: var(--muted); font-size: 12px; border-radius: 6px 6px 0 0; margin: 2px 2px 0; }
+.workspace .flexlayout__tab_button--selected { background: var(--panel); color: var(--text); }
+.workspace .flexlayout__tab_button:hover { background: var(--line); }
+.workspace .flexlayout__tab_button_trailing { color: var(--muted); }
+.workspace .flexlayout__splitter { background: transparent; }
+.workspace .flexlayout__splitter:hover, .workspace .flexlayout__splitter_drag { background: var(--line); }
+.workspace .flexlayout__outline_rect { border-color: var(--accent); background: rgba(95, 90, 78, 0.08); }
+.workspace .flexlayout__tabset-selected { background: var(--panel); }
+.workspace .flexlayout__tabset_header, .workspace .flexlayout__tab_toolbar { background: transparent; }
+.workspace .flexlayout__drag_rect { background: var(--panel); color: var(--text); border: 1px solid var(--accent); font-family: inherit; }
+.workspace .flexlayout__tab_toolbar_button { color: var(--muted); }
+.workspace .editor { height: 100%; margin: 0; border: 0; border-radius: 0; }
+.workspace .editor.no-tree { grid-template-columns: 1fr; }
+.workspace .terminal { height: 100%; border: 0; border-radius: 0; }
+.workspace .files-tab { display: grid; grid-template-rows: auto 1fr; height: 100%; min-height: 0; }
+.workspace .files-tab .bar { padding: 6px 8px; }
+.workspace .files-tab .bar .mono { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace .files-tab .tree { overflow: auto; min-height: 0; }
+.workspace .guide { padding: 8px; }
+.workspace .dbg-body { height: 100%; }
+.workspace-reset { position: absolute; right: 8px; bottom: 6px; font-size: 11px; z-index: 2; }
+.workspace-note { position: absolute; left: 8px; bottom: 8px; z-index: 2; }
+
+/* xterm's hidden textarea gets the focus: no ring around the terminal for it */
+.terminal .xterm-helper-textarea:focus { outline: 0 !important; }
