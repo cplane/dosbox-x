@@ -235,6 +235,17 @@ the machine presets use:
   every key goes to DOS the way the screen's do (DOS echoes), pasted text
   is typed. Build & Run types `C:\BUILD` there. Programs that draw the
   screen directly don't show in it — switch back to Screen for those.
+- **Workbench debugger** (`workbench/`): the right column holds the
+  debugger's controls (step into/over, continue, pause, stop; F7/F8/F9 in
+  the editor) and tabs for registers, memory (the hex view and 1 MB map),
+  the disassembly window and the **8086 guide** (`guide.ts`: instructions
+  grouped by what you reach for first, registers, DOS and BIOS calls, the
+  .COM skeleton; a filter box). **Debug** in the editor builds the open
+  file — for .ASM with `ML /Fl`, whose listing maps code offsets to source
+  lines (`listing.ts`) — then starts it stopped at its entry: the current
+  line gets an arrow and a tint in Monaco's gutter, a click on the gutter
+  sets a breakpoint, and the arrow follows every step. C and Pascal
+  programs debug at the instruction level (the Code tab).
 - **Editor** (`Editor.tsx`): a browser over C: and Monaco (bundled, lazy)
   with a MASM tokenizer, C/C++, Pascal and batch highlighting and the
   Borland blue theme; files are read and written byte for byte (CP437 kept)
