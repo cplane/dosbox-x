@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
-import { getBox, readTextFile, writeTextFile } from '../api/client'
+import { getBox, readTextFile, runCommand, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
 import { FileTree } from './FileTree'
+import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
+
+/** What the editor needs from the debugger (workbench): where it is, its breakpoints, and the controls. */
+export interface EditorDebug {
+  active: boolean
+  stopped: boolean
+  /** IP while stopped. */
+  ip: number | null
+  breakpoints: Set<number>
+  toggleBreakpoint: (offset: number) => void
+  start: (command: string) => Promise<void>
+  step: (mode: 'into' | 'over') => void
+  cont: () => void
+}
 
 /**
  * The workbench editor: a file browser over the box's C: drive and Monaco
@@ -22,6 +36,8 @@ interface Props {
   look?: 'dos' | 'paper'
   /** What the box runs (the player's meta): Build & Run needs the DOS prompt, i.e. COMMAND. */
   program?: string
+  /** The debugger, when the editor should show the current line and take breakpoints. */
+  debug?: EditorDebug
 }
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
@@ -77,20 +93,24 @@ const dosDir = (dir: string) => 'C:\\' + dir.replace(/\//g, '\\')
  * the program runs; a failed build ends in $FAIL.COM so the console sees
  * errorlevel 1.
  */
-export function buildBatch(path: string, buildCmd: string, cycles: string): string {
+export function buildBatch(path: string, buildCmd: string, cycles: string, opts: { run: boolean; listing: boolean } = { run: true, listing: false }): string {
   const [dir, name] = split(path)
   const base = name.replace(/\.[^.]*$/, '')
   const lines = ['@ECHO OFF', 'C:', `CD ${dosDir(dir)}`]
+  // {} is where the file goes; a command without it gets the file appended, so it always builds the open file.
+  let build = buildCmd.includes('{}') ? buildCmd.replace('{}', name) : `${buildCmd.trim()} ${name}`
+  // The debugger steps by source line through ML's listing (/Fl).
+  if (opts.listing && /\bML\b/i.test(build) && !/\/Fl\b/i.test(build)) build = build.replace(/\bML\b/i, 'ML /Fl')
   switch (langOf(name)) {
     case 'asm': case 'c': case 'pas':
       lines.push(
         'CONFIG -set "cpu cycles=max"',
-        // {} is where the file goes; a command without it gets the file appended, so it always builds the open file.
-        buildCmd.includes('{}') ? buildCmd.replace('{}', name) : `${buildCmd.trim()} ${name}`,
+        // ML finds LINK.EXE through the PATH; TCC and TPC find theirs next to themselves.
+        ...(langOf(name) === 'asm' ? ['PATH C:\\MASM611\\BIN;C:\\MASM611\\BINR;%PATH%'] : []),
+        build,
         'IF ERRORLEVEL 1 GOTO FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
-        `ECHO --- ${base} ---`,
-        base,
+        ...(opts.run ? [`ECHO --- ${base} ---`, base] : [`ECHO --- ${base} built ---`]),
         'GOTO END',
         ':FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
@@ -109,9 +129,16 @@ export function buildBatch(path: string, buildCmd: string, cycles: string): stri
 /** The one step the console types for a build. */
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
-export function Editor({ boxId, running, onRun, look = 'dos', program }: Props) {
+export function Editor({ boxId, running, onRun, look = 'dos', program, debug }: Props) {
   // A program other than the shell has the keyboard: typing C:\BUILD would go to it.
   const busyWith = program && program.toUpperCase() !== 'COMMAND' ? program : null
+  // Source lines <-> code offsets of the last debug build (MASM listing).
+  const [lineMap, setLineMap] = useState<LineMap | null>(null)
+  const lineMapRef = useRef<LineMap | null>(null)
+  lineMapRef.current = lineMap
+  const debugRef = useRef<EditorDebug | undefined>(debug)
+  debugRef.current = debug
+  const decoRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null)
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0) // bumped when the tree should re-list (a save)
   const [path, setPath] = useState<string | null>(null)
@@ -199,9 +226,79 @@ export function Editor({ boxId, running, onRun, look = 'dos', program }: Props) 
     setStatus(ok ? (look === 'paper' ? 'running in the terminal' : 'done') : 'failed (see the console)')
   }
 
+  // Debug: build (with the listing for .ASM), then start the program at its
+  // entry; the current line and breakpoints then show in the gutter.
+  async function debugRun() {
+    if (!path || !running || !debug) return
+    if (busyWith) {
+      setStatus(`${busyWith} has the keyboard: quit it first (the Screen view), then debug`)
+      return
+    }
+    if (dirty && !(await save())) return
+    const [dir, name] = split(path)
+    const base = name.replace(/\.[^.]*$/, '')
+    setStatus('building…')
+    try {
+      await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles, { run: false, listing: true }))
+      await writeTextFile(boxId, '$FAIL.COM', FAIL_COM)
+      const r = await runCommand(boxId, 'C:\\BUILD', 180000)
+      if (r.timed_out || (r.errorlevel ?? 0) !== 0) {
+        setStatus('build failed (see the terminal)')
+        return
+      }
+      setLineMap(null)
+      if (lang === 'asm') {
+        try {
+          const lst = await readTextFile(boxId, (dir ? `${dir}/` : '') + `${base}.LST`)
+          const map = parseListing(lst, text)
+          setLineMap(map)
+          if (map.lineOf.size === 0) setStatus('no lines matched the listing; stepping by instruction')
+        } catch {
+          setStatus('no listing (.LST); stepping by instruction')
+        }
+      }
+      const exe = `${dosDir(dir)}${dir ? '\\' : ''}${base}.${lang === 'asm' ? 'COM' : 'EXE'}`
+      setStatus(`debugging ${base}`)
+      await debug.start(exe)
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // Monaco decorations: the current line (an arrow, a tint) and breakpoints.
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    if (!decoRef.current) decoRef.current = editor.createDecorationsCollection()
+    const decos: monaco.editor.IModelDeltaDecoration[] = []
+    const map = lineMap
+    if (debug?.active && map) {
+      for (const [line, off] of map.offsetOf) {
+        if (debug.breakpoints.has(off)) decos.push({ range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: 'dbg-bp', glyphMarginHoverMessage: { value: 'breakpoint' } } })
+      }
+      const cur = debug.stopped && debug.ip !== null ? lineForOffset(map, debug.ip) : null
+      if (cur) {
+        decos.push({ range: new monaco.Range(cur, 1, cur, 1), options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-arrow' } })
+        editor.revealLineInCenterIfOutsideViewport(cur)
+      }
+    }
+    decoRef.current.set(decos)
+  }, [debug?.active, debug?.stopped, debug?.ip, debug?.breakpoints, lineMap])
+
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { saveRef.current() })
+    // Debugging from the keyboard, and breakpoints from the gutter.
+    editor.addCommand(monaco.KeyCode.F7, () => debugRef.current?.step('into'))
+    editor.addCommand(monaco.KeyCode.F8, () => debugRef.current?.step('over'))
+    editor.addCommand(monaco.KeyCode.F9, () => debugRef.current?.cont())
+    editor.onMouseDown((e) => {
+      const t = e.target.type
+      if (t !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && t !== monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) return
+      const line = e.target.position?.lineNumber
+      const off = line ? lineMapRef.current?.offsetOf.get(line) : undefined
+      if (off !== undefined && debugRef.current?.stopped) debugRef.current.toggleBreakpoint(off)
+    })
     // The web font may arrive after Monaco measured the fallback: measure again then.
     if ('fonts' in document) document.fonts.ready.then(() => monaco.editor.remeasureFonts())
     editor.focus()
@@ -245,6 +342,9 @@ export function Editor({ boxId, running, onRun, look = 'dos', program }: Props) 
               {lang === 'bat' || lang === 'prog' ? 'Run' : 'Build & Run'}
             </button>
           )}
+          {debug && (lang === 'asm' || lang === 'c' || lang === 'pas') && (
+            <button disabled={!path || busy || !running || !!busyWith || debug.active} onClick={debugRun} title="Build, then start the program stopped at its entry">Debug</button>
+          )}
           {busyWith && <span className="lag">{busyWith} has the keyboard</span>}
           <span className="muted">{status}</span>
         </div>
@@ -272,6 +372,7 @@ export function Editor({ boxId, running, onRun, look = 'dos', program }: Props) 
                 wordWrap: 'off',
                 rulers: [80],
                 automaticLayout: true,
+                glyphMargin: !!debug,
               }}
             />
           ) : (

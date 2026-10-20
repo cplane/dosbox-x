@@ -298,3 +298,45 @@ html.paper body { overflow: hidden; }
 *::-webkit-scrollbar-thumb:hover { background-clip: border-box; }
 .workbench *::-webkit-scrollbar-thumb, .workbench *::-webkit-scrollbar-thumb:hover { background-clip: border-box; }
 *::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+
+/* workbench: three columns (tree, editor, debug) over the terminal */
+.player.wb .workbench { grid-template-columns: 1fr 360px; grid-template-rows: minmax(0, 1fr) minmax(140px, 28%); }
+.player.wb .workbench .editor { grid-column: 1; grid-row: 1; }
+.player.wb .workbench .dbg { grid-column: 2; grid-row: 1; }
+.player.wb .workbench .terminal { grid-column: 1 / 3; grid-row: 2; }
+.dbg { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.dbg-tools { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.dbg-tools button { padding: 3px 9px; }
+.dbg-tabs { display: flex; gap: 2px; padding: 4px 8px 0; border-bottom: 1px solid var(--line); }
+.dbg-tabs button { border: 0; border-radius: 6px 6px 0 0; background: none; padding: 4px 10px; color: var(--muted); }
+.dbg-tabs button.on { background: var(--line); color: var(--text); }
+.dbg-body { min-height: 0; overflow: auto; padding: 8px; }
+.dbg .regs { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.dbg .regs-flags { grid-column: 1 / -1; color: var(--muted); }
+.dbg .disasm { max-height: none; border: 0; background: none; color: inherit; }
+.dbg .disasm tr.ip { background: var(--line); }
+.dbg .disasm td.addr { color: var(--accent); }
+.dbg .disasm td.bytes, .dbg .disasm td.gutter { color: var(--muted); }
+.dbg .disasm tr:hover { background: rgba(70, 70, 65, 0.08); }
+.dbg .hexview { background: none; color: inherit; border-color: var(--line); }
+.dbg .hexview .a { color: var(--accent); }
+.dbg .hexview .t { color: var(--muted); }
+.dbg .hexview .b.chg { background: #e8c7b8; color: #5a2a1a; }
+.dbg .hexview .b.ptr { outline-color: var(--accent); }
+/* the guide */
+.guide { display: grid; grid-template-rows: auto 1fr; gap: 6px; min-height: 0; height: 100%; }
+.guide input { width: 100%; }
+.guide-body { overflow: auto; min-height: 0; }
+.guide h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.guide-note { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.guide-entry { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.guide-head b { color: var(--accent); }
+.guide-head code { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.guide-desc { font-size: 12.5px; line-height: 1.4; }
+.guide-flags { color: var(--muted); }
+/* Monaco: the current line and breakpoints */
+.dbg-arrow { background: none; }
+.dbg-arrow::after { content: '▶'; color: #5f5a4e; font-size: 11px; position: absolute; left: 4px; }
+.dbg-bp::after { content: '●'; color: #b9553f; font-size: 11px; position: absolute; left: 4px; }
+.dbg-line { background: rgba(95, 90, 78, 0.12); }
+.editor .glyph-hint { color: var(--muted); font-size: 12px; }

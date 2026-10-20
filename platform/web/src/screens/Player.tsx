@@ -6,6 +6,8 @@ import { fontReady, loadTextStyle, saveTextStyle, TEXT_STYLES, type TextStyle } 
 import { DebugPanel, type RPC } from './DebugPanel'
 import { Console, type ConsoleHandle, type Step } from './Console'
 import { Terminal, type TerminalHandle } from './Terminal'
+import { useDebugger } from '../workbench/useDebugger'
+import { DebugBar } from '../workbench/DebugBar'
 
 /** Screen: the DOS screen with panels under it (as it was). Workbench: editor + terminal on paper, the screen put away. */
 type View = 'screen' | 'workbench'
@@ -393,10 +395,12 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     sendRef.current({ rpc: { jsonrpc: '2.0', id, method, params } })
     window.setTimeout(() => { if (rpcWaiters.current.delete(id)) reject(new Error(`: no answer`)) }, 65000)
   }), [])
+  // The workbench's debugger (the Screen view's Debug panel keeps its own session).
+  const dbg = useDebugger(rpc)
   useEffect(() => {
-    if (!showDebug || !connected) return
+    if (!(showDebug || view === 'workbench') || !connected) return
     rpc('agent.capabilities').then(() => setAgentAvailable(true)).catch((e: Error) => setAgentAvailable(!/no debugger agent/.test(e.message)))
-  }, [showDebug, connected, rpc])
+  }, [showDebug, view, connected, rpc])
 
   const ctrlAltDel = () => {
     const send = sendRef.current
@@ -524,8 +528,19 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       {view === 'workbench' && running && (
         <div className="workbench">
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
-            <Editor boxId={boxId} running={running} onRun={runSteps} look="paper" program={meta?.program} />
+            <Editor
+              boxId={boxId}
+              running={running}
+              onRun={runSteps}
+              look="paper"
+              program={meta?.program}
+              debug={{
+                active: !!dbg.session, stopped: dbg.stopped, ip: dbg.ip, breakpoints: dbg.breakpoints,
+                toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, cont: dbg.cont,
+              }}
+            />
           </Suspense>
+          <DebugBar rpc={rpc} dbg={dbg} available={agentAvailable} />
           <Terminal ref={terminalRef} boxId={boxId} running={running} subscribe={subscribeCon} onKey={onTermKey} />
         </div>
       )}
