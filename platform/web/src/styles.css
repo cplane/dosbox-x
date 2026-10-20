@@ -290,3 +290,9 @@ html.paper body { overflow: hidden; }
 .player.wb .editor-main { min-height: 0; }
 .player.wb .editor-box { min-height: 0; overflow: hidden; }
 .player.wb .terminal { height: 100%; min-height: 0; }
+
+/* scrollbars, thinner still: a 3 px rounded thumb, nothing else */
+*::-webkit-scrollbar { width: 3px; height: 3px; }
+*::-webkit-scrollbar-thumb { border: 0; border-radius: 3px; background-clip: border-box; }
+*::-webkit-scrollbar-thumb:hover { background-clip: border-box; }
+.workbench *::-webkit-scrollbar-thumb, .workbench *::-webkit-scrollbar-thumb:hover { background-clip: border-box; }
