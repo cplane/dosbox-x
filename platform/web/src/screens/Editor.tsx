@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
-import { listFiles, readTextFile, writeTextFile, type FileEntry } from '../api/client'
+import { getBox, listFiles, readTextFile, writeTextFile, type FileEntry } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
 
@@ -21,12 +21,19 @@ interface Props {
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
 
-/** The build command for a source file, {} is the bare file name. */
+/**
+ * The build command for a source file, {} is the bare file name. The catalog
+ * copies each toolchain flat (headers and libs in C:\TCC itself, so its
+ * TURBOC.CFG's C:\TC paths are overridden here).
+ */
 const defaultBuild: Record<string, string> = {
   asm: 'C:\\MASM611\\BIN\\ML /AT /nologo {}',
-  c: 'C:\\TCC\\TCC -IC:\\TCC\\INCLUDE -LC:\\TCC\\LIB {}',
+  c: 'C:\\TCC\\TCC -IC:\\TCC -LC:\\TCC {} GRAPHICS.LIB', // GRAPHICS.LIB: BGI programs link; harmless otherwise
   pas: 'C:\\TP70\\TPC {}',
 }
+
+/** Exits with errorlevel 1: mov ax,4C01h / int 21h. Marks a failed build for the console. */
+const FAIL_COM = String.fromCharCode(0xb8, 0x01, 0x4c, 0xcd, 0x21)
 
 function langOf(name: string): Lang {
   switch (name.toLowerCase().replace(/^.*\./, '')) {
@@ -56,20 +63,43 @@ const split = (path: string) => {
 /** The DOS form of a /files/ directory: "" -> "C:\", "ASM/SRC" -> "C:\ASM\SRC". */
 const dosDir = (dir: string) => 'C:\\' + dir.replace(/\//g, '\\')
 
-export function buildSteps(path: string, buildCmd: string): Step[] {
+/**
+ * The batch file Build & Run writes to C:\BUILD.BAT and runs. Typing at the
+ * DOS prompt costs ~35 ms a character (one key press per emulated frame),
+ * so a CD plus a 50-character compiler line took seconds before the
+ * compiler even started; "C:\BUILD" is 8. The build itself runs at
+ * cycles=max (the host's speed) and the box's own speed is restored before
+ * the program runs; a failed build ends in $FAIL.COM so the console sees
+ * errorlevel 1.
+ */
+export function buildBatch(path: string, buildCmd: string, cycles: string): string {
   const [dir, name] = split(path)
   const base = name.replace(/\.[^.]*$/, '')
-  const steps: Step[] = [{ cmd: `CD ${dosDir(dir)}` }]
+  const lines = ['@ECHO OFF', 'C:', `CD ${dosDir(dir)}`]
   switch (langOf(name)) {
     case 'asm': case 'c': case 'pas':
-      steps.push({ cmd: buildCmd.replace('{}', name), check: true }, { cmd: base, check: true })
+      lines.push(
+        'CONFIG -set "cpu cycles=max"',
+        buildCmd.replace('{}', name),
+        'IF ERRORLEVEL 1 GOTO FAIL',
+        `CONFIG -set "cpu cycles=${cycles}"`,
+        base,
+        'GOTO END',
+        ':FAIL',
+        `CONFIG -set "cpu cycles=${cycles}"`,
+        'C:\\$FAIL',
+      )
       break
     case 'bat': case 'prog':
-      steps.push({ cmd: name, check: true })
+      lines.push(name)
       break
   }
-  return steps
+  lines.push(':END')
+  return lines.join('\r\n') + '\r\n'
 }
+
+/** The one step the console types for a build. */
+export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
 export function Editor({ boxId, running, onRun }: Props) {
   const [dir, setDir] = useState('')
@@ -146,11 +176,22 @@ export function Editor({ boxId, running, onRun }: Props) {
   }, [boxId, path, text, dir, refresh])
   saveRef.current = save
 
+  // The box's own speed, restored after a build (the build runs at max).
+  const [cycles, setCycles] = useState('auto')
+  useEffect(() => { getBox(boxId).then((b) => setCycles(b.machine?.cycles || 'auto')).catch(() => undefined) }, [boxId, running])
+
   async function buildAndRun() {
     if (!path || !running) return
     if (dirty && !(await save())) return
     setStatus('running…')
-    const ok = await onRun(buildSteps(path, buildCmd))
+    try {
+      await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles))
+      await writeTextFile(boxId, '$FAIL.COM', FAIL_COM)
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err))
+      return
+    }
+    const ok = await onRun(buildSteps)
     setStatus(ok ? 'done' : 'failed (see the console)')
   }
 

@@ -129,6 +129,22 @@ func conOutput(raw []byte, prompt string) (output string, complete bool) {
 	return s + "\n", complete
 }
 
+// streamPrompt reports whether the console stream since the command was
+// typed ends in a prompt on its own line, i.e. the command's echo ended and
+// DOS is back at the prompt: the run is over.
+func streamPrompt(raw []byte) (prompt string, ok bool) {
+	s := strings.ReplaceAll(ansiRe.ReplaceAllString(string(raw), ""), "\r", "")
+	i := strings.LastIndexByte(s, '\n')
+	if i < 0 {
+		return "", false // still the echo of the command line
+	}
+	last := strings.TrimRight(s[i+1:], " ")
+	if !promptRe.MatchString(last) {
+		return "", false
+	}
+	return last, true
+}
+
 type runReq struct {
 	Cmd       string `json:"cmd"`
 	TimeoutMS int    `json:"timeout_ms"`
@@ -212,10 +228,29 @@ func (c *Control) handleRun(w http.ResponseWriter, r *http.Request) {
 	stillFor := 0
 	promptRow := -1
 	errorlevel := -1
+	conLen, conStill := -1, 0
 	for {
 		if sleepCtx(ctx, poll) != nil {
 			timedOut = true
 			break
+		}
+		// The console stream is exact: when it ends in a prompt and hasn't
+		// grown for a poll, the run is over, whatever the screen looks like.
+		if haveCon {
+			if raw, _, err := c.con.ReadFrom(conStart); err == nil {
+				if len(raw) == conLen {
+					conStill++
+				} else {
+					conLen, conStill = len(raw), 0
+				}
+				if p, ok := streamPrompt(raw); ok && conStill >= 1 {
+					prompt = p
+					if t, err := c.text.Read(); err == nil && t != nil {
+						errorlevel = t.ErrorLevel
+					}
+					break
+				}
+			}
 		}
 		t, err := c.text.Read()
 		if err != nil || t == nil {

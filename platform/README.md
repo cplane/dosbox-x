@@ -230,11 +230,13 @@ the machine presets use:
 - **Editor** (`Editor.tsx`): a browser over C: and Monaco (bundled, lazy)
   with a MASM tokenizer, C/C++, Pascal and batch highlighting and the
   Borland blue theme; files are read and written byte for byte (CP437 kept)
-  with CRLF line ends. **Build & Run** saves and hands the console
-  `CD` + build + run steps for the file's toolchain (`ML /AT` for .ASM,
-  `TCC` for .C/.CPP, `TPC` for .PAS; .BAT/.EXE/.COM just run); the build
-  command is editable and remembered per language; a program whose
-  errorlevel is not 0 stops the list.
+  with CRLF line ends. **Build & Run** saves, writes `C:\BUILD.BAT` (CD to
+  the file's folder, the build at `cycles=max`, the box's own speed back,
+  then the program; `$FAIL.COM` ends a failed build with errorlevel 1) and
+  has the console type `C:\BUILD` — typing costs ~35 ms a character, so a
+  long compiler line is not typed. Toolchains: `ML /AT` for .ASM, `TCC`
+  for .C/.CPP, `TPC` for .PAS; .BAT/.EXE/.COM just run; the build command
+  is editable and remembered per language.
 - **Machine per box** (`gateway/machine.go`, the Boxes screen): CPU model
   (8086, 186, 286, 386, 486, Pentium or the default), memory (1-64 MB) and
   speed (cycles, with presets named after the PCs they approximate),
