@@ -423,9 +423,15 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
 
   const running = box?.state === 'running'
   const styled = textMode && !!textStyle.font
+  // The workbench is the whole window on paper (html.paper recolours the app's tokens).
+  const paper = view === 'workbench' && running
+  useEffect(() => {
+    document.documentElement.classList.toggle('paper', paper)
+    return () => document.documentElement.classList.remove('paper')
+  }, [paper])
   const dispH = meta ? (meta.h * (meta.parY || 1)) / (meta.parX || 1) : 400
   return (
-    <div className="player">
+    <div className={`player ${paper ? 'wb' : ''}`}>
       <div className="bar">
         <button onClick={onBack}>← Boxes</button>
         <strong>{box?.name ?? '…'}</strong>

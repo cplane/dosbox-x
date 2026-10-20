@@ -267,3 +267,26 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .workbench .tree-row.on, .tree-row.on { background: rgba(90, 78, 58, 0.14); }
 .tree-row:focus, .tree-row:focus-visible { outline: none; }
 .editor-side .bar { border-bottom: 0; }
+
+/* paper mode: the whole window in the workbench's colours (html.paper while the Workbench view is up) */
+html.paper {
+  color-scheme: light;
+  --bg: #f3ead7; --panel: #f7f1e3; --line: #e2d6b8; --text: #3a3226; --muted: #8a7d63; --accent: #7a4a1f;
+  --ok: #4f6b2f; --warn: #a05a1f; --bad: #a0402f;
+}
+html.paper button.primary { background: var(--accent); border-color: var(--accent); color: #fff8ea; }
+html.paper button.danger { color: var(--bad); }
+html.paper .dot.on { background: var(--ok); }
+html.paper select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+html.paper .workbench { background: none; padding: 0; }
+
+/* the workbench fits the viewport: bars on top, then editor and terminal share the rest; the tree and the editor scroll inside */
+html.paper body { overflow: hidden; }
+.player.wb { height: 100vh; display: flex; flex-direction: column; padding-bottom: 10px; width: min(100%, 1400px); }
+.player.wb .workbench { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr) minmax(140px, 28%); }
+.player.wb .editor { height: 100%; min-height: 0; }
+.player.wb .editor-side { min-height: 0; overflow: hidden; }
+.player.wb .tree { height: 100%; min-height: 0; overflow: auto; }
+.player.wb .editor-main { min-height: 0; }
+.player.wb .editor-box { min-height: 0; overflow: hidden; }
+.player.wb .terminal { height: 100%; min-height: 0; }
