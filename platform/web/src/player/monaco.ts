@@ -165,3 +165,42 @@ monaco.editor.defineTheme('paper', {
     'minimap.background': '#f6f5f1',
   },
 })
+
+// Hovering an INT line names the function: AH (or AX) is taken from the
+// nearest MOV AH/AX/AL above it in the same block.
+import { INTERRUPTS, h2 as inth2, lookupInt } from '../workbench/interrupts'
+
+monaco.languages.registerHoverProvider('masm', {
+  provideHover(model, position) {
+    const line = model.getLineContent(position.lineNumber)
+    const m = /^\s*(?:[A-Za-z_@$?][\w@$?]*:)?\s*INT\s+([0-9A-Fa-f]+)h?\b/i.exec(line)
+    if (!m) return null
+    const int = parseInt(m[1], 16)
+    let ah: number | null = null, al = 0, ax: number | null = null
+    for (let l = position.lineNumber - 1; l >= Math.max(1, position.lineNumber - 25); l--) {
+      const t = model.getLineContent(l)
+      if (/^\s*(RET|JMP|END\b)/i.test(t) || /^[A-Za-z_@$?][\w@$?]*:\s*$/.test(t.trim())) break
+      let r: RegExpExecArray | null
+      if (ax === null && ah === null && (r = /^\s*MOV\s+AX\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) { ax = parseInt(r[1], 16); break }
+      if (ah === null && (r = /^\s*MOV\s+AH\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) ah = parseInt(r[1], 16)
+      if (al === 0 && (r = /^\s*MOV\s+AL\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) al = parseInt(r[1], 16)
+    }
+    const value = ax !== null ? ax : ah !== null ? (ah << 8) | al : null
+    const vec = INTERRUPTS.find((v) => v.int === int)
+    const lines: string[] = [`**INT ${inth2(int)}**${vec ? ` · ${vec.title}` : ''}`]
+    if (vec && value !== null) {
+      const hit = lookupInt(int, value)
+      if (hit?.fn) {
+        const f = hit.fn
+        lines.push(`${f.ax ? 'AX' : 'AH'}=${(f.ax ? value : value >> 8).toString(16).toUpperCase().padStart(f.ax ? 4 : 2, '0')}h — **${f.name}**`)
+        if (f.in) lines.push(`in: ${f.in}`)
+        if (f.out) lines.push(`out: ${f.out}`)
+        if (f.note) lines.push(`_${f.note}_`)
+      } else lines.push(`AH=${(value >> 8).toString(16).toUpperCase().padStart(2, '0')}h — not in the reference`)
+    } else if (vec) {
+      lines.push(vec.note ?? '', ...vec.fns.slice(0, 12).map((f) => `${f.ax ? 'AX' : 'AH'}=${f.fn.toString(16).toUpperCase().padStart(f.ax ? 4 : 2, '0')}h ${f.name}`))
+      if (vec.fns.length > 12) lines.push(`… ${vec.fns.length - 12} more in the Interrupts tab`)
+    }
+    return { contents: lines.filter(Boolean).map((value) => ({ value })) }
+  },
+})
