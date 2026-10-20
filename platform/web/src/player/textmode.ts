@@ -1,11 +1,13 @@
 /**
  * Text mode, drawn by the browser from data instead of video: the box's
  * sidecar sends character cells, cursor, palette and the VGA font (see
- * stream/text.go for the wire format). This renderer reproduces the DOS look
- * exactly, pixel for pixel from the font; another renderer could draw the
- * same cells in any font or colour scheme (the codepage maps the bytes to
- * Unicode).
+ * stream/text.go for the wire format). The "dos" style reproduces the DOS
+ * look exactly, pixel for pixel from that font; any other TextStyle draws
+ * the same cells with a web font and its own 16 colours (CP437 mapped to
+ * Unicode), see textstyle.ts.
  */
+
+import { CP437, DOS_STYLE, type TextStyle } from './textstyle'
 
 const SEC_PALETTE = 1
 const SEC_FONT = 2
@@ -37,6 +39,17 @@ export class TextScreen {
   private image: ImageData | null = null
   private dirtyRows = new Set<number>()
   private hasBlinking = false
+  style: TextStyle = DOS_STYLE
+  // The styled renderer's cell, from the font's metrics at the device pixel ratio.
+  private metrics: { font: string; cellW: number; cellH: number; ascent: number; dpr: number } | null = null
+
+  /** Switches the look; the next draw redraws everything. */
+  setStyle(s: TextStyle) {
+    this.style = s
+    this.image = null
+    this.metrics = null
+    this.markAll()
+  }
 
   /** Applies a text update; returns false if it isn't one. */
   apply(buf: ArrayBuffer): boolean {
@@ -109,7 +122,12 @@ export class TextScreen {
    * the clock in `now`.
    */
   draw(canvas: HTMLCanvasElement, now: number) {
-    if (this.cols === 0 || this.font.length === 0) return
+    if (this.cols === 0) return
+    if (this.style.font) {
+      this.drawStyled(canvas, now)
+      return
+    }
+    if (this.font.length === 0) return
     if (canvas.width !== this.width || canvas.height !== this.height) {
       canvas.width = this.width
       canvas.height = this.height
@@ -171,6 +189,102 @@ export class TextScreen {
     if (bottom >= top) {
       ctx.putImageData(this.image, 0, 0, 0, top * cellH, W, (bottom - top + 1) * cellH)
     }
+  }
+
+  /**
+   * The styled renderer: the same cells in a web font with the style's
+   * colours. The cell comes from the font's line box (so box-drawing glyphs
+   * join), drawn at the device pixel ratio for sharp text at any zoom.
+   */
+  private drawStyled(canvas: HTMLCanvasElement, now: number) {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const s = this.style
+    const dpr = Math.min(3, window.devicePixelRatio || 1)
+    if (!this.metrics || this.metrics.dpr !== dpr) {
+      const font = `${Math.round((s.size ?? 16) * dpr)}px ${s.font}`
+      ctx.font = font
+      const m = ctx.measureText('M')
+      const ascent = m.fontBoundingBoxAscent || (s.size ?? 16) * dpr * 0.95
+      const descent = m.fontBoundingBoxDescent || (s.size ?? 16) * dpr * 0.25
+      let cellH = Math.ceil(ascent + descent)
+      if (s.lineHeight) cellH = Math.max(cellH, Math.round((s.size ?? 16) * dpr * s.lineHeight))
+      this.metrics = { font, cellW: Math.ceil(m.width), cellH, ascent: ascent + (cellH - (ascent + descent)) / 2, dpr }
+      this.markAll()
+    }
+    const { font, cellW, cellH, ascent } = this.metrics
+    const W = this.cols * cellW
+    const H = this.rows * cellH
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W
+      canvas.height = H
+      this.markAll()
+    }
+    const cursorOn = Math.floor(now / CURSOR_BLINK_MS) % 2 === 0
+    const charOn = Math.floor(now / CHAR_BLINK_MS) % 2 === 0
+    if (this.hasBlinking) this.markAll()
+    if (this.dirtyRows.size === 0) return
+    const colors = s.colors ?? []
+    const color = (i: number) => colors[i] ?? '#' + (this.palette[i] & 0xffffff).toString(16).padStart(6, '0').replace(/(..)(..)(..)/, '$3$2$1')
+    const { cols, cells } = this
+    const blinkAttr = (this.flags & FLAG_BLINK) !== 0
+    const cursorVisible = (this.flags & FLAG_CURSOR_VISIBLE) !== 0 && cursorOn
+    ctx.font = font
+    ctx.textBaseline = 'alphabetic'
+    ctx.textAlign = 'left'
+    let blinking = false
+    for (const r of this.dirtyRows) {
+      if (r < 0 || r >= this.rows) continue
+      const y = r * cellH
+      // Backgrounds first, in runs of the same colour.
+      let runStart = 0
+      let runBg = -1
+      const flush = (end: number) => {
+        if (runBg < 0) return
+        ctx.fillStyle = color(runBg)
+        ctx.fillRect(runStart * cellW, y, (end - runStart) * cellW, cellH)
+      }
+      for (let c = 0; c <= cols; c++) {
+        let bg = -1
+        if (c < cols) {
+          const attr = cells[(r * cols + c) * 2 + 1]
+          bg = attr >> 4
+          if (blinkAttr) bg &= 7
+        }
+        if (bg !== runBg) { flush(c); runStart = c; runBg = bg }
+      }
+      // Then the glyphs and the cursor.
+      for (let c = 0; c < cols; c++) {
+        const i = (r * cols + c) * 2
+        const ch = cells[i]
+        const attr = cells[i + 1]
+        let fg = attr & 0x0f
+        let bg = attr >> 4
+        if (blinkAttr) {
+          bg &= 7
+          if (attr & 0x80) {
+            blinking = true
+            if (!charOn) fg = bg
+          }
+        }
+        const glyph = CP437[ch]
+        if (glyph !== ' ' && fg !== bg) {
+          ctx.fillStyle = color(fg)
+          ctx.fillText(glyph, c * cellW, y + ascent)
+        }
+        if (cursorVisible && r === this.cursorY && c === this.cursorX) {
+          // The cursor keeps its DOS shape (underline, or a block in insert mode), scaled to the cell.
+          const y0 = y + Math.round((this.cursorStart / this.cellH) * cellH)
+          const y1 = y + Math.round(((this.cursorEnd + 1) / this.cellH) * cellH)
+          ctx.fillStyle = color(fg)
+          ctx.globalAlpha = 0.75
+          ctx.fillRect(c * cellW, y0, cellW, Math.max(2, y1 - y0))
+          ctx.globalAlpha = 1
+        }
+      }
+    }
+    this.hasBlinking = blinking
+    this.dirtyRows.clear()
   }
 
   /** Redraw the cursor's cell on the next draw (for blinking). */
