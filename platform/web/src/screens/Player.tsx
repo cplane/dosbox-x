@@ -524,14 +524,14 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       {view === 'workbench' && running && (
         <div className="workbench">
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
-            <Editor boxId={boxId} running={running} onRun={runSteps} look="paper" />
+            <Editor boxId={boxId} running={running} onRun={runSteps} look="paper" program={meta?.program} />
           </Suspense>
           <Terminal ref={terminalRef} boxId={boxId} running={running} subscribe={subscribeCon} onKey={onTermKey} />
         </div>
       )}
       {view === 'screen' && showEditor && running && (
         <Suspense fallback={<p className="muted">Loading the editor…</p>}>
-          <Editor boxId={boxId} running={running} onRun={runSteps} />
+          <Editor boxId={boxId} running={running} onRun={runSteps} program={meta?.program} />
         </Suspense>
       )}
       {view === 'screen' && showConsole && running && <Console ref={consoleRef} boxId={boxId} running={running} />}
