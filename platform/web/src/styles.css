@@ -204,3 +204,36 @@ button.on { border-color: var(--accent); color: var(--accent); }
 /* text styles (textstyle.ts): the VGA look scales pixelated, web fonts smoothly */
 .screen-wrap canvas.styled { image-rendering: auto; }
 .bar select.style { font-size: 12px; max-width: 220px; }
+
+/* workbench view (Player.tsx): editor + terminal, the screen put away */
+.view-select { font-size: 12px; }
+.workbench { display: grid; grid-template-rows: minmax(300px, 55vh) minmax(220px, 1fr); gap: 10px; }
+.workbench .editor { margin-top: 0; height: 100%; }
+.terminal { position: relative; background: #2e3440; border: 1px solid var(--line); border-radius: 8px; padding: 6px; min-height: 220px; height: 32vh; }
+.terminal-host { height: 100%; }
+.terminal .overlay { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); background: #0008; border-radius: 8px; }
+.screen-wrap.hidden { display: none; }
+
+/* workbench view (Player.tsx): editor + terminal on paper, the screen put away */
+.view-select { font-size: 12px; }
+.workbench {
+  --wb-bg: #f3ead7; --wb-panel: #f7f1e3; --wb-ink: #3a3226; --wb-muted: #8a7d63; --wb-line: #e2d6b8; --wb-accent: #7a4a1f;
+  display: grid; grid-template-rows: minmax(320px, 56vh) minmax(220px, 1fr); gap: 8px;
+  background: var(--wb-bg); color: var(--wb-ink); border-radius: 8px; padding: 8px;
+}
+.workbench .editor { margin-top: 0; height: 100%; background: var(--wb-panel); border-color: var(--wb-line); }
+.workbench .editor .bar { border-color: var(--wb-line); }
+.workbench .editor-side { border-color: var(--wb-line); }
+.workbench .muted { color: var(--wb-muted); }
+.workbench .editor-files li.dir button { color: var(--wb-muted); }
+.workbench .editor-files li.on button, .workbench .editor-files li button:hover { background: var(--wb-line); }
+.workbench button { background: transparent; color: var(--wb-ink); border: 1px solid var(--wb-line); }
+.workbench button:hover { background: var(--wb-line); }
+.workbench button.primary { background: var(--wb-accent); border-color: var(--wb-accent); color: #fff8ea; }
+.workbench button.on { background: var(--wb-line); }
+.workbench input { background: var(--wb-panel); color: var(--wb-ink); border: 1px solid var(--wb-line); }
+.workbench .lag { color: #a05a1f; }
+.terminal { position: relative; border: 1px solid var(--wb-line, var(--line)); border-radius: 8px; padding: 6px; min-height: 220px; height: 100%; background: var(--wb-panel, #2e3440); }
+.terminal-host { height: 100%; }
+.terminal .overlay { position: absolute; inset: 0; display: grid; place-items: center; color: var(--wb-muted, var(--muted)); background: #0003; border-radius: 8px; }
+.screen-wrap.hidden { display: none; }

@@ -17,6 +17,8 @@ interface Props {
   running: boolean
   /** Runs steps in the console (opening it); false when one failed. */
   onRun: (steps: Step[]) => Promise<boolean>
+  /** dos: the Borland blue under the screen; paper: the workbench's light look. */
+  look?: 'dos' | 'paper'
 }
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
@@ -83,10 +85,12 @@ export function buildBatch(path: string, buildCmd: string, cycles: string): stri
         buildCmd.replace('{}', name),
         'IF ERRORLEVEL 1 GOTO FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
+        `ECHO --- ${base} ---`,
         base,
         'GOTO END',
         ':FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
+        'ECHO *** build failed ***',
         'C:\\$FAIL',
       )
       break
@@ -101,7 +105,7 @@ export function buildBatch(path: string, buildCmd: string, cycles: string): stri
 /** The one step the console types for a build. */
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
-export function Editor({ boxId, running, onRun }: Props) {
+export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
   const [dir, setDir] = useState('')
   const [entries, setEntries] = useState<FileEntry[]>([])
   const [path, setPath] = useState<string | null>(null)
@@ -244,7 +248,7 @@ export function Editor({ boxId, running, onRun }: Props) {
               path={`c:/${path}`}
               language={languageFor(name)}
               value={text}
-              theme="dos"
+              theme={look}
               onChange={(v) => setText(v ?? '')}
               onMount={onMount}
               options={{

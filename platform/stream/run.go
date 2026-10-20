@@ -237,7 +237,7 @@ func (c *Control) handleRun(w http.ResponseWriter, r *http.Request) {
 		// The console stream is exact: when it ends in a prompt and hasn't
 		// grown for a poll, the run is over, whatever the screen looks like.
 		if haveCon {
-			if raw, _, err := c.con.ReadFrom(conStart); err == nil {
+			if raw, _, _, err := c.con.ReadFrom(conStart); err == nil {
 				if len(raw) == conLen {
 					conStill++
 				} else {
@@ -286,7 +286,7 @@ func (c *Control) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	lost := false
 	if haveCon {
-		if raw, l, err := c.con.ReadFrom(conStart); err == nil {
+		if raw, _, l, err := c.con.ReadFrom(conStart); err == nil {
 			if o, complete := conOutput(raw, prompt); complete || o != "" || output == "" {
 				output, source, lost = o, "con", l
 			}
