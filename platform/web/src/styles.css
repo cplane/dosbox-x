@@ -260,3 +260,10 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .tree-icon { flex: 0 0 auto; color: var(--wb-muted, var(--muted)); }
 .tree-row.on .tree-icon, .tree-row:hover .tree-icon { color: inherit; }
 .tree-note { color: var(--wb-muted, var(--muted)); font-size: 12px; padding: 2px 0; }
+
+/* tree rows are plain text, not buttons: no frames, no focus ring, a soft hover */
+.workbench .tree-row, .tree-row { border: 0; border-radius: 4px; background: none; box-shadow: none; }
+.workbench .tree-row:hover, .tree-row:hover { background: rgba(90, 78, 58, 0.08); }
+.workbench .tree-row.on, .tree-row.on { background: rgba(90, 78, 58, 0.14); }
+.tree-row:focus, .tree-row:focus-visible { outline: none; }
+.editor-side .bar { border-bottom: 0; }
