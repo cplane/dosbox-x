@@ -239,13 +239,14 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .screen-wrap.hidden { display: none; }
 
 /* scrollbars: thin, overlay-like, out of the way (the Windows default is heavy) */
-* { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.35) transparent; }
+/* Chrome 121+ honours the standard properties and then ignores ::-webkit-scrollbar, so they go to the others only. */
+@supports not selector(::-webkit-scrollbar) { * { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.35) transparent; } }
 *::-webkit-scrollbar { width: 9px; height: 9px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-corner { background: transparent; }
 *::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 9px; border: 2px solid transparent; background-clip: padding-box; }
 *::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.55); background-clip: padding-box; }
-.workbench * { scrollbar-color: rgba(90, 78, 58, 0.3) transparent; }
+@supports not selector(::-webkit-scrollbar) { .workbench * { scrollbar-color: rgba(90, 78, 58, 0.3) transparent; } }
 .workbench *::-webkit-scrollbar-thumb { background: rgba(90, 78, 58, 0.25); background-clip: padding-box; }
 .workbench *::-webkit-scrollbar-thumb:hover { background: rgba(90, 78, 58, 0.5); background-clip: padding-box; }
 
@@ -296,3 +297,4 @@ html.paper body { overflow: hidden; }
 *::-webkit-scrollbar-thumb { border: 0; border-radius: 3px; background-clip: border-box; }
 *::-webkit-scrollbar-thumb:hover { background-clip: border-box; }
 .workbench *::-webkit-scrollbar-thumb, .workbench *::-webkit-scrollbar-thumb:hover { background-clip: border-box; }
+*::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
