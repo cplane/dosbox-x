@@ -237,6 +237,7 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
                 fontSize: 14,
                 lineHeight: 20,
                 minimap: { enabled: false },
+                scrollbar: { verticalScrollbarSize: 3, horizontalScrollbarSize: 3 },
                 scrollBeyondLastLine: false,
                 tabSize: 8,
                 insertSpaces: lang !== 'asm',
