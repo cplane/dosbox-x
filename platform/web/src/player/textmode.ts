@@ -7,7 +7,7 @@
  * Unicode), see textstyle.ts.
  */
 
-import { CP437, DOS_STYLE, type TextStyle } from './textstyle'
+import { CP437, DOS_STYLE, glyphHash, ROM_FONT_HASH, type TextStyle } from './textstyle'
 
 const SEC_PALETTE = 1
 const SEC_FONT = 2
@@ -40,6 +40,7 @@ export class TextScreen {
   private dirtyRows = new Set<number>()
   private hasBlinking = false
   style: TextStyle = DOS_STYLE
+  private custom = new Uint8Array(256) // 1: the glyph differs from the ROM font (see textstyle.ts)
   // The styled renderer's cell, from the font's metrics at the device pixel ratio.
   private metrics: { font: string; cellW: number; cellH: number; ascent: number; scaleX: number; scaleY: number; dpr: number } | null = null
 
@@ -86,6 +87,11 @@ export class TextScreen {
     if (sections & SEC_FONT) {
       this.font = new Uint8Array(buf.slice(p, p + 256 * cellH))
       p += 256 * cellH
+      // Glyphs the program reshaped (vs the ROM font) are drawn as bitmaps
+      // by the styled renderer; a font of another height is all "custom".
+      for (let ch = 0; ch < 256; ch++) {
+        this.custom[ch] = cellH !== 16 || glyphHash(this.font, ch, cellH) !== ROM_FONT_HASH[ch] ? 1 : 0
+      }
       this.markAll()
     }
     if (sections & SEC_ROWS) {
@@ -283,7 +289,23 @@ export class TextScreen {
           }
         }
         const glyph = CP437[ch]
-        if (glyph !== ' ' && fg !== bg) {
+        if (fg !== bg && this.custom[ch] && this.font.length) {
+          // A reshaped glyph: its VGA bitmap, scaled into the cell, runs of set bits as rects.
+          ctx.fillStyle = color(fg)
+          const sx = cellW / 8, sy = cellH / this.cellH
+          for (let line = 0; line < this.cellH; line++) {
+            const bits = this.font[ch * this.cellH + line]
+            if (!bits) continue
+            const ly = y + line * sy
+            for (let x = 0; x < 8;) {
+              if (!(bits & (0x80 >> x))) { x++; continue }
+              let x1 = x
+              while (x1 < 8 && bits & (0x80 >> x1)) x1++
+              ctx.fillRect(c * cellW + x * sx, ly, (x1 - x) * sx, sy)
+              x = x1
+            }
+          }
+        } else if (glyph !== ' ' && fg !== bg) {
           ctx.fillStyle = color(fg)
           ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0) // the font's cell (█'s ink) mapped onto ours
           ctx.fillText(glyph, (c * cellW) / scaleX, y / scaleY + ascent)
