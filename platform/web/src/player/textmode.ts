@@ -41,7 +41,7 @@ export class TextScreen {
   private hasBlinking = false
   style: TextStyle = DOS_STYLE
   // The styled renderer's cell, from the font's metrics at the device pixel ratio.
-  private metrics: { font: string; cellW: number; cellH: number; ascent: number; dpr: number } | null = null
+  private metrics: { font: string; cellW: number; cellH: number; ascent: number; scaleY: number; dpr: number } | null = null
 
   /** Switches the look; the next draw redraws everything. */
   setStyle(s: TextStyle) {
@@ -202,17 +202,26 @@ export class TextScreen {
     const s = this.style
     const dpr = Math.min(3, window.devicePixelRatio || 1)
     if (!this.metrics || this.metrics.dpr !== dpr) {
-      const font = `${Math.round((s.size ?? 16) * dpr)}px ${s.font}`
+      // Box-drawing glyphs fill the font's advance width and line box, so
+      // the cell must be exactly that: the font size is adjusted until the
+      // advance is a whole number of pixels, and the line box is stretched
+      // (by a hair) to the rounded cell height.
+      const base = Math.round((s.size ?? 16) * dpr)
+      ctx.font = `${base}px ${s.font}`
+      const ratio = ctx.measureText('M').width / base
+      const cellW = Math.max(1, Math.round(base * ratio))
+      const px = cellW / ratio
+      const font = `${px.toFixed(2)}px ${s.font}`
       ctx.font = font
       const m = ctx.measureText('M')
-      const ascent = m.fontBoundingBoxAscent || (s.size ?? 16) * dpr * 0.95
-      const descent = m.fontBoundingBoxDescent || (s.size ?? 16) * dpr * 0.25
-      let cellH = Math.ceil(ascent + descent)
-      if (s.lineHeight) cellH = Math.max(cellH, Math.round((s.size ?? 16) * dpr * s.lineHeight))
-      this.metrics = { font, cellW: Math.ceil(m.width), cellH, ascent: ascent + (cellH - (ascent + descent)) / 2, dpr }
+      const asc = m.fontBoundingBoxAscent || px * 0.95
+      const natural = asc + (m.fontBoundingBoxDescent || px * 0.25)
+      const cellH = Math.max(1, Math.round(natural * (s.lineHeight ?? 1)))
+      const scaleY = cellH / natural
+      this.metrics = { font, cellW, cellH, ascent: asc, scaleY, dpr }
       this.markAll()
     }
-    const { font, cellW, cellH, ascent } = this.metrics
+    const { font, cellW, cellH, ascent, scaleY } = this.metrics
     const W = this.cols * cellW
     const H = this.rows * cellH
     if (canvas.width !== W || canvas.height !== H) {
@@ -270,7 +279,9 @@ export class TextScreen {
         const glyph = CP437[ch]
         if (glyph !== ' ' && fg !== bg) {
           ctx.fillStyle = color(fg)
-          ctx.fillText(glyph, c * cellW, y + ascent)
+          ctx.setTransform(1, 0, 0, scaleY, 0, 0) // the font's line box stretched to the cell
+          ctx.fillText(glyph, c * cellW, y / scaleY + ascent)
+          ctx.setTransform(1, 0, 0, 1, 0, 0)
         }
         if (cursorVisible && r === this.cursorY && c === this.cursorX) {
           // The cursor keeps its DOS shape (underline, or a block in insert mode), scaled to the cell.
