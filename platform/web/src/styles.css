@@ -11,7 +11,7 @@
   --accent: #58a6ff;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; }
 a { color: var(--accent); }
 button, .button {
   background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
