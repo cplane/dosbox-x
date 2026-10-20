@@ -217,7 +217,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 /* workbench view (Player.tsx): editor + terminal on paper, the screen put away */
 .view-select { font-size: 12px; }
 .workbench {
-  --wb-bg: #f3ead7; --wb-panel: #f7f1e3; --wb-ink: #3a3226; --wb-muted: #8a7d63; --wb-line: #e2d6b8; --wb-accent: #7a4a1f;
+  --wb-bg: #f1f0ec; --wb-panel: #fcfcfa; --wb-ink: #35342f; --wb-muted: #8b8a83; --wb-line: #e4e3de; --wb-accent: #5f5a4e;
   display: grid; grid-template-rows: minmax(320px, 56vh) minmax(220px, 1fr); gap: 8px;
   background: var(--wb-bg); color: var(--wb-ink); border-radius: 8px; padding: 8px;
 }
@@ -229,10 +229,10 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .workbench .editor-files li.on button, .workbench .editor-files li button:hover { background: var(--wb-line); }
 .workbench button { background: transparent; color: var(--wb-ink); border: 1px solid var(--wb-line); }
 .workbench button:hover { background: var(--wb-line); }
-.workbench button.primary { background: var(--wb-accent); border-color: var(--wb-accent); color: #fff8ea; }
+.workbench button.primary { background: var(--wb-accent); border-color: var(--wb-accent); color: #fbfaf6; }
 .workbench button.on { background: var(--wb-line); }
 .workbench input { background: var(--wb-panel); color: var(--wb-ink); border: 1px solid var(--wb-line); }
-.workbench .lag { color: #a05a1f; }
+.workbench .lag { color: #a8862f; }
 .terminal { position: relative; border: 1px solid var(--wb-line, var(--line)); border-radius: 8px; padding: 6px; min-height: 220px; height: 100%; background: var(--wb-panel, #2e3440); }
 .terminal-host { height: 100%; }
 .terminal .overlay { position: absolute; inset: 0; display: grid; place-items: center; color: var(--wb-muted, var(--muted)); background: #0003; border-radius: 8px; }
@@ -246,9 +246,9 @@ button.on { border-color: var(--accent); color: var(--accent); }
 *::-webkit-scrollbar-corner { background: transparent; }
 *::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 9px; border: 2px solid transparent; background-clip: padding-box; }
 *::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.55); background-clip: padding-box; }
-@supports not selector(::-webkit-scrollbar) { .workbench * { scrollbar-color: rgba(90, 78, 58, 0.3) transparent; } }
-.workbench *::-webkit-scrollbar-thumb { background: rgba(90, 78, 58, 0.25); background-clip: padding-box; }
-.workbench *::-webkit-scrollbar-thumb:hover { background: rgba(90, 78, 58, 0.5); background-clip: padding-box; }
+@supports not selector(::-webkit-scrollbar) { .workbench * { scrollbar-color: rgba(70, 70, 65, 0.3) transparent; } }
+.workbench *::-webkit-scrollbar-thumb { background: rgba(70, 70, 65, 0.25); background-clip: padding-box; }
+.workbench *::-webkit-scrollbar-thumb:hover { background: rgba(70, 70, 65, 0.5); background-clip: padding-box; }
 
 /* file tree (FileTree.tsx) */
 .tree { overflow: auto; padding: 4px 0; font-size: 13px; }
@@ -264,18 +264,18 @@ button.on { border-color: var(--accent); color: var(--accent); }
 
 /* tree rows are plain text, not buttons: no frames, no focus ring, a soft hover */
 .workbench .tree-row, .tree-row { border: 0; border-radius: 4px; background: none; box-shadow: none; }
-.workbench .tree-row:hover, .tree-row:hover { background: rgba(90, 78, 58, 0.08); }
-.workbench .tree-row.on, .tree-row.on { background: rgba(90, 78, 58, 0.14); }
+.workbench .tree-row:hover, .tree-row:hover { background: rgba(70, 70, 65, 0.08); }
+.workbench .tree-row.on, .tree-row.on { background: rgba(70, 70, 65, 0.14); }
 .tree-row:focus, .tree-row:focus-visible { outline: none; }
 .editor-side .bar { border-bottom: 0; }
 
 /* paper mode: the whole window in the workbench's colours (html.paper while the Workbench view is up) */
 html.paper {
   color-scheme: light;
-  --bg: #f3ead7; --panel: #f7f1e3; --line: #e2d6b8; --text: #3a3226; --muted: #8a7d63; --accent: #7a4a1f;
-  --ok: #4f6b2f; --warn: #a05a1f; --bad: #a0402f;
+  --bg: #f1f0ec; --panel: #fcfcfa; --line: #e4e3de; --text: #35342f; --muted: #8b8a83; --accent: #5f5a4e;
+  --ok: #577143; --warn: #a8862f; --bad: #a3493c;
 }
-html.paper button.primary { background: var(--accent); border-color: var(--accent); color: #fff8ea; }
+html.paper button.primary { background: var(--accent); border-color: var(--accent); color: #fbfaf6; }
 html.paper button.danger { color: var(--bad); }
 html.paper .dot.on { background: var(--ok); }
 html.paper select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }

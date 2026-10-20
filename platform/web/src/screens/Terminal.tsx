@@ -64,9 +64,9 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ bo
       allowProposedApi: true,
       // Paper: the workbench's look (styles.css --wb-*), ANSI colours muted to match.
       theme: {
-        background: '#f7f1e3', foreground: '#3a3226', cursor: '#3a3226', cursorAccent: '#f7f1e3', selectionBackground: '#e3d4ad',
-        black: '#3a3226', blue: '#4f6fa8', green: '#4f6b2f', cyan: '#2f7f7a', red: '#a0402f', magenta: '#8a4f8a', yellow: '#8a5a00', white: '#8a7d63',
-        brightBlack: '#6b5f4a', brightBlue: '#2f5fb0', brightGreen: '#3f7f1f', brightCyan: '#1f8f8a', brightRed: '#c04a30', brightMagenta: '#a05fa0', brightYellow: '#b07a00', brightWhite: '#3a3226',
+        background: '#fcfcfa', foreground: '#35342f', cursor: '#35342f', cursorAccent: '#fcfcfa', selectionBackground: '#e2e0d8',
+        black: '#35342f', blue: '#4b6a9b', green: '#577143', cyan: '#3f7f7a', red: '#a3493c', magenta: '#87588a', yellow: '#8a6f2e', white: '#8b8a83',
+        brightBlack: '#6b6a62', brightBlue: '#3b63a8', brightGreen: '#4a7a2f', brightCyan: '#2f8a84', brightRed: '#b9553f', brightMagenta: '#9b66a0', brightYellow: '#a8862f', brightWhite: '#35342f',
       },
     })
     const fit = new FitAddon()
