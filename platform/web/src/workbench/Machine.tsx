@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { touches } from './operands'
+import { h2, lookupInt } from './interrupts'
 import { hex, type Debugger, type DisLine, type MemWindow } from './useDebugger'
 
 /**
@@ -14,6 +15,8 @@ import { hex, type Debugger, type DisLine, type MemWindow } from './useDebugger'
 
 interface Props {
   dbg: Debugger
+  /** The current instruction is an INT: show its function in the reference. */
+  onShowInterrupt?: (int: number, ax: number) => void
 }
 
 const COLS = 64
@@ -33,7 +36,7 @@ function mix(base: string, rgb: readonly [number, number, number], a: number): s
   return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${Math.min(1, Math.max(0, a))})`.replace('rgba', 'rgba') || base
 }
 
-export function Machine({ dbg }: Props) {
+export function Machine({ dbg, onShowInterrupt }: Props) {
   const { regs, prevRegs, mem, stack, ip, lines, stopped } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
   const stackRef = useRef<HTMLCanvasElement>(null)
@@ -165,6 +168,16 @@ export function Machine({ dbg }: Props) {
   const flags = regs ? parseInt(regs.flags, 16) : 0
   const prevFlags = prevRegs ? parseInt(prevRegs.flags, 16) : flags
   const tape = ip !== null ? lines.filter((l) => l.offset >= ip).slice(0, 7) : []
+  // About to call an interrupt: name the function from AH (or AX).
+  const intCall = useMemo(() => {
+    if (!current || !regs) return null
+    const m = /^int\s+([0-9a-f]+)h?$/i.exec(current.text.trim())
+    if (!m) return null
+    const int = parseInt(m[1], 16)
+    const ax = parseInt(regs.general.eax, 16) & 0xffff
+    const hit = lookupInt(int, ax)
+    return { int, ax, vector: hit?.vector, fn: hit?.fn }
+  }, [current, regs])
 
   return (
     <div className="machine">
@@ -215,6 +228,15 @@ export function Machine({ dbg }: Props) {
           ))}
         </div>
         <div className="machine-label"><span>instructions</span></div>
+        {intCall && (
+          <div className="machine-int">
+            <span>
+              <b>INT {h2(intCall.int)}</b>{intCall.vector ? ` · ${intCall.vector.title}` : ''}
+              {intCall.fn ? ` · ${intCall.fn.ax ? 'AX' : 'AH'}=${(intCall.fn.ax ? intCall.ax : intCall.ax >> 8).toString(16).toUpperCase().padStart(intCall.fn.ax ? 4 : 2, '0')}h: ${intCall.fn.name}` : ` · AH=${(intCall.ax >> 8).toString(16).toUpperCase().padStart(2, '0')}h`}
+            </span>
+            {onShowInterrupt && <button className="ghost" onClick={() => onShowInterrupt(intCall.int, intCall.ax)}>reference</button>}
+          </div>
+        )}
         <div className="cpu-tape">
           {tape.map((l, i) => (
             <div key={l.offset} className={`tape-item ${i === 0 ? 'now' : ''} ${dbg.breakpoints.has(l.offset) ? 'bp' : ''}`} title={`${hex(dbg.cs).slice(-4)}:${l.offset.toString(16).toUpperCase().padStart(4, '0')} — click: run to here; ●: breakpoint`} onClick={() => i > 0 && dbg.runTo(l.offset)}>

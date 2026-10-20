@@ -228,13 +228,30 @@ the machine presets use:
   ring buffer in `/dev/shm/DWD_GAMELINK_CON_R1` (`output_gamelink.cpp`,
   hooked in `dev_con.h`), so fast output that scrolls off between frames is
   complete; the text screen is the fallback for programs that draw directly.
-- **Workbench view** (the Screen / Workbench select on the player's bar):
-  the editor on top and a **terminal** (`Terminal.tsx`, xterm.js) below, on
-  paper colours, the DOS screen put away. The terminal is the console
-  stream live (`hello con`), so a program's output appears while it runs;
-  every key goes to DOS the way the screen's do (DOS echoes), pasted text
-  is typed. Build & Run types `C:\BUILD` there. Programs that draw the
-  screen directly don't show in it — switch back to Screen for those.
+- **Workbench view** (the Screen / Workbench select on the player's bar): a
+  dockable **workspace** (`workbench/Workspace.tsx`, flexlayout) on paper
+  colours, the DOS screen put away. Files, Editor, Terminal, the 8086
+  guide, the Interrupts reference and the Memory map are tabs that can be
+  dragged between groups, split, maximised or closed; the layout is
+  remembered (⟲ resets it). The **Machine** tab exists only while a
+  program runs under the debugger. The terminal (`Terminal.tsx`, xterm.js)
+  is the console stream live (`hello con`), so a program's output appears
+  while it runs; every key goes to DOS the way the screen's do (DOS
+  echoes), pasted text is typed. Build & Run types `C:\BUILD` there.
+  Programs that draw the screen directly don't show in it — switch back
+  to Screen for those.
+- **References** (`workbench/`): the **8086 guide** (`guide.ts`) —
+  instructions grouped by what you reach for first, one line each with the
+  flags, every one with an example that "open in editor" drops into the
+  .COM skeleton as a new file, plus ready programs (minimal .COM, keys,
+  counting with AAM, direct video, string length); the **Interrupts**
+  reference (`interrupts.ts`: INT 21h, 10h, 16h, 33h, 1Ah, 13h, 15h by
+  function with in/out/notes) — the machine view names the function when
+  the current instruction is an INT (it knows AH) and links there, and
+  hovering an `INT` line in the editor shows it (AH found from the MOV
+  above); the **Memory map** (`MemoryMapPanel.tsx`): the first megabyte,
+  what lives where, which regions a program may write, and where the
+  running program sits.
 - **The machine** (`workbench/Machine.tsx`): the workbench's right column
   draws the running program instead of listing it. Memory is a field of
   cells (the data segment, 4 KB at a byte per cell up to 64 KB; the stack

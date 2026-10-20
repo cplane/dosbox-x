@@ -233,7 +233,7 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .workbench button.on { background: var(--wb-line); }
 .workbench input { background: var(--wb-panel); color: var(--wb-ink); border: 1px solid var(--wb-line); }
 .workbench .lag { color: #a8862f; }
-.terminal { position: relative; border: 1px solid var(--wb-line, var(--line)); border-radius: 8px; padding: 6px; min-height: 220px; height: 100%; background: var(--wb-panel, #2e3440); }
+.terminal { position: relative; border: 1px solid var(--wb-line, var(--line)); border-radius: 8px; padding: 6px; min-height: 220px; height: 100%; background: var(--panel); }
 .terminal-host { height: 100%; }
 .terminal .overlay { position: absolute; inset: 0; display: grid; place-items: center; color: var(--wb-muted, var(--muted)); background: #0003; border-radius: 8px; }
 .screen-wrap.hidden { display: none; }
@@ -405,3 +405,20 @@ html.paper body { overflow: hidden; }
 
 /* xterm's hidden textarea gets the focus: no ring around the terminal for it */
 .terminal .xterm-helper-textarea:focus { outline: 0 !important; }
+
+/* guide examples, the interrupt reference, the memory map */
+.guide-open { margin-left: auto; font-size: 11px; padding: 1px 6px; }
+.guide-head { display: flex; align-items: baseline; gap: 6px; }
+.guide-example { margin: 6px 0 4px; }
+.guide-example pre { margin: 0 0 6px; padding: 8px 10px; background: rgba(70, 70, 65, 0.06); border-radius: 6px; font-size: 12px; line-height: 1.45; overflow: auto; white-space: pre; }
+.guide-k { display: inline-block; min-width: 28px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.guide-entry.focus { background: #f3d9cf; border-radius: 6px; padding: 4px 6px; margin: 2px -6px; }
+.memmap-panel .memmap-bar { position: relative; margin-top: 4px; }
+.memmap-bar .ivt { background: #a3493c; } .memmap-bar .bda { background: #b9553f; } .memmap-bar .dos { background: #6b6a62; } .memmap-bar .free { background: #577143; }
+.memmap-bar .video { background: #87588a; } .memmap-bar .rom { background: #8a6f2e; }
+.memmap-you { position: absolute; top: -4px; width: 2px; height: calc(100% + 8px); background: #35342f; }
+.memmap-you::after { content: '▼'; position: absolute; top: -12px; left: -5px; font-size: 9px; color: #35342f; }
+.memmap-write { margin-left: auto; font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.memmap-write.w-yes { background: #dfe8d3; color: #3f5a2d; } .memmap-write.w-careful { background: #f1e3c4; color: #7a5a14; } .memmap-write.w-no { background: #f0d8d2; color: #8a3a2a; }
+.machine-int { font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgba(70, 70, 65, 0.05); display: flex; gap: 8px; align-items: center; }
+.machine-int button { margin-left: auto; font-size: 11px; padding: 1px 6px; }

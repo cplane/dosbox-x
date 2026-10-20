@@ -7,7 +7,9 @@ import type { Step } from '../screens/Console'
 import { Terminal, type TerminalHandle } from '../screens/Terminal'
 import { FilesTab } from './FilesTab'
 import { GuidePanel } from './GuidePanel'
+import { InterruptsPanel } from './InterruptsPanel'
 import { Machine } from './Machine'
+import { MemoryMapPanel } from './MemoryMapPanel'
 import type { Debugger } from './useDebugger'
 
 /**
@@ -19,7 +21,7 @@ import type { Debugger } from './useDebugger'
 
 const Editor = lazy(() => import('../screens/Editor').then((m) => ({ default: m.Editor })))
 
-const LAYOUT_KEY = 'dosbox.layout.v1'
+const LAYOUT_KEY = 'dosbox.layout.v2'
 
 const defaultLayout: IJsonModel = {
   global: { tabEnableClose: true, tabSetEnableMaximize: true, splitterSize: 6, tabEnableRenderOnDemand: true },
@@ -35,7 +37,14 @@ const defaultLayout: IJsonModel = {
           { type: 'tabset', id: 'bottom', weight: 30, children: [{ type: 'tab', id: 'terminal', name: 'Terminal', component: 'terminal', enableClose: false }] },
         ],
       },
-      { type: 'tabset', id: 'side', weight: 25, children: [{ type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' }] },
+      {
+        type: 'tabset', id: 'side', weight: 25,
+        children: [
+          { type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' },
+          { type: 'tab', id: 'ints', name: 'Interrupts', component: 'ints' },
+          { type: 'tab', id: 'memmap', name: 'Memory map', component: 'memmap' },
+        ],
+      },
     ],
   },
 }
@@ -71,6 +80,25 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const [path, setPath] = useState<string | null>(null)
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0)
+  const [intFocus, setIntFocus] = useState<{ int: number; ax: number } | null>(null)
+
+  // Show a tab (adding it back if it was closed) and select it.
+  const show = (id: string, name: string, component: string) => {
+    if (!model.getNodeById(id)) {
+      const target = model.getNodeById('side') ?? model.getNodeById('main')
+      if (target) model.doAction(Actions.addNode({ type: 'tab', id, name, component }, target.getId(), DockLocation.CENTER, -1, true))
+    } else {
+      model.doAction(Actions.selectTab(id))
+    }
+  }
+  const openInEditor = (file: string, code: string) => {
+    show('editor', 'Editor', 'editor')
+    window.setTimeout(() => editorRef.current?.createFile(file, code), 50)
+  }
+  const showInterrupt = (int: number, ax: number) => {
+    setIntFocus({ int, ax })
+    show('ints', 'Interrupts', 'ints')
+  }
 
   // The Machine tab follows the debug session.
   const active = !!dbg.session
@@ -105,9 +133,13 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'terminal':
         return <Terminal ref={terminalRef} boxId={boxId} running={running} subscribe={subscribeCon} onKey={onTermKey} />
       case 'guide':
-        return <GuidePanel />
+        return <GuidePanel onOpen={openInEditor} />
+      case 'ints':
+        return <InterruptsPanel focus={intFocus} />
+      case 'memmap':
+        return <MemoryMapPanel regs={dbg.regs} />
       case 'machine':
-        return <div className="dbg-body"><Machine dbg={dbg} /></div>
+        return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} /></div>
     }
     return <div className="muted">?</div>
   }

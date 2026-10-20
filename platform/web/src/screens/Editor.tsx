@@ -50,6 +50,8 @@ export interface EditorHandle {
   open: (path: string) => void
   /** New file in the current folder (asks for the name). */
   create: () => void
+  /** A new file with this content, in the current folder, unsaved (the guide's examples). */
+  createFile: (name: string, text: string) => void
 }
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
@@ -156,7 +158,18 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   const [path, setPath] = useState<string | null>(null)
   useEffect(() => { onPathChange?.(path) }, [path]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { onDirChange?.(dir) }, [dir]) // eslint-disable-line react-hooks/exhaustive-deps
-  useImperativeHandle(ref, () => ({ open: (p: string) => { open(p) }, create: () => { create() } }))
+  useImperativeHandle(ref, () => ({
+    open: (p: string) => { open(p) },
+    create: () => { create() },
+    createFile: (name: string, content: string) => {
+      if (dirty && !confirm('Discard the unsaved changes?')) return
+      setPath(dir ? `${dir}/${name}` : name)
+      setText(content)
+      setSaved('\0')
+      setBuildCmd(loadBuild(langOf(name)))
+      setStatus('from the guide: Save, then Build & Run or Debug')
+    },
+  }))
   const [text, setText] = useState('')
   const [saved, setSaved] = useState('')
   const [busy, setBusy] = useState(false)
