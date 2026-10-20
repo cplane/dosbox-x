@@ -20,6 +20,8 @@ interface Props {
   onRun: (steps: Step[]) => Promise<boolean>
   /** dos: the Borland blue under the screen; paper: the workbench's light look. */
   look?: 'dos' | 'paper'
+  /** What the box runs (the player's meta): Build & Run needs the DOS prompt, i.e. COMMAND. */
+  program?: string
 }
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
@@ -83,7 +85,8 @@ export function buildBatch(path: string, buildCmd: string, cycles: string): stri
     case 'asm': case 'c': case 'pas':
       lines.push(
         'CONFIG -set "cpu cycles=max"',
-        buildCmd.replace('{}', name),
+        // {} is where the file goes; a command without it gets the file appended, so it always builds the open file.
+        buildCmd.includes('{}') ? buildCmd.replace('{}', name) : `${buildCmd.trim()} ${name}`,
         'IF ERRORLEVEL 1 GOTO FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
         `ECHO --- ${base} ---`,
@@ -106,7 +109,9 @@ export function buildBatch(path: string, buildCmd: string, cycles: string): stri
 /** The one step the console types for a build. */
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
-export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
+export function Editor({ boxId, running, onRun, look = 'dos', program }: Props) {
+  // A program other than the shell has the keyboard: typing C:\BUILD would go to it.
+  const busyWith = program && program.toUpperCase() !== 'COMMAND' ? program : null
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0) // bumped when the tree should re-list (a save)
   const [path, setPath] = useState<string | null>(null)
@@ -177,6 +182,10 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
 
   async function buildAndRun() {
     if (!path || !running) return
+    if (busyWith) {
+      setStatus(`${busyWith} has the keyboard: quit it first (the Screen view), then build`)
+      return
+    }
     if (dirty && !(await save())) return
     setStatus('running…')
     try {
@@ -187,7 +196,7 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
       return
     }
     const ok = await onRun(buildSteps)
-    setStatus(ok ? 'done' : 'failed (see the console)')
+    setStatus(ok ? (look === 'paper' ? 'running in the terminal' : 'done') : 'failed (see the console)')
   }
 
   const onMount: OnMount = (editor) => {
@@ -214,14 +223,29 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
           {dirty && <span className="lag">•</span>}
           <button disabled={!path || !dirty || busy} onClick={save} title="Ctrl+S">Save</button>
           {(lang === 'asm' || lang === 'c' || lang === 'pas') && (
-            <input
-              className="mono"
-              value={buildCmd}
-              onChange={(e) => { setBuildCmd(e.target.value); saveBuild(lang, e.target.value) }}
-              title="The build command; {} is the file name"
-            />
+            <>
+              <input
+                className="mono"
+                value={buildCmd}
+                onChange={(e) => { setBuildCmd(e.target.value); saveBuild(lang, e.target.value) }}
+                title="The build command; {} is where the open file's name goes (appended when there is no {})"
+              />
+              {buildCmd !== defaultBuild[lang] && (
+                <button className="ghost" onClick={() => { setBuildCmd(defaultBuild[lang]); saveBuild(lang, defaultBuild[lang]) }} title={`Back to the default: ${defaultBuild[lang]}`}>↺</button>
+              )}
+            </>
           )}
-          {lang !== 'none' && <button className="primary" disabled={!path || busy || !running} onClick={buildAndRun}>{lang === 'bat' || lang === 'prog' ? 'Run' : 'Build & Run'}</button>}
+          {lang !== 'none' && (
+            <button
+              className="primary"
+              disabled={!path || busy || !running || !!busyWith}
+              onClick={buildAndRun}
+              title={busyWith ? `${busyWith} is running on the box; quit it first` : undefined}
+            >
+              {lang === 'bat' || lang === 'prog' ? 'Run' : 'Build & Run'}
+            </button>
+          )}
+          {busyWith && <span className="lag">{busyWith} has the keyboard</span>}
           <span className="muted">{status}</span>
         </div>
         <div className="editor-box">
