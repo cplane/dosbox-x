@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
-import { getBox, listFiles, readTextFile, writeTextFile, type FileEntry } from '../api/client'
+import { getBox, readTextFile, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
+import { FileTree } from './FileTree'
 
 /**
  * The workbench editor: a file browser over the box's C: drive and Monaco
@@ -107,7 +108,7 @@ export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
 export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
   const [dir, setDir] = useState('')
-  const [entries, setEntries] = useState<FileEntry[]>([])
+  const [treeKey, setTreeKey] = useState(0) // bumped when the tree should re-list (a save)
   const [path, setPath] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [saved, setSaved] = useState('')
@@ -119,17 +120,7 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
   const dirty = text !== saved
   const lang = path ? langOf(split(path)[1]) : 'none'
 
-  const refresh = useCallback(async (d: string) => {
-    try {
-      const es = await listFiles(boxId, d)
-      es.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
-      setEntries(es)
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err))
-    }
-  }, [boxId])
-
-  useEffect(() => { refresh(dir) }, [dir, refresh, running])
+  useEffect(() => { if (running) setTreeKey((k) => k + 1) }, [running])
 
   async function open(p: string) {
     if (dirty && !confirm('Discard the unsaved changes?')) return
@@ -169,7 +160,7 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
       setText(t)
       setSaved(t)
       setStatus(`saved ${split(path)[1]}`)
-      refresh(dir)
+      setTreeKey((k) => k + 1)
       return true
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
@@ -177,7 +168,7 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
     } finally {
       setBusy(false)
     }
-  }, [boxId, path, text, dir, refresh])
+  }, [boxId, path, text, dir])
   saveRef.current = save
 
   // The box's own speed, restored after a build (the build runs at max).
@@ -210,20 +201,10 @@ export function Editor({ boxId, running, onRun, look = 'dos' }: Props) {
     <div className="editor">
       <div className="editor-side">
         <div className="bar">
-          <button disabled={!dir} onClick={() => setDir(split(dir)[0])} title="Up">↑</button>
-          <span className="mono">{dosDir(dir)}</span>
-          <button onClick={create} title="New file in this directory">New</button>
+          <span className="mono" title="where New creates a file">{dosDir(dir)}</span>
+          <button onClick={create} title="New file in this folder">New</button>
         </div>
-        <ul className="editor-files">
-          {entries.map((e) => (
-            <li key={e.name} className={e.dir ? 'dir' : path === (dir ? `${dir}/${e.name}` : e.name) ? 'on' : ''}>
-              <button onClick={() => (e.dir ? setDir(dir ? `${dir}/${e.name}` : e.name) : open(dir ? `${dir}/${e.name}` : e.name))}>
-                {e.dir ? `[${e.name}]` : e.name}
-              </button>
-            </li>
-          ))}
-          {entries.length === 0 && <li className="muted">empty</li>}
-        </ul>
+        <FileTree boxId={boxId} selected={path} refreshKey={treeKey} onOpen={open} onDir={setDir} />
       </div>
       <div className="editor-main">
         <div className="bar">

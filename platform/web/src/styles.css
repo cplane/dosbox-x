@@ -237,3 +237,26 @@ button.on { border-color: var(--accent); color: var(--accent); }
 .terminal-host { height: 100%; }
 .terminal .overlay { position: absolute; inset: 0; display: grid; place-items: center; color: var(--wb-muted, var(--muted)); background: #0003; border-radius: 8px; }
 .screen-wrap.hidden { display: none; }
+
+/* scrollbars: thin, overlay-like, out of the way (the Windows default is heavy) */
+* { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, 0.35) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 9px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.55); background-clip: padding-box; }
+.workbench * { scrollbar-color: rgba(90, 78, 58, 0.3) transparent; }
+.workbench *::-webkit-scrollbar-thumb { background: rgba(90, 78, 58, 0.25); background-clip: padding-box; }
+.workbench *::-webkit-scrollbar-thumb:hover { background: rgba(90, 78, 58, 0.5); background-clip: padding-box; }
+
+/* file tree (FileTree.tsx) */
+.tree { overflow: auto; padding: 4px 0; font-size: 13px; }
+.tree-row { display: flex; align-items: center; gap: 5px; width: 100%; text-align: left; background: none; border: 0; border-radius: 0; padding: 2px 8px 2px 0; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; }
+.tree-row:hover { background: var(--wb-line, var(--line)); }
+.tree-row.on { background: var(--wb-line, var(--line)); }
+.tree-row span { overflow: hidden; text-overflow: ellipsis; }
+.tree-chevron { flex: 0 0 auto; margin-left: 2px; color: var(--wb-muted, var(--muted)); transition: transform 0.12s; }
+.tree-chevron.open { transform: rotate(90deg); }
+.tree-icon { flex: 0 0 auto; color: var(--wb-muted, var(--muted)); }
+.tree-row.on .tree-icon, .tree-row:hover .tree-icon { color: inherit; }
+.tree-note { color: var(--wb-muted, var(--muted)); font-size: 12px; padding: 2px 0; }
