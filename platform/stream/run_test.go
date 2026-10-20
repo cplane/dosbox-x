@@ -59,6 +59,23 @@ func TestMergeScreenAndOutput(t *testing.T) {
 	}
 }
 
+func TestStreamPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		raw, prompt string
+		ok          bool
+	}{
+		{"ver\r\nDOSBox-X\r\n\r\nC:\\>", "C:\\>", true},
+		{"cd \\TOOLS\r\n\r\nC:\\TOOLS>", "C:\\TOOLS>", true},
+		{"CONFIG -get cyc", "", false},             // still typing
+		{"prog\r\nworking...", "", false},          // output, no prompt yet
+		{"prog\r\n\x1b[0mC:\\>   ", "C:\\>", true}, // ANSI reset and trailing blanks
+	} {
+		if p, ok := streamPrompt([]byte(tc.raw)); ok != tc.ok || p != tc.prompt {
+			t.Errorf("streamPrompt(%q) = %q, %v; want %q, %v", tc.raw, p, ok, tc.prompt, tc.ok)
+		}
+	}
+}
+
 func TestConOutput(t *testing.T) {
 	for _, tc := range []struct {
 		raw, prompt, want string
