@@ -266,6 +266,7 @@ export function Editor({ boxId, running, onRun, look = 'dos', program }: Props) 
                 scrollbar: { verticalScrollbarSize: 3, horizontalScrollbarSize: 3 },
                 scrollBeyondLastLine: false,
                 tabSize: 4,
+                detectIndentation: false, // or Monaco infers 8 from a file indented that way
                 insertSpaces: true,
                 renderLineHighlight: 'line',
                 wordWrap: 'off',
