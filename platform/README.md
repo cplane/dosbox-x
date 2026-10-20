@@ -235,10 +235,18 @@ the machine presets use:
   every key goes to DOS the way the screen's do (DOS echoes), pasted text
   is typed. Build & Run types `C:\BUILD` there. Programs that draw the
   screen directly don't show in it — switch back to Screen for those.
-- **Workbench debugger** (`workbench/`): the right column holds the
-  debugger's controls (step into/over, continue, pause, stop; F7/F8/F9 in
-  the editor) and tabs for registers, memory (the hex view and 1 MB map),
-  the disassembly window and the **8086 guide** (`guide.ts`: instructions
+- **The machine** (`workbench/Machine.tsx`): the workbench's right column
+  draws the running program instead of listing it. Memory is a field of
+  cells (the data segment, 4 KB at a byte per cell up to 64 KB; the stack
+  top as a strip with SP marked): at every stop the cells the step wrote
+  flash warm and fade (the window is diffed), the cells the next
+  instruction will touch flash cool (its operands decoded with the live
+  registers, `operands.ts`), the cell under IP is marked and executed
+  cells stay tinted. Under it the CPU: register cells and flag bits that
+  flash when they change, and the instructions as a tape feeding the
+  CPU, the current one at the head (click: run to; ○/●: breakpoint).
+  Step (F7/F8), run to a breakpoint (F9), or **play** at 1-20 steps a
+  second. The other tab is the **8086 guide** (`guide.ts`: instructions
   grouped by what you reach for first, registers, DOS and BIOS calls, the
   .COM skeleton; a filter box). **Debug** in the editor builds the open
   file — for .ASM with `ML /Fl`, whose listing maps code offsets to source
