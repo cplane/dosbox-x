@@ -24,7 +24,7 @@ const REG16: Record<string, string> = {
   si: 'si', di: 'di', bp: 'bp', sp: 'sp', cs: 'cs', ds: 'ds', es: 'es', ss: 'ss',
 }
 
-function operand(text: string, r: Registers, mem: Touch | undefined): Anchor | null {
+function operand(text: string, mem: Touch | undefined): Anchor | null {
   const t = text.trim().toLowerCase().replace(/^(byte|word|dword)\s+ptr\s+/, '')
   if (REG16[t]) return { kind: 'reg', name: REG16[t] }
   if (/\[/.test(t)) return mem ? { kind: 'mem', seg: mem.seg, offset: mem.offset } : null
@@ -39,7 +39,8 @@ export function flows(text: string, r: Registers): Flow[] {
   const op = sp[1]
   const args = sp[2] ? sp[2].split(',').map((a) => a.trim()) : []
   const mems = touches(text, r)
-  const memOp = mems.find((m) => m.kind !== 'write' || true) // the [..] operand's address, when there is one
+  // The [..] operand's address: the last touch (a PUSH/POP of memory lists the stack first).
+  const memOp = t.includes('[') ? mems[mems.length - 1] : undefined
   const out: Flow[] = []
   const push = (from: Anchor | null, to: Anchor | null) => { if (from && to) out.push({ from, to }) }
   const stackTop = (delta: number): Anchor => ({ kind: 'mem', seg: parseInt(r.segments.ss, 16) & 0xffff, offset: ((parseInt(r.general.esp, 16) & 0xffff) + delta) & 0xffff })
@@ -47,27 +48,27 @@ export function flows(text: string, r: Registers): Flow[] {
 
   switch (op) {
     case 'mov': case 'lea': case 'movzx': case 'movsx': case 'lds': case 'les':
-      if (args.length === 2) push(op === 'lea' ? { kind: 'imm' } : operand(args[1], r, memOp), operand(args[0], r, memOp))
+      if (args.length === 2) push(op === 'lea' ? { kind: 'imm' } : operand(args[1], memOp), operand(args[0], memOp))
       break
     case 'xchg':
-      if (args.length === 2) { push(operand(args[1], r, memOp), operand(args[0], r, memOp)); push(operand(args[0], r, memOp), operand(args[1], r, memOp)) }
+      if (args.length === 2) { push(operand(args[1], memOp), operand(args[0], memOp)); push(operand(args[0], memOp), operand(args[1], memOp)) }
       break
     case 'add': case 'sub': case 'adc': case 'sbb': case 'and': case 'or': case 'xor':
     case 'shl': case 'sal': case 'shr': case 'sar': case 'rol': case 'ror': case 'rcl': case 'rcr':
-      if (args.length === 2) { push(operand(args[1], r, memOp), operand(args[0], r, memOp)); push(operand(args[0], r, memOp), flags) }
+      if (args.length === 2) { push(operand(args[1], memOp), operand(args[0], memOp)); push(operand(args[0], memOp), flags) }
       break
     case 'cmp': case 'test':
-      if (args.length === 2) { push(operand(args[0], r, memOp), flags); push(operand(args[1], r, memOp), flags) }
+      if (args.length === 2) { push(operand(args[0], memOp), flags); push(operand(args[1], memOp), flags) }
       break
     case 'inc': case 'dec': case 'neg': case 'not':
-      if (args.length === 1) push(operand(args[0], r, memOp), flags)
+      if (args.length === 1) push(operand(args[0], memOp), flags)
       break
     case 'mul': case 'imul': case 'div': case 'idiv':
-      if (args.length === 1) { push(operand(args[0], r, memOp), ax); push(ax, ax); if (!/\b(al|bl|cl|dl|ah|bh|ch|dh|byte)\b/.test(t)) push(ax, dx) }
+      if (args.length === 1) { push(operand(args[0], memOp), ax); push(ax, ax); if (!/\b(al|bl|cl|dl|ah|bh|ch|dh|byte)\b/.test(t)) push(ax, dx) }
       break
-    case 'push': if (args.length === 1) push(operand(args[0], r, memOp), stackTop(-2)); break
+    case 'push': if (args.length === 1) push(operand(args[0], memOp), stackTop(-2)); break
     case 'pushf': push(flags, stackTop(-2)); break
-    case 'pop': if (args.length === 1) push(stackTop(0), operand(args[0], r, memOp)); break
+    case 'pop': if (args.length === 1) push(stackTop(0), operand(args[0], memOp)); break
     case 'popf': push(stackTop(0), flags); break
     case 'call': push({ kind: 'imm' }, stackTop(-2)); break
     case 'ret': case 'retn': case 'retf': push(stackTop(0), { kind: 'imm' }); break

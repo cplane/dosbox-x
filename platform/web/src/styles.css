@@ -433,3 +433,12 @@ html.paper body { overflow: hidden; }
 .workspace .flexlayout__border_toolbar { background: transparent; }
 .workspace .ws-collapse, .workspace .ws-restore { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 0 6px; cursor: pointer; line-height: 1; }
 .workspace .ws-collapse:hover, .workspace .ws-restore:hover { color: var(--text); }
+
+/* Data-flow arrows on the machine view: where the next instruction takes its data and where it puts it. */
+.machine { position: relative; }
+.machine-arrows { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 2; }
+.machine-arrows .flow { fill: none; stroke-width: 1.6; stroke-dasharray: 5 4; animation: machine-flow .7s linear infinite; opacity: .9; }
+.machine-arrows .flow.cool { stroke: #3b63a8; }
+.machine-arrows .flow.warm { stroke: #e0785a; }
+@keyframes machine-flow { to { stroke-dashoffset: -9; } }
+.machine-legend .legend-arrow { color: #3b63a8; font-weight: 600; }
