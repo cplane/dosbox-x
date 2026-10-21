@@ -6697,6 +6697,9 @@ static void DEBUG_AgentCaptureTraceEvent(void)
 	event.flags = inst.flags;
 	event.instruction = inst.dline;
 	event.analysis = inst.res;
+	// The accesses logged since the previous capture are the previous instruction's.
+	if (!agent_trace_events.empty()) agent_trace_events.back().accesses.swap(agent_memlog);
+	agent_memlog.clear();
 	agent_trace_events.push_back(event);
 }
 #endif

@@ -463,3 +463,17 @@ html.paper body { overflow: hidden; }
 .machine-elsewhere em { font-style: normal; font-weight: 600; }
 .machine-elsewhere em.r { color: #3b63a8; }
 .machine-elsewhere em.w { color: #e0785a; }
+
+/* The instruction conveyor: the one just executed fading above, the one in the CPU slot, the queue below. */
+.tape-item { transition: transform .2s ease, opacity .2s ease; }
+.tape-item.now { animation: tape-in .25s ease-out; }
+.tape-item.done { opacity: .35; }
+.tape-item.done .tape-addr::before { content: '✓ '; color: var(--muted); }
+@keyframes tape-in { from { transform: translateY(-8px); opacity: .4; } to { transform: none; opacity: 1; } }
+
+/* Replay of a recorded run. */
+.machine-replay { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: rgba(70, 70, 65, 0.04); }
+.machine-replay input[type=range] { flex: 1; min-width: 100px; accent-color: #3b63a8; }
+.machine-replay button { padding: 2px 7px; }
+.machine-replay select { font-size: 11px; padding: 2px 4px; }
+.machine-record { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }

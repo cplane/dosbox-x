@@ -52,6 +52,57 @@ export interface MemAccess {
   ip: number
 }
 
+/** One executed instruction of a recording: the registers before it, and what it read and wrote. */
+export interface Frame {
+  seq: number
+  cs: number
+  ip: number
+  text: string
+  regs: Registers
+  accesses: MemAccess[]
+}
+
+export interface Recording {
+  frames: Frame[]
+  /** Why the run ended: the trace filled up, a breakpoint, the program exited. */
+  end: string
+}
+
+interface TraceEvent {
+  sequence: number
+  address: { segment?: string; offset?: string }
+  instruction: string
+  register_changes: Record<string, string>
+  accesses?: { a: string; s: number; k: string }[]
+}
+
+const GENERAL = new Set(['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'])
+const SEGMENTS = new Set(['cs', 'ds', 'es', 'fs', 'gs', 'ss'])
+
+/** Trace events carry only the registers that changed: roll them forward from the registers at the start. */
+function framesOf(events: TraceEvent[], base: Registers | null, end: string): Recording {
+  const general: Record<string, string> = { ...(base?.general ?? {}) }
+  const segments: Record<string, string> = { ...(base?.segments ?? {}) }
+  let flags = base?.flags ?? '0x0'
+  const frames: Frame[] = []
+  for (const e of events) {
+    for (const [k, v] of Object.entries(e.register_changes)) {
+      if (GENERAL.has(k)) general[k] = v
+      else if (SEGMENTS.has(k)) segments[k] = v
+      else if (k === 'flags' || k === 'eflags') flags = v
+    }
+    const ip = parseInt(e.address.offset ?? '0', 16)
+    if (e.address.segment) segments.cs = e.address.segment
+    const cs = parseInt(segments.cs ?? '0', 16) & 0xffff
+    frames.push({
+      seq: e.sequence, cs, ip, text: e.instruction.trim(),
+      regs: { general: { ...general }, segments: { ...segments }, instruction_pointer: '0x' + ip.toString(16).padStart(8, '0'), flags },
+      accesses: (e.accesses ?? []).map((a) => ({ address: parseInt(a.a, 16), size: a.s, write: a.k === 'w', cs, ip })),
+    })
+  }
+  return { frames, end }
+}
+
 export interface Debugger {
   session: Session | null
   stopped: boolean
@@ -71,6 +122,11 @@ export interface Debugger {
   /** What the last step or run read and wrote, from the emulator's log; null when the box cannot tell (plain image). */
   accesses: MemAccess[] | null
   accessesDropped: number
+  /** A recorded run to replay in the machine view, until cleared. */
+  recording: Recording | null
+  /** Run n instructions recording every one with its accesses, then stop and fetch them. */
+  record: (n: number) => Promise<void>
+  clearRecording: () => void
   memBase: number
   memSize: number
   setMemWindow: (base: number, size: number) => void
@@ -104,6 +160,7 @@ export function useDebugger(rpc: RPC): Debugger {
   const [accesses, setAccesses] = useState<MemAccess[] | null>(null)
   const [accessesDropped, setAccessesDropped] = useState(0)
   const accessLog = useRef(true) // false once the box says it has no memory.accesses
+  const [recording, setRecording] = useState<Recording | null>(null)
   const [memBase, setMemBase] = useState(0)
   const [memSize, setMemSize] = useState(4096)
   const memCfg = useRef({ base: 0, size: 4096 })
@@ -243,6 +300,30 @@ export function useDebugger(rpc: RPC): Debugger {
     await afterStop(await waitOp(s, op.operation_id))
   }), [guard, rpc, waitOp, afterStop])
 
+  // Record: trace n instructions (each with its memory accesses), run until the trace is full, then fetch it.
+  const record = useCallback((n: number) => guard(async () => {
+    const s = sessionRef.current
+    if (!s || s.state !== 'stopped') return
+    const base = regs
+    await rpc('trace.start', { session_id: s.session_id, detail: 'normal', instruction_count: n })
+    const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
+    setSession({ ...s, state: 'running' })
+    const next = await waitOp(s, op.operation_id)
+    await afterStop(next)
+    const events: TraceEvent[] = []
+    let cursor: string | null = null
+    for (;;) {
+      const r = (await rpc('trace.read', { session_id: s.session_id, limit: 500, ...(cursor ? { cursor } : {}) })) as
+        { events: TraceEvent[]; next_cursor: string | null }
+      events.push(...r.events)
+      cursor = r.next_cursor
+      if (!cursor) break
+    }
+    try { await rpc('trace.stop', { session_id: s.session_id }) } catch { /* already complete */ }
+    setRecording(framesOf(events, base, next.stop_reason?.kind ?? next.state))
+  }), [guard, rpc, regs, waitOp, afterStop])
+  const clearRecording = useCallback(() => setRecording(null), [])
+
   const stop = useCallback(() => guard(async () => {
     const s = sessionRef.current
     if (!s) return
@@ -260,6 +341,7 @@ export function useDebugger(rpc: RPC): Debugger {
     setMem(null)
     setStack(null)
     setAccesses(null)
+    setRecording(null)
     windowRef.current = null
   }), [guard, rpc, waitOp])
 
@@ -322,7 +404,7 @@ export function useDebugger(rpc: RPC): Debugger {
     session, stopped, regs, prevRegs,
     ip: stopped && regs ? parseInt(regs.instruction_pointer, 16) : null,
     cs, lines, breakpoints: new Set(bps.keys()), busy, error,
-    mem, stack, accesses, accessesDropped, memBase, memSize, setMemWindow,
+    mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
     start, step, cont, pause, stop, toggleBreakpoint, runTo,
   }

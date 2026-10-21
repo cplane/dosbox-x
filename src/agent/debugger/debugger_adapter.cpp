@@ -712,6 +712,16 @@ bool DebuggerAdapter::ReadTrace(std::vector<TraceSample>* samples,
         sample.registers.cpu_mode = !cpu.pmode ? "real" : ((reg_flags & FLAG_VM) ? "v86" : "protected");
         sample.instruction = Trim(it->instruction);
         sample.analysis = Trim(it->analysis);
+        sample.accesses.reserve(it->accesses.size());
+        for (std::vector<DEBUG_AgentMemAccess>::const_iterator a = it->accesses.begin(); a != it->accesses.end(); ++a) {
+            MemoryAccess access;
+            access.address = a->address;
+            access.size = a->size;
+            access.write = a->write;
+            access.cs = a->cs;
+            access.instruction_pointer = a->eip;
+            sample.accesses.push_back(access);
+        }
         samples->push_back(sample);
     }
     *active = DEBUG_AgentTraceIsActive();
