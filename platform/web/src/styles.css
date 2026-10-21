@@ -431,8 +431,8 @@ html.paper body { overflow: hidden; }
 .workspace .flexlayout__border_tab_contents { background: var(--panel); border: 1px solid var(--line); border-radius: 8px 8px 0 0; }
 .workspace .flexlayout__border_inner_tab_container { background: var(--panel); }
 .workspace .flexlayout__border_toolbar { background: transparent; }
-.workspace .ws-collapse, .workspace .ws-restore { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 0 6px; cursor: pointer; line-height: 1; }
-.workspace .ws-collapse:hover, .workspace .ws-restore:hover { color: var(--text); }
+.workspace .ws-collapse { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 0 6px; cursor: pointer; line-height: 1; }
+.workspace .ws-collapse:hover { color: var(--text); }
 
 /* Data-flow arrows on the machine view: where the next instruction takes its data and where it puts it. */
 .machine { position: relative; }

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Actions, BorderNode, DockLocation, Layout, Model, TabSetNode, type IJsonModel, type TabNode } from 'flexlayout-react'
+import { Actions, BorderNode, DockLocation, Layout, Model, TabNode, TabSetNode, type Action, type IJsonModel } from 'flexlayout-react'
 import 'flexlayout-react/style/light.css'
 import type { RPC } from '../screens/DebugPanel'
 import type { EditorDebug, EditorHandle } from '../screens/Editor'
@@ -102,20 +102,21 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       if (main) model.doAction(Actions.moveNode(tab.getId(), main.getId(), DockLocation.BOTTOM, -1, true))
     }
   }
-  // A tabset header gets ▾: the selected tab collapses to the bottom bar. A bar tab gets ↥: back where it was.
+  // A tabset header gets –: the selected tab collapses to the bottom bar. A click on a bar tab puts it back where it was.
   const onRenderTabSet = (node: TabSetNode | BorderNode, values: { buttons: React.ReactNode[] }) => {
     if (!(node instanceof TabSetNode)) return
     const sel = node.getSelectedNode() as TabNode | undefined
     if (!sel) return
     values.buttons.push(
-      <button key="collapse" className="ws-collapse" title="Collapse to the bottom bar" onMouseDown={(e) => e.stopPropagation()} onClick={() => collapse(sel)}>▾</button>,
+      <button key="collapse" className="ws-collapse" title="Collapse to the bottom bar" onMouseDown={(e) => e.stopPropagation()} onClick={() => collapse(sel)}>–</button>,
     )
   }
-  const onRenderTab = (node: TabNode, values: { buttons: React.ReactNode[] }) => {
-    if (!(node.getParent() instanceof BorderNode)) return
-    values.buttons.push(
-      <button key="restore" className="ws-restore" title="Put the panel back" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); restore(node) }}>↥</button>,
-    )
+  const onAction = (action: Action): Action | undefined => {
+    if (action.type === Actions.SELECT_TAB) {
+      const node = model.getNodeById((action.data as { tabNode: string }).tabNode)
+      if (node instanceof TabNode && node.getParent() instanceof BorderNode) { restore(node); return undefined }
+    }
+    return action
   }
 
   // Show a tab (adding it back if it was closed) and select it.
@@ -191,7 +192,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
         model={model}
         factory={factory}
         onRenderTabSet={onRenderTabSet}
-        onRenderTab={onRenderTab}
+        onAction={onAction}
         onModelChange={(m) => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(m.toJson())) } catch { /* private mode */ } }}
       />
       <button className="ghost workspace-reset" onClick={reset} title="Put the panels back where they started">⟲ layout</button>
