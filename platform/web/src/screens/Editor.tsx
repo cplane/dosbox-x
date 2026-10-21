@@ -10,13 +10,27 @@ import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
 export interface EditorDebug {
   active: boolean
   stopped: boolean
+  /** The target runs (continue, play): pause is the thing to offer. */
+  running: boolean
+  busy: boolean
   /** IP while stopped. */
   ip: number | null
   breakpoints: Set<number>
-  toggleBreakpoint: (offset: number) => void
+  toggleBreakpoint: (offset: number) => void | Promise<void>
   start: (command: string) => Promise<void>
   step: (mode: 'into' | 'over') => void
   cont: () => void
+  pause: () => void
+  stop: () => void
+}
+
+// The media-style debug buttons.
+const Icon = {
+  play: <svg viewBox="0 0 16 16" aria-hidden><path d="M4 2.5v11l9-5.5z" fill="currentColor" /></svg>,
+  pause: <svg viewBox="0 0 16 16" aria-hidden><rect x="3.5" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" /><rect x="9.3" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" /></svg>,
+  stop: <svg viewBox="0 0 16 16" aria-hidden><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor" /></svg>,
+  over: <svg viewBox="0 0 16 16" aria-hidden><path d="M3 8.5a5 5 0 0 1 9.2-2.7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M12.5 2.5v3.6h-3.6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="12.6" r="1.7" fill="currentColor" /></svg>,
+  into: <svg viewBox="0 0 16 16" aria-hidden><path d="M8 1.8v7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M5 6l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="13" r="1.7" fill="currentColor" /></svg>,
 }
 
 /**
@@ -154,11 +168,22 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   lineMapRef.current = lineMap
   const debugRef = useRef<EditorDebug | undefined>(debug)
   debugRef.current = debug
+  // Breakpoints set in the gutter before (or between) sessions, by file and line; applied when a debug run starts.
+  const [pendingBps, setPendingBps] = useState<Record<string, Set<number>>>({})
+  const pendingRef = useRef(pendingBps)
+  pendingRef.current = pendingBps
+  const pathRef = useRef<string | null>(null)
+  const togglePending = (p: string, line: number) => setPendingBps((all) => {
+    const s = new Set(all[p] ?? [])
+    if (s.has(line)) s.delete(line); else s.add(line)
+    return { ...all, [p]: s }
+  })
   const decoRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null)
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0) // bumped when the tree should re-list (a save)
   const [path, setPath] = useState<string | null>(null)
   useEffect(() => { onPathChange?.(path) }, [path]) // eslint-disable-line react-hooks/exhaustive-deps
+  pathRef.current = path
   useEffect(() => { onDirChange?.(dir) }, [dir]) // eslint-disable-line react-hooks/exhaustive-deps
   useImperativeHandle(ref, () => ({
     open: (p: string) => { open(p) },
@@ -297,6 +322,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           const lst = await readTextFile(boxId, (dir ? `${dir}/` : '') + `${base}.LST`)
           const map = parseListing(lst, text)
           setLineMap(map)
+          lineMapRef.current = map
           if (map.lineOf.size === 0) setStatus('no lines matched the listing; stepping by instruction')
         } catch {
           setStatus('no listing (.LST); stepping by instruction')
@@ -305,6 +331,15 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       const exe = `${dosDir(dir)}${dir ? '\\' : ''}${base}.${lang === 'asm' ? 'COM' : 'EXE'}`
       setStatus(`debugging ${base}`)
       await debug.start(exe)
+      // The breakpoints set in the gutter beforehand, now that lines map to code.
+      const map = lineMapRef.current
+      const lines = pendingRef.current[path]
+      if (map && lines) {
+        for (const line of lines) {
+          const off = map.offsetOf.get(line)
+          if (off !== undefined) await debug.toggleBreakpoint(off)
+        }
+      }
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
     }
@@ -326,9 +361,14 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
         decos.push({ range: new monaco.Range(cur, 1, cur, 1), options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-arrow' } })
         editor.revealLineInCenterIfOutsideViewport(cur)
       }
+    } else if (path) {
+      // No session: the breakpoints waiting for the next debug run.
+      for (const line of pendingBps[path] ?? []) {
+        decos.push({ range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: 'dbg-bp pending', glyphMarginHoverMessage: { value: 'breakpoint (set when debugging starts)' } } })
+      }
     }
     decoRef.current.set(decos)
-  }, [debug?.active, debug?.stopped, debug?.ip, debug?.breakpoints, lineMap])
+  }, [debug?.active, debug?.stopped, debug?.ip, debug?.breakpoints, lineMap, pendingBps, path])
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
@@ -341,8 +381,16 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       const t = e.target.type
       if (t !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && t !== monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) return
       const line = e.target.position?.lineNumber
-      const off = line ? lineMapRef.current?.offsetOf.get(line) : undefined
-      if (off !== undefined && debugRef.current?.stopped) debugRef.current.toggleBreakpoint(off)
+      const p = pathRef.current
+      if (!line || !p) return
+      const d = debugRef.current
+      const off = lineMapRef.current?.offsetOf.get(line)
+      if (d?.active && off !== undefined) {
+        // In a session: the real breakpoint, and the pending one with it so it outlives the session.
+        if (d.stopped) { d.toggleBreakpoint(off); togglePending(p, line) }
+        return
+      }
+      togglePending(p, line)
     })
     // The web font may arrive after Monaco measured the fallback: measure again then.
     if ('fonts' in document) document.fonts.ready.then(() => monaco.editor.remeasureFonts())
@@ -390,7 +438,18 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
             </button>
           )}
           {debug && (lang === 'asm' || lang === 'c' || lang === 'pas') && (
-            <button disabled={!path || busy || !running || !!busyWith || debug.active} onClick={debugRun} title="Build, then start the program stopped at its entry">Debug</button>
+            <span className="media" role="group" aria-label="debug">
+              {!debug.active
+                ? <button className="media-btn" disabled={!path || busy || !running || !!busyWith} onClick={debugRun} title="Debug: build, then start stopped at the entry">{Icon.play}</button>
+                : <>
+                    {debug.running
+                      ? <button className="media-btn" disabled={debug.busy} onClick={debug.pause} title="Pause">{Icon.pause}</button>
+                      : <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint (F9)">{Icon.play}</button>}
+                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => debug.step('over')} title="Step over (F8)">{Icon.over}</button>
+                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => debug.step('into')} title="Step into (F7)">{Icon.into}</button>
+                    <button className="media-btn stop" disabled={debug.busy} onClick={debug.stop} title="Stop debugging">{Icon.stop}</button>
+                  </>}
+            </span>
           )}
           {busyWith && <span className="lag">{busyWith} has the keyboard</span>}
           <span className="muted">{status}</span>
