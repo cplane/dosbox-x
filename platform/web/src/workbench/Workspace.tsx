@@ -11,6 +11,7 @@ import { InterruptsPanel } from './InterruptsPanel'
 import { Machine } from './Machine'
 import { MemoryMapPanel } from './MemoryMapPanel'
 import type { Debugger } from './useDebugger'
+import type { HeatTick } from './heat'
 
 /**
  * The workbench as a dockable workspace (flexlayout): every panel is a tab
@@ -73,9 +74,12 @@ interface Props {
   terminalRef: React.RefObject<TerminalHandle>
   subscribeCon: (fn: (chunk: Uint8Array, lost: boolean) => void) => () => void
   onTermKey: (e: KeyboardEvent, down: boolean) => void
+  /** Live heat ticks from the box (the sidecar's "H" messages), and the switch that asks for them. */
+  subscribeHeat?: (fn: (tick: HeatTick) => void) => () => void
+  setHeat?: (on: boolean) => void
 }
 
-export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey }: Props) {
+export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey, subscribeHeat, setHeat }: Props) {
   const [model, setModel] = useState<Model>(loadModel)
   const editorRef = useRef<EditorHandle | null>(null)
   const [path, setPath] = useState<string | null>(null)
@@ -137,8 +141,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     show('ints', 'Interrupts', 'ints')
   }
 
-  // The Machine tab follows the debug session.
-  const active = !!dbg.session
+  // The Machine tab appears on execution: a debug session, or any program running on the box (live heat).
+  const active = !!dbg.session || (!!program && program.toUpperCase() !== 'COMMAND')
   useEffect(() => {
     const has = !!model.getNodeById('machine')
     if (active && !has) {
@@ -176,7 +180,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'memmap':
         return <MemoryMapPanel regs={dbg.regs} />
       case 'machine':
-        return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} /></div>
+        return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
     }
     return <div className="muted">?</div>
   }

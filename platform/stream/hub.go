@@ -61,6 +61,44 @@ type client struct {
 	con     bool
 	conOut  chan []byte
 	conLost bool // a chunk was dropped: say so with the next one
+
+	// Live heat (heat.go), for clients that sent {"heat":1}.
+	heat    bool
+	heatOut chan []byte
+}
+
+// setHeat marks c as wanting (or no longer wanting) the heat ticks.
+func (h *Hub) setHeat(c *client, on bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c.heat = on
+}
+
+// heatWanted says whether any client listens to the heat.
+func (h *Hub) heatWanted() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if c.heat {
+			return true
+		}
+	}
+	return false
+}
+
+// broadcastHeat hands a tick to every listener; a slow one skips it.
+func (h *Hub) broadcastHeat(msg []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients {
+		if !c.heat {
+			continue
+		}
+		select {
+		case c.heatOut <- msg:
+		default:
+		}
+	}
 }
 
 // Hub polls Game Link for new frames and fans strip updates out to clients.
@@ -103,7 +141,7 @@ func NewHub(gl *Gamelink, quality, fps int) *Hub {
 }
 
 func (h *Hub) add() *client {
-	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1), conOut: make(chan []byte, 64)}
+	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1), conOut: make(chan []byte, 64), heatOut: make(chan []byte, 8)}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	meta := h.lastMeta

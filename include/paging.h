@@ -439,12 +439,13 @@ static INLINE PhysPt64 PAGING_GetPhysicalAddress64(const LinearPt linAddr) {
 /* Special inlined memory reading/writing */
 
 #if defined(C_DOSBOX_AGENT) && defined(C_HEAVY_DEBUG)
-/* The debugger agent's memory access log: while a session steps or runs, every data
- * read and write goes to a bounded list the web machine view reads after the stop.
- * Code fetches use the _raw variants and stay out of it. Off: one predictable branch. */
-extern bool agent_memlog_active;
-void AGENT_MemLogRecord(LinearPt address, uint8_t size, bool write);
-#define AGENT_MEMLOG(address,size,write) do { if (agent_memlog_active) AGENT_MemLogRecord((address),(size),(write)); } while (0)
+/* The debugger agent's memory hook: every data read and write goes to the step log
+ * (a bounded list the web machine view reads after a stop) while a session steps or
+ * runs, and to the live heat counters (output_gamelink.cpp) while the sidecar asks
+ * for them. Code fetches use the _raw variants and stay out. Off: one predictable branch. */
+extern bool agent_memhook_active;
+void AGENT_MemHook(LinearPt address, uint8_t size, bool write);
+#define AGENT_MEMLOG(address,size,write) do { if (agent_memhook_active) AGENT_MemHook((address),(size),(write)); } while (0)
 #else
 #define AGENT_MEMLOG(address,size,write) do { } while (0)
 #endif

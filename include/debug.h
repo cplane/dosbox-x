@@ -72,6 +72,7 @@ struct DEBUG_AgentTraceEvent {
     std::string analysis;
     std::vector<DEBUG_AgentMemAccess> accesses; // what the instruction read and wrote
 };
+void DEBUG_AgentHeatEnable(bool on);
 void DEBUG_AgentMemLogStart(void);
 void DEBUG_AgentMemLogStop(void);
 void DEBUG_AgentMemLogCopy(std::vector<DEBUG_AgentMemAccess>* accesses, uint32_t* dropped);
