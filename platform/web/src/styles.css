@@ -422,3 +422,14 @@ html.paper body { overflow: hidden; }
 .memmap-write.w-yes { background: #dfe8d3; color: #3f5a2d; } .memmap-write.w-careful { background: #f1e3c4; color: #7a5a14; } .memmap-write.w-no { background: #f0d8d2; color: #8a3a2a; }
 .machine-int { font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgba(70, 70, 65, 0.05); display: flex; gap: 8px; align-items: center; }
 .machine-int button { margin-left: auto; font-size: 11px; padding: 1px 6px; }
+
+/* the bottom bar (flexlayout border): collapsed panels as tabs */
+.workspace .flexlayout__border_bottom { background: transparent; border-top: 1px solid var(--line); font-family: inherit; }
+.workspace .flexlayout__border_button { color: var(--muted); font-size: 12px; background: transparent; border-radius: 6px 6px 0 0; }
+.workspace .flexlayout__border_button--selected { background: var(--panel); color: var(--text); }
+.workspace .flexlayout__border_button:hover { background: var(--line); }
+.workspace .flexlayout__border_tab_contents { background: var(--panel); border: 1px solid var(--line); border-radius: 8px 8px 0 0; }
+.workspace .flexlayout__border_inner_tab_container { background: var(--panel); }
+.workspace .flexlayout__border_toolbar { background: transparent; }
+.workspace .ws-collapse, .workspace .ws-restore { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 0 6px; cursor: pointer; line-height: 1; }
+.workspace .ws-collapse:hover, .workspace .ws-restore:hover { color: var(--text); }

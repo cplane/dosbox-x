@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Actions, DockLocation, Layout, Model, type IJsonModel, type TabNode } from 'flexlayout-react'
+import { Actions, BorderNode, DockLocation, Layout, Model, TabSetNode, type IJsonModel, type TabNode } from 'flexlayout-react'
 import 'flexlayout-react/style/light.css'
 import type { RPC } from '../screens/DebugPanel'
 import type { EditorDebug, EditorHandle } from '../screens/Editor'
@@ -21,11 +21,12 @@ import type { Debugger } from './useDebugger'
 
 const Editor = lazy(() => import('../screens/Editor').then((m) => ({ default: m.Editor })))
 
-const LAYOUT_KEY = 'dosbox.layout.v2'
+const LAYOUT_KEY = 'dosbox.layout.v3'
 
 const defaultLayout: IJsonModel = {
   global: { tabEnableClose: true, tabSetEnableMaximize: true, splitterSize: 6, tabEnableRenderOnDemand: true },
-  borders: [],
+  // The bottom bar: collapsed panels live here as tabs; a click opens one as a flyout, ↥ puts it back.
+  borders: [{ type: 'border', location: 'bottom', size: 320, children: [] }],
   layout: {
     type: 'row',
     children: [
@@ -81,6 +82,41 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0)
   const [intFocus, setIntFocus] = useState<{ int: number; ax: number } | null>(null)
+  // Where a collapsed tab came from, to put it back.
+  const homes = useRef(new Map<string, string>())
+
+  const bottomBorder = () => model.getBorderSet().getBorders().find((b) => b.getLocation() === DockLocation.BOTTOM)
+  const collapse = (tab: TabNode) => {
+    const border = bottomBorder()
+    if (!border) return
+    homes.current.set(tab.getId(), tab.getParent()?.getId() ?? 'main')
+    model.doAction(Actions.moveNode(tab.getId(), border.getId(), DockLocation.CENTER, -1, false))
+  }
+  const restore = (tab: TabNode) => {
+    const home = homes.current.get(tab.getId())
+    const target = home ? model.getNodeById(home) : undefined
+    if (target) model.doAction(Actions.moveNode(tab.getId(), target.getId(), DockLocation.CENTER, -1, true))
+    else {
+      // Its group went away with it (it was the last tab): a new split under the editor.
+      const main = model.getNodeById('main')
+      if (main) model.doAction(Actions.moveNode(tab.getId(), main.getId(), DockLocation.BOTTOM, -1, true))
+    }
+  }
+  // A tabset header gets ▾: the selected tab collapses to the bottom bar. A bar tab gets ↥: back where it was.
+  const onRenderTabSet = (node: TabSetNode | BorderNode, values: { buttons: React.ReactNode[] }) => {
+    if (!(node instanceof TabSetNode)) return
+    const sel = node.getSelectedNode() as TabNode | undefined
+    if (!sel) return
+    values.buttons.push(
+      <button key="collapse" className="ws-collapse" title="Collapse to the bottom bar" onMouseDown={(e) => e.stopPropagation()} onClick={() => collapse(sel)}>▾</button>,
+    )
+  }
+  const onRenderTab = (node: TabNode, values: { buttons: React.ReactNode[] }) => {
+    if (!(node.getParent() instanceof BorderNode)) return
+    values.buttons.push(
+      <button key="restore" className="ws-restore" title="Put the panel back" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); restore(node) }}>↥</button>,
+    )
+  }
 
   // Show a tab (adding it back if it was closed) and select it.
   const show = (id: string, name: string, component: string) => {
@@ -154,6 +190,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       <Layout
         model={model}
         factory={factory}
+        onRenderTabSet={onRenderTabSet}
+        onRenderTab={onRenderTab}
         onModelChange={(m) => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(m.toJson())) } catch { /* private mode */ } }}
       />
       <button className="ghost workspace-reset" onClick={reset} title="Put the panels back where they started">⟲ layout</button>
