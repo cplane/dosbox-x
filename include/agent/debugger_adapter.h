@@ -75,6 +75,15 @@ struct NativeBreakpoint {
     bool once = false;
 };
 
+// One data access the target (or DOS/BIOS emulation on its behalf) made since the last step or continue.
+struct MemoryAccess {
+    std::uint32_t address = 0; // linear
+    std::uint8_t size = 0;
+    bool write = false;
+    std::uint16_t cs = 0;
+    std::uint32_t instruction_pointer = 0;
+};
+
 // One instruction as the debugger's disassembler prints it.
 struct DisassembledLine {
     std::uint32_t offset = 0;        // within the requested address space/segment
@@ -124,6 +133,8 @@ public:
     bool ExecuteDiagnosticCommand(const std::string& command,
                                   std::string* raw_output,
                                   std::string* error) const;
+    // The accesses recorded since the last step/continue; dropped counts the ones past the log's bound.
+    bool ReadMemoryAccesses(std::vector<MemoryAccess>* accesses, std::uint32_t* dropped, std::string* error) const;
     bool StartTrace(const std::string& detail, std::uint32_t instruction_count, std::string* error) const;
     bool ReadTrace(std::vector<TraceSample>* samples, bool* active, std::string* error) const;
     bool StopTrace(std::size_t* event_count, std::string* error) const;

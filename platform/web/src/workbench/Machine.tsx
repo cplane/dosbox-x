@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { touches } from './operands'
 import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
+import { REGIONS } from './MemoryMapPanel'
 import { hex, type Debugger, type DisLine, type MemWindow } from './useDebugger'
 
 /**
@@ -38,7 +39,7 @@ function mix(base: string, rgb: readonly [number, number, number], a: number): s
 }
 
 export function Machine({ dbg, onShowInterrupt }: Props) {
-  const { regs, prevRegs, mem, stack, ip, lines, stopped } = dbg
+  const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
   const stackRef = useRef<HTMLCanvasElement>(null)
   const prevMem = useRef<MemWindow | null>(null)
@@ -64,23 +65,52 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
       if (f.age <= 0) flashes.current.delete(k)
     }
     const p = prevMem.current
-    if (p && p.seg === mem.seg && p.base === mem.base && p.bytes.length === mem.bytes.length && p.stop !== mem.stop) {
-      for (let i = 0; i < mem.bytes.length; i++) {
-        if (mem.bytes[i] !== p.bytes[i]) flashes.current.set(linear(mem.seg, mem.base + i), { age: 1, kind: 'write' })
+    if (accesses) {
+      // Exact: the emulator's log of what the last step read and wrote (a write wins over a read of the same cell).
+      for (const a of accesses) {
+        for (let i = 0; i < a.size; i++) {
+          const k = a.address + i
+          if (a.write || !flashes.current.has(k) || flashes.current.get(k)!.age < 1) flashes.current.set(k, { age: 1, kind: a.write ? 'write' : 'read' })
+        }
       }
-    }
-    prevMem.current = mem
-    if (current) {
-      for (const t of touches(current.text, regs)) {
-        for (let i = 0; i < t.size; i++) {
-          const a = linear(t.seg, (t.offset + i) & 0xffff)
-          if (!flashes.current.has(a) || flashes.current.get(a)!.kind === 'read') flashes.current.set(a, { age: 1, kind: t.kind === 'write' ? 'write' : 'read' })
+    } else {
+      // Worked out: writes by diffing the window, reads by decoding the next instruction's operands.
+      if (p && p.seg === mem.seg && p.base === mem.base && p.bytes.length === mem.bytes.length && p.stop !== mem.stop) {
+        for (let i = 0; i < mem.bytes.length; i++) {
+          if (mem.bytes[i] !== p.bytes[i]) flashes.current.set(linear(mem.seg, mem.base + i), { age: 1, kind: 'write' })
+        }
+      }
+      if (current) {
+        for (const t of touches(current.text, regs)) {
+          for (let i = 0; i < t.size; i++) {
+            const a = linear(t.seg, (t.offset + i) & 0xffff)
+            if (!flashes.current.has(a) || flashes.current.get(a)!.kind === 'read') flashes.current.set(a, { age: 1, kind: t.kind === 'write' ? 'write' : 'read' })
+          }
         }
       }
     }
+    prevMem.current = mem
     if (ip !== null) executed.current.add(linear(parseInt(regs.segments.cs, 16) & 0xffff, ip))
     setTick((t) => t + 1)
-  }, [mem, regs, ip, current])
+  }, [mem, regs, ip, current, accesses])
+
+  // Accesses the field and the stack strip cannot show, named by the memory map region: "the DOS read the BIOS data area".
+  const elsewhere = useMemo(() => {
+    if (!accesses || !accesses.length) return []
+    const inside = (a: number) => (mem && a >= linear(mem.seg, mem.base) && a < linear(mem.seg, mem.base) + mem.bytes.length)
+      || (stack && a >= linear(stack.seg, stack.base) && a < linear(stack.seg, stack.base) + stack.bytes.length)
+    const groups = new Map<string, { name: string; reads: number; writes: number; lo: number; hi: number }>()
+    for (const a of accesses) {
+      if (inside(a.address)) continue
+      const region = REGIONS.find((r) => a.address >= r.from && a.address <= r.to)
+      const name = region ? region.name : `${(a.address >> 4).toString(16).toUpperCase().padStart(4, '0')}:xxxx`
+      let g = groups.get(name)
+      if (!g) { g = { name, reads: 0, writes: 0, lo: a.address, hi: a.address }; groups.set(name, g) }
+      if (a.write) g.writes += a.size; else g.reads += a.size
+      g.lo = Math.min(g.lo, a.address); g.hi = Math.max(g.hi, a.address + a.size - 1)
+    }
+    return [...groups.values()]
+  }, [accesses, mem, stack])
 
   // Forget everything when the session ends.
   useEffect(() => {
@@ -289,7 +319,18 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         <canvas ref={fieldRef} className="machine-field" onMouseMove={(e) => onHover(e, mem, 'DS')} onMouseLeave={() => setHover('')} />
         <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>
         <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, stack, 'SS')} onMouseLeave={() => setHover('')} />
-        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> about to be read <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
+        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses ? 'read' : 'about to be read'} <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
+        {elsewhere.length > 0 && (
+          <div className="machine-elsewhere">
+            <span className="muted">also touched:</span>
+            {elsewhere.map((g) => (
+              <span key={g.name} title={`${g.lo.toString(16).toUpperCase().padStart(5, '0')}–${g.hi.toString(16).toUpperCase().padStart(5, '0')}`}>
+                {g.name}{g.reads ? <em className="r"> r{g.reads}</em> : null}{g.writes ? <em className="w"> w{g.writes}</em> : null}
+              </span>
+            ))}
+            {dbg.accessesDropped > 0 && <span className="muted">+{dbg.accessesDropped} more</span>}
+          </div>
+        )}
       </div>
 
       <div className="machine-cpu">

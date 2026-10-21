@@ -63,6 +63,17 @@ struct DEBUG_AgentTraceEvent {
     std::string instruction;
     std::string analysis;
 };
+/* One data access of the stepped/run code (or of DOS/BIOS emulation on its behalf), with the CS:IP that did it. */
+struct DEBUG_AgentMemAccess {
+    uint32_t address = 0; // linear
+    uint8_t size = 0;
+    bool write = false;
+    uint16_t cs = 0;
+    uint32_t eip = 0;
+};
+void DEBUG_AgentMemLogStart(void);
+void DEBUG_AgentMemLogStop(void);
+void DEBUG_AgentMemLogCopy(std::vector<DEBUG_AgentMemAccess>* accesses, uint32_t* dropped);
 bool DEBUG_AgentStartTrace(uint32_t instruction_count);
 bool DEBUG_AgentStopTrace(uint32_t* event_count);
 bool DEBUG_AgentTraceIsActive(void);

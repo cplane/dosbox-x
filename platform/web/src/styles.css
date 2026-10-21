@@ -455,3 +455,9 @@ html.paper body { overflow: hidden; }
 .editor-tab-close { border: 0; background: none; padding: 0 2px; font-size: 13px; line-height: 1; color: var(--muted); opacity: 0; cursor: pointer; border-radius: 3px; }
 .editor-tab:hover .editor-tab-close, .editor-tab.on .editor-tab-close { opacity: .8; }
 .editor-tab-close:hover { background: rgba(70, 70, 65, 0.1); color: var(--ink); }
+
+/* Accesses outside the memory field and the stack strip, by memory map region. */
+.machine-elsewhere { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; margin-top: 2px; }
+.machine-elsewhere em { font-style: normal; font-weight: 600; }
+.machine-elsewhere em.r { color: #3b63a8; }
+.machine-elsewhere em.w { color: #e0785a; }

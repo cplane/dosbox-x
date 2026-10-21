@@ -14,7 +14,7 @@ interface Region {
   cls: string
 }
 
-const REGIONS: Region[] = [
+export const REGIONS: Region[] = [
   { from: 0x00000, to: 0x003ff, name: 'Interrupt vectors', what: '256 far pointers, 4 bytes each: vector n at 0000:n×4. INT 21h\'s handler lives at 0000:0084.', write: 'careful', cls: 'ivt' },
   { from: 0x00400, to: 0x004ff, name: 'BIOS data area', what: '0040:0017 shift state, 0040:001A/1C keyboard buffer head/tail (buffer at 0040:001E), 0040:004A columns, 0040:0050 cursor positions, 0040:006C timer ticks, 0040:0084 rows − 1.', write: 'careful', cls: 'bda' },
   { from: 0x00500, to: 0x005ff, name: 'DOS data', what: 'Print-screen status, DOS\'s own variables.', write: 'no', cls: 'dos' },

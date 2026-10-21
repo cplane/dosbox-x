@@ -43,6 +43,15 @@ export interface MemWindow {
   stop: number
 }
 
+/** One data access the target (or DOS/BIOS on its behalf) made during the last step or run. */
+export interface MemAccess {
+  address: number // linear
+  size: number
+  write: boolean
+  cs: number
+  ip: number
+}
+
 export interface Debugger {
   session: Session | null
   stopped: boolean
@@ -59,6 +68,9 @@ export interface Debugger {
   /** The data window (DS:base, `memSize` bytes) and the stack top (SS, around SP), read at every stop. */
   mem: MemWindow | null
   stack: MemWindow | null
+  /** What the last step or run read and wrote, from the emulator's log; null when the box cannot tell (plain image). */
+  accesses: MemAccess[] | null
+  accessesDropped: number
   memBase: number
   memSize: number
   setMemWindow: (base: number, size: number) => void
@@ -89,6 +101,9 @@ export function useDebugger(rpc: RPC): Debugger {
   const windowRef = useRef<{ seg: string; start: number; end: number; lines: DisLine[] } | null>(null)
   const [mem, setMem] = useState<MemWindow | null>(null)
   const [stack, setStack] = useState<MemWindow | null>(null)
+  const [accesses, setAccesses] = useState<MemAccess[] | null>(null)
+  const [accessesDropped, setAccessesDropped] = useState(0)
+  const accessLog = useRef(true) // false once the box says it has no memory.accesses
   const [memBase, setMemBase] = useState(0)
   const [memSize, setMemSize] = useState(4096)
   const memCfg = useRef({ base: 0, size: 4096 })
@@ -117,6 +132,22 @@ export function useDebugger(rpc: RPC): Debugger {
     windowRef.current = ls.length ? { seg, start: ls[0].offset, end: ls[ls.length - 1].offset, lines: ls } : null
   }, [rpc])
 
+  // The emulator's log of what the last step or run touched; a box without it answers once with an error.
+  const readAccesses = useCallback(async (s: Session): Promise<{ list: MemAccess[]; dropped: number } | null> => {
+    if (!accessLog.current) return null
+    try {
+      const r = (await rpc('memory.accesses', { session_id: s.session_id })) as
+        { accesses: { address: string; size: number; kind: string; cs: string; ip: string }[]; dropped: number }
+      return {
+        list: r.accesses.map((a) => ({ address: parseInt(a.address, 16), size: a.size, write: a.kind === 'write', cs: parseInt(a.cs, 16), ip: parseInt(a.ip, 16) })),
+        dropped: r.dropped ?? 0,
+      }
+    } catch {
+      accessLog.current = false
+      return null
+    }
+  }, [rpc])
+
   const refresh = useCallback(async (s: Session) => {
     const r = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
     setRegs((old) => { setPrevRegs(old); return r })
@@ -130,13 +161,16 @@ export function useDebugger(rpc: RPC): Debugger {
     const { base, size } = memCfg.current
     const sp = parseInt(r.general.esp, 16) & 0xffff
     const stackBase = Math.max(0, (sp & ~0xf) - 128)
-    const [m, st] = await Promise.all([
+    const [m, st, acc] = await Promise.all([
       readWindow(s, r.segments.ds, base, size).catch(() => null),
       readWindow(s, r.segments.ss, stackBase, Math.min(256, 0x10000 - stackBase)).catch(() => null),
+      readAccesses(s),
     ])
     setMem(m)
     setStack(st)
-  }, [rpc, disassemble, readWindow])
+    if (acc) { setAccesses(acc.list); setAccessesDropped(acc.dropped) }
+    else setAccesses(null)
+  }, [rpc, disassemble, readWindow, readAccesses])
 
   const setMemWindow = useCallback((base: number, size: number) => {
     memCfg.current = { base, size }
@@ -225,6 +259,7 @@ export function useDebugger(rpc: RPC): Debugger {
     setBps(new Map())
     setMem(null)
     setStack(null)
+    setAccesses(null)
     windowRef.current = null
   }), [guard, rpc, waitOp])
 
@@ -287,7 +322,7 @@ export function useDebugger(rpc: RPC): Debugger {
     session, stopped, regs, prevRegs,
     ip: stopped && regs ? parseInt(regs.instruction_pointer, 16) : null,
     cs, lines, breakpoints: new Set(bps.keys()), busy, error,
-    mem, stack, memBase, memSize, setMemWindow,
+    mem, stack, accesses, accessesDropped, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
     start, step, cont, pause, stop, toggleBreakpoint, runTo,
   }

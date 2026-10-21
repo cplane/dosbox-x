@@ -244,6 +244,9 @@ bool DebuggerAdapter::Continue(std::string* error) const
 
 #if C_DEBUG
     DEBUG_AgentClearLastBreakpoint();
+#if C_HEAVY_DEBUG
+    DEBUG_AgentMemLogStart(); // until the next stop
+#endif
     char command[] = "RUN";
     if (ParseCommand(command))
         return true;
@@ -718,6 +721,33 @@ bool DebuggerAdapter::ReadTrace(std::vector<TraceSample>* samples,
     (void)active;
     if (error != NULL)
         *error = "CPU trace requires C_HEAVY_DEBUG";
+    return false;
+#endif
+}
+
+bool DebuggerAdapter::ReadMemoryAccesses(std::vector<MemoryAccess>* accesses, std::uint32_t* dropped, std::string* error) const
+{
+    if (!RequireAvailable(error) || !RequireEmulationThread(error) || accesses == NULL || dropped == NULL)
+        return false;
+
+#if C_HEAVY_DEBUG
+    std::vector<DEBUG_AgentMemAccess> native;
+    DEBUG_AgentMemLogCopy(&native, dropped);
+    accesses->clear();
+    accesses->reserve(native.size());
+    for (std::vector<DEBUG_AgentMemAccess>::const_iterator it = native.begin(); it != native.end(); ++it) {
+        MemoryAccess a;
+        a.address = it->address;
+        a.size = it->size;
+        a.write = it->write;
+        a.cs = it->cs;
+        a.instruction_pointer = it->eip;
+        accesses->push_back(a);
+    }
+    return true;
+#else
+    if (error != NULL)
+        *error = "The memory access log requires C_HEAVY_DEBUG";
     return false;
 #endif
 }
