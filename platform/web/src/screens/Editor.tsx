@@ -143,6 +143,8 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
 /** The one step the console types for a build. */
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
+interface Doc { text: string; saved: string }
+
 export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, running, onRun, look = 'dos', program, debug, tree = true, onPathChange, onDirChange, onSaved }: Props, ref) {
   // A program other than the shell has the keyboard: typing C:\BUILD would go to it.
   const busyWith = program && program.toUpperCase() !== 'COMMAND' ? program : null
@@ -162,36 +164,42 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     open: (p: string) => { open(p) },
     create: () => { create() },
     createFile: (name: string, content: string) => {
-      if (dirty && !confirm('Discard the unsaved changes?')) return
-      setPath(dir ? `${dir}/${name}` : name)
-      setText(content)
-      setSaved('\0')
-      setBuildCmd(loadBuild(langOf(name)))
+      show(dir ? `${dir}/${name}` : name, content, '\0')
       setStatus('from the guide: Save, then Build & Run or Debug')
     },
   }))
-  const [text, setText] = useState('')
-  const [saved, setSaved] = useState('')
+  // Every open file: its text as edited and as last saved (a new file's "saved" is '\0', never equal). Tabs in `order`.
+  const [docs, setDocs] = useState<Record<string, Doc>>({})
+  const [order, setOrder] = useState<string[]>([])
+  const doc = path ? docs[path] : undefined
+  const text = doc?.text ?? ''
+  const setText = (t: string) => { if (path) setDocs((d) => (d[path] ? { ...d, [path]: { ...d[path], text: t } } : d)) }
+  const setSaved = (t: string) => { if (path) setDocs((d) => (d[path] ? { ...d, [path]: { ...d[path], saved: t } } : d)) }
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [buildCmd, setBuildCmd] = useState('')
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const saveRef = useRef<() => Promise<boolean>>(async () => false)
-  const dirty = text !== saved
+  const dirty = !!doc && doc.text !== doc.saved
   const lang = path ? langOf(split(path)[1]) : 'none'
 
   useEffect(() => { if (running) setTreeKey((k) => k + 1) }, [running])
 
+  /** Put a file in the tabs (or replace its text) and make it current. */
+  function show(p: string, t: string, savedText: string) {
+    setDocs((d) => ({ ...d, [p]: { text: t, saved: savedText } }))
+    setOrder((o) => (o.includes(p) ? o : [...o, p]))
+    setPath(p)
+    setBuildCmd(loadBuild(langOf(split(p)[1])))
+    setStatus('')
+  }
+
   async function open(p: string) {
-    if (dirty && !confirm('Discard the unsaved changes?')) return
+    if (docs[p]) { setPath(p); setBuildCmd(loadBuild(langOf(split(p)[1]))); return }
     setBusy(true)
     try {
       const t = await readTextFile(boxId, p)
-      setPath(p)
-      setText(t)
-      setSaved(t)
-      setBuildCmd(loadBuild(langOf(split(p)[1])))
-      setStatus('')
+      show(p, t, t)
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
     } finally {
@@ -199,16 +207,24 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     }
   }
 
+  function close(p: string) {
+    const d = docs[p]
+    if (d && d.text !== d.saved && !confirm(`Close ${split(p)[1]} and discard the unsaved changes?`)) return
+    const rest = order.filter((x) => x !== p)
+    setOrder(rest)
+    setDocs((all) => { const { [p]: _gone, ...keep } = all; void _gone; return keep })
+    if (path === p) {
+      const i = order.indexOf(p)
+      const next = rest[Math.min(i, rest.length - 1)] ?? null
+      setPath(next)
+      if (next) setBuildCmd(loadBuild(langOf(split(next)[1])))
+    }
+  }
+
   function create() {
     const name = prompt('New file name (8.3, e.g. HELLO.ASM):')?.trim().toUpperCase()
     if (!name || !/^[A-Z0-9_$~!#%&\-{}@`'()^]{1,8}(\.[A-Z0-9_$~!#%&\-{}@`'()^]{1,3})?$/.test(name)) return
-    if (dirty && !confirm('Discard the unsaved changes?')) return
-    const p = dir ? `${dir}/${name}` : name
-    setPath(p)
-    setText('')
-    setSaved('\0') // never equal: a new file is dirty until saved
-    setBuildCmd(loadBuild(langOf(name)))
-    setStatus('')
+    show(dir ? `${dir}/${name}` : name, '', '\0')
   }
 
   const save = useCallback(async (): Promise<boolean> => {
@@ -379,6 +395,18 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           {busyWith && <span className="lag">{busyWith} has the keyboard</span>}
           <span className="muted">{status}</span>
         </div>
+          <div className="editor-tabs" role="tablist">
+            {order.map((p) => {
+              const d = docs[p]
+              const isDirty = !!d && d.text !== d.saved
+              return (
+                <span key={p} role="tab" aria-selected={p === path} className={`editor-tab ${p === path ? 'on' : ''}`} title={`C:\\${p.replace(/\//g, '\\')}`} onClick={() => open(p)} onAuxClick={(e) => { if (e.button === 1) close(p) }}>
+                  {split(p)[1]}{isDirty && <i className="lag">•</i>}
+                  <button className="editor-tab-close" title="Close" onClick={(e) => { e.stopPropagation(); close(p) }}>×</button>
+                </span>
+              )
+            })}
+          </div>
         <div className="editor-box">
           {path ? (
             <MonacoEditor
