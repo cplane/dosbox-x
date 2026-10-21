@@ -51,11 +51,21 @@ struct RegisterSnapshot {
     std::string cpu_mode;
 };
 
+// One data access the target (or DOS/BIOS emulation on its behalf) made since the last step or continue.
+struct MemoryAccess {
+    std::uint32_t address = 0; // linear
+    std::uint8_t size = 0;
+    bool write = false;
+    std::uint16_t cs = 0;
+    std::uint32_t instruction_pointer = 0;
+};
+
 struct TraceSample {
     MemoryAddress address;
     RegisterSnapshot registers;
     std::string instruction;
     std::string analysis;
+    std::vector<MemoryAccess> accesses; // what the instruction read and wrote
 };
 
 enum class StepMode {
@@ -73,15 +83,6 @@ struct NativeBreakpoint {
     BreakpointKind kind = BreakpointKind::Execution;
     MemoryAddress address;
     bool once = false;
-};
-
-// One data access the target (or DOS/BIOS emulation on its behalf) made since the last step or continue.
-struct MemoryAccess {
-    std::uint32_t address = 0; // linear
-    std::uint8_t size = 0;
-    bool write = false;
-    std::uint16_t cs = 0;
-    std::uint32_t instruction_pointer = 0;
 };
 
 // One instruction as the debugger's disassembler prints it.

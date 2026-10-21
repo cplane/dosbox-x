@@ -1022,6 +1022,16 @@ static JsonValue TraceEventResult(const TraceEvent& event, const std::string& de
         Add(&changes, change->name.c_str(), String(change->value));
     }
     Add(&result, "register_changes", changes);
+    // What the instruction read and wrote, compact: a = linear address, s = size, k = r|w.
+    JsonValue accesses = JsonValue::Array();
+    for (std::vector<MemoryAccess>::const_iterator a = event.sample.accesses.begin(); a != event.sample.accesses.end(); ++a) {
+        JsonValue entry = Object();
+        Add(&entry, "a", String(Hex32(a->address)));
+        Add(&entry, "s", Number(a->size));
+        Add(&entry, "k", String(a->write ? "w" : "r"));
+        accesses.array.push_back(entry);
+    }
+    Add(&result, "accesses", accesses);
     return result;
 }
 

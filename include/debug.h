@@ -43,6 +43,14 @@ void DEBUG_AgentClearLastBreakpoint(void);
 bool DEBUG_AgentBeginOutputCapture(void);
 std::string DEBUG_AgentEndOutputCapture(void);
 #if C_HEAVY_DEBUG
+/* One data access of the stepped/run code (or of DOS/BIOS emulation on its behalf), with the CS:IP that did it. */
+struct DEBUG_AgentMemAccess {
+    uint32_t address = 0; // linear
+    uint8_t size = 0;
+    bool write = false;
+    uint16_t cs = 0;
+    uint32_t eip = 0;
+};
 struct DEBUG_AgentTraceEvent {
     uint16_t cs = 0;
     uint32_t instruction_pointer = 0;
@@ -62,14 +70,7 @@ struct DEBUG_AgentTraceEvent {
     uint32_t flags = 0;
     std::string instruction;
     std::string analysis;
-};
-/* One data access of the stepped/run code (or of DOS/BIOS emulation on its behalf), with the CS:IP that did it. */
-struct DEBUG_AgentMemAccess {
-    uint32_t address = 0; // linear
-    uint8_t size = 0;
-    bool write = false;
-    uint16_t cs = 0;
-    uint32_t eip = 0;
+    std::vector<DEBUG_AgentMemAccess> accesses; // what the instruction read and wrote
 };
 void DEBUG_AgentMemLogStart(void);
 void DEBUG_AgentMemLogStop(void);

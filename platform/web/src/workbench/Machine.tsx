@@ -3,16 +3,21 @@ import { touches } from './operands'
 import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
 import { REGIONS } from './MemoryMapPanel'
-import { hex, type Debugger, type DisLine, type MemWindow } from './useDebugger'
+import { hex, type Debugger, type MemAccess, type MemWindow, type Registers } from './useDebugger'
 
 /**
  * The machine, drawn: memory as a field of cells (a minimap of the data
  * segment, zoomable from 4 KB at a byte per cell to 64 KB), the stack top
  * as a strip, the CPU as a row of register cells and the flag bits, and
- * the instructions as a tape feeding the CPU. On every stop: cells the
- * step wrote flash warm and fade, the cells the next instruction will
- * touch flash cool, the cell under IP is marked, cells that have been
- * executed stay tinted; changed registers flash. Play steps on its own.
+ * the instructions as a conveyor feeding the CPU. Cells carry heat: every
+ * read warms them cool-blue, every write warm-orange, and heat decays
+ * with each instruction, so a loop's working set glows while cold data
+ * fades. The cell under IP is marked and executed cells stay tinted.
+ *
+ * Two sources drive it. Live: every stop of the debugger (step, play,
+ * breakpoint), with the emulator's access log when the box has one.
+ * Replay: a recording (⏺) of a few thousand instructions, each with its
+ * registers and accesses, played back here at any speed and scrubbed.
  */
 
 interface Props {
@@ -24,8 +29,11 @@ interface Props {
 const COLS = 64
 const paper = { empty: '#efeeea', ink: '#35342f', exec: '#d5dce6', ip: '#3b63a8', write: [224, 120, 90] as const, read: [90, 143, 216] as const, sp: '#5f5a4e' }
 
-/** One flash per cell: how recent (1 → 0) and what. */
-interface Flash { age: number; kind: 'read' | 'write' }
+/** Heat per cell: how much it was read and written lately. */
+interface Heat { r: number; w: number }
+const DECAY = 0.7       // per instruction
+const HEAT_MAX = 6
+const HEAT_SPAN = 14    // instructions of history a replay frame's heat is built from
 
 function shade(v: number): string {
   // 1..255: light to dark grey, so data stands out from zeros without shouting.
@@ -34,87 +42,120 @@ function shade(v: number): string {
   return `rgb(${c},${c - 2},${c - 6})`
 }
 
-function mix(base: string, rgb: readonly [number, number, number], a: number): string {
-  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${Math.min(1, Math.max(0, a))})`.replace('rgba', 'rgba') || base
+/** The colour of a cell's heat: hue from the read/write mix, alpha from the amount. */
+function heatColor(h: Heat): string {
+  const total = h.r + h.w
+  const ws = h.w / total
+  const c = paper.read.map((v, i) => Math.round(v + (paper.write[i] - v) * ws))
+  const a = 0.2 + 0.8 * Math.min(1, total / 3)
+  return `rgba(${c[0]},${c[1]},${c[2]},${a})`
+}
+
+function decayAll(heat: Map<number, Heat>) {
+  for (const [k, h] of heat) {
+    h.r *= DECAY; h.w *= DECAY
+    if (h.r + h.w < 0.05) heat.delete(k)
+  }
+}
+function bump(heat: Map<number, Heat>, accesses: MemAccess[]) {
+  for (const a of accesses) {
+    for (let i = 0; i < a.size; i++) {
+      const k = a.address + i
+      const h = heat.get(k) ?? { r: 0, w: 0 }
+      if (a.write) h.w = Math.min(HEAT_MAX, h.w + 1); else h.r = Math.min(HEAT_MAX, h.r + 1)
+      heat.set(k, h)
+    }
+  }
 }
 
 export function Machine({ dbg, onShowInterrupt }: Props) {
-  const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses } = dbg
+  const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses, recording } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
   const stackRef = useRef<HTMLCanvasElement>(null)
   const prevMem = useRef<MemWindow | null>(null)
-  const flashes = useRef(new Map<number, Flash>()) // linear address -> flash
-  const executed = useRef(new Set<number>()) // linear addresses IP has been at
+  const prevIp = useRef<number | null>(null)
+  const heat = useRef(new Map<number, Heat>())   // linear address -> heat
+  const executed = useRef(new Set<number>())     // linear addresses IP has been at
+  const execUpTo = useRef(0)                      // replay: frames whose IP is in `executed`
   const [hover, setHover] = useState<string>('')
   const [tick, setTick] = useState(0)
   const [speed, setSpeed] = useState(5)
+  const [recordN, setRecordN] = useState(2000)
+  const [frame, setFrame] = useState(0)
+  const [replaying, setReplaying] = useState(false)
+  const [fps, setFps] = useState(10)
   const rootRef = useRef<HTMLDivElement>(null)
   const [arrows, setArrows] = useState<{ d: string; warm: boolean }[]>([])
   const [size, setSize] = useState({ w: 0, h: 0 })
 
-  const current: DisLine | undefined = useMemo(() => lines.find((l) => l.offset === ip), [lines, ip])
   const linear = (seg: number, off: number) => (seg << 4) + off
-  // Where the data of the current instruction goes: the arrows between the tape, the registers, the flags and the cells.
-  const flowList = useMemo(() => (current && regs && stopped ? flows(current.text, regs) : []), [current, regs, stopped])
 
-  // A new stop: age the flashes, add the writes (diff) and the reads (decoded), note where IP is.
+  // What the view shows: the replay frame when there is a recording, else the live stop.
+  const frames = recording?.frames ?? null
+  const at = frames ? Math.min(frame, frames.length - 1) : 0
+  const cur = frames && frames.length ? frames[at] : null
+  const vRegs: Registers | null = cur ? cur.regs : regs
+  const vPrev: Registers | null = cur ? (at > 0 ? frames![at - 1].regs : null) : prevRegs
+  const vIp: number | null = cur ? cur.ip : ip
+  const vCs = cur ? cur.cs : (regs ? parseInt(regs.segments.cs, 16) & 0xffff : 0)
+  const vText = cur ? cur.text : lines.find((l) => l.offset === ip)?.text
+  const live = !cur
+
+  // Where the data of the shown instruction goes: the arrows between the tape, the registers, the flags and the cells.
+  const flowList = useMemo(() => (vText && vRegs && (cur || stopped) ? flows(vText, vRegs) : []), [vText, vRegs, cur, stopped])
+
+  // A new live stop: decay the heat, add what the last step touched (exact log, or diff + decode), note where IP is.
   useEffect(() => {
-    if (!mem || !regs) return
-    for (const [k, f] of flashes.current) {
-      f.age -= 0.3
-      if (f.age <= 0) flashes.current.delete(k)
-    }
-    const p = prevMem.current
-    if (accesses) {
-      // Exact: the emulator's log of what the last step read and wrote (a write wins over a read of the same cell).
-      for (const a of accesses) {
-        for (let i = 0; i < a.size; i++) {
-          const k = a.address + i
-          if (a.write || !flashes.current.has(k) || flashes.current.get(k)!.age < 1) flashes.current.set(k, { age: 1, kind: a.write ? 'write' : 'read' })
-        }
-      }
-    } else {
+    if (!live || !mem || !regs) return
+    decayAll(heat.current)
+    let done: MemAccess[] = []
+    if (accesses) done = accesses
+    else {
       // Worked out: writes by diffing the window, reads by decoding the next instruction's operands.
+      const p = prevMem.current
       if (p && p.seg === mem.seg && p.base === mem.base && p.bytes.length === mem.bytes.length && p.stop !== mem.stop) {
-        for (let i = 0; i < mem.bytes.length; i++) {
-          if (mem.bytes[i] !== p.bytes[i]) flashes.current.set(linear(mem.seg, mem.base + i), { age: 1, kind: 'write' })
-        }
+        for (let i = 0; i < mem.bytes.length; i++) if (mem.bytes[i] !== p.bytes[i]) done.push({ address: linear(mem.seg, mem.base + i), size: 1, write: true, cs: 0, ip: 0 })
       }
-      if (current) {
-        for (const t of touches(current.text, regs)) {
-          for (let i = 0; i < t.size; i++) {
-            const a = linear(t.seg, (t.offset + i) & 0xffff)
-            if (!flashes.current.has(a) || flashes.current.get(a)!.kind === 'read') flashes.current.set(a, { age: 1, kind: t.kind === 'write' ? 'write' : 'read' })
-          }
-        }
-      }
+      if (vText) for (const t of touches(vText, regs)) done.push({ address: linear(t.seg, t.offset), size: t.size, write: t.kind === 'write', cs: 0, ip: 0 })
     }
+    bump(heat.current, done)
     prevMem.current = mem
+    prevIp.current = ip
     if (ip !== null) executed.current.add(linear(parseInt(regs.segments.cs, 16) & 0xffff, ip))
     setTick((t) => t + 1)
-  }, [mem, regs, ip, current, accesses])
+  }, [mem, regs, ip, accesses, live]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Accesses the field and the stack strip cannot show, named by the memory map region: "the DOS read the BIOS data area".
-  const elsewhere = useMemo(() => {
-    if (!accesses || !accesses.length) return []
-    const inside = (a: number) => (mem && a >= linear(mem.seg, mem.base) && a < linear(mem.seg, mem.base) + mem.bytes.length)
-      || (stack && a >= linear(stack.seg, stack.base) && a < linear(stack.seg, stack.base) + stack.bytes.length)
-    const groups = new Map<string, { name: string; reads: number; writes: number; lo: number; hi: number }>()
-    for (const a of accesses) {
-      if (inside(a.address)) continue
-      const region = REGIONS.find((r) => a.address >= r.from && a.address <= r.to)
-      const name = region ? region.name : `${(a.address >> 4).toString(16).toUpperCase().padStart(4, '0')}:xxxx`
-      let g = groups.get(name)
-      if (!g) { g = { name, reads: 0, writes: 0, lo: a.address, hi: a.address }; groups.set(name, g) }
-      if (a.write) g.writes += a.size; else g.reads += a.size
-      g.lo = Math.min(g.lo, a.address); g.hi = Math.max(g.hi, a.address + a.size - 1)
-    }
-    return [...groups.values()]
-  }, [accesses, mem, stack])
+  // A replay frame: heat from the last HEAT_SPAN instructions (so scrubbing anywhere is exact), executed up to here.
+  useEffect(() => {
+    if (!frames || !cur) return
+    heat.current.clear()
+    for (let k = Math.max(0, at - HEAT_SPAN); k < at; k++) { decayAll(heat.current); bump(heat.current, frames[k].accesses) }
+    if (at < execUpTo.current) { executed.current.clear(); execUpTo.current = 0 }
+    for (let k = execUpTo.current; k <= at; k++) executed.current.add(linear(frames[k].cs, frames[k].ip))
+    execUpTo.current = at + 1
+    setTick((t) => t + 1)
+  }, [frames, at]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A recording arrives or goes: start from its first frame, with a clean field.
+  useEffect(() => {
+    heat.current.clear(); executed.current.clear(); execUpTo.current = 0
+    setFrame(0); setReplaying(false)
+    setTick((t) => t + 1)
+  }, [recording])
+
+  // Replay on a timer.
+  useEffect(() => {
+    if (!replaying || !frames) return
+    const id = window.setInterval(() => setFrame((f) => {
+      if (f + 1 >= frames.length) { setReplaying(false); return f }
+      return f + 1
+    }), Math.max(16, Math.round(1000 / fps)))
+    return () => window.clearInterval(id)
+  }, [replaying, fps, frames])
 
   // Forget everything when the session ends.
   useEffect(() => {
-    if (!dbg.session) { flashes.current.clear(); executed.current.clear(); prevMem.current = null; setTick((t) => t + 1) }
+    if (!dbg.session) { heat.current.clear(); executed.current.clear(); prevMem.current = null; prevIp.current = null; setTick((t) => t + 1) }
   }, [dbg.session])
 
   // The field.
@@ -130,37 +171,30 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
     ctx.fillStyle = paper.empty
     ctx.fillRect(0, 0, canvas.width, canvas.height)
     if (!mem) return
-    const csLin = regs ? linear(parseInt(regs.segments.cs, 16) & 0xffff, 0) : -1
-    const ipLin = ip !== null && regs ? csLin + ip : -1
+    const ipLin = vIp !== null ? linear(vCs, vIp) : -1
     const base = linear(mem.seg, mem.base)
     for (let c = 0; c < COLS * rows; c++) {
       const i0 = c * bytesPerCell
       if (i0 >= mem.bytes.length) break
-      let max = 0, any = false, f: Flash | null = null, isIp = false, wasExec = false
+      let max = 0, any = false, hr = 0, hw = 0, isIp = false, wasExec = false
       for (let i = i0; i < i0 + bytesPerCell && i < mem.bytes.length; i++) {
         const v = mem.bytes[i]
         if (v) { any = true; if (v > max) max = v }
         const a = base + i
-        const fl = flashes.current.get(a)
-        if (fl && (!f || fl.age > f.age)) f = fl
+        const h = heat.current.get(a)
+        if (h) { if (h.r > hr) hr = h.r; if (h.w > hw) hw = h.w }
         if (a === ipLin) isIp = true
         if (executed.current.has(a)) wasExec = true
       }
       const x = (c % COLS) * cell, y = Math.floor(c / COLS) * cell
       ctx.fillStyle = wasExec ? paper.exec : any ? shade(max) : paper.empty
       ctx.fillRect(x, y, cell - 1, cell - 1)
-      if (f) {
-        ctx.fillStyle = mix(paper.empty, f.kind === 'write' ? paper.write : paper.read, 0.25 + 0.75 * f.age)
-        ctx.fillRect(x, y, cell - 1, cell - 1)
-      }
-      if (isIp) {
-        ctx.fillStyle = paper.ip
-        ctx.fillRect(x, y, cell - 1, cell - 1)
-      }
+      if (hr + hw > 0) { ctx.fillStyle = heatColor({ r: hr, w: hw }); ctx.fillRect(x, y, cell - 1, cell - 1) }
+      if (isIp) { ctx.fillStyle = paper.ip; ctx.fillRect(x, y, cell - 1, cell - 1) }
     }
-  }, [mem, ip, regs, tick])
+  }, [mem, vIp, vCs, tick])
 
-  // The stack strip: 256 bytes, SP marked, the pushed words warm.
+  // The stack strip: 256 bytes, SP marked, heat as in the field.
   useEffect(() => {
     const canvas = stackRef.current
     if (!canvas) return
@@ -171,8 +205,8 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
     if (canvas.width !== cell * COLS || canvas.height !== cell * rows) { canvas.width = cell * COLS; canvas.height = cell * rows }
     ctx.fillStyle = paper.empty
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    if (!stack || !regs) return
-    const sp = parseInt(regs.general.esp, 16) & 0xffff
+    if (!stack || !vRegs) return
+    const sp = parseInt(vRegs.general.esp, 16) & 0xffff
     const base = linear(stack.seg, stack.base)
     for (let i = 0; i < stack.bytes.length; i++) {
       const x = (i % COLS) * cell, y = Math.floor(i / COLS) * cell
@@ -180,11 +214,11 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
       const off = stack.base + i
       ctx.fillStyle = off < sp ? paper.empty : v ? shade(v) : '#e4e3de'
       ctx.fillRect(x, y, cell - 1, cell - 1)
-      const f = flashes.current.get(base + i)
-      if (f) { ctx.fillStyle = mix(paper.empty, f.kind === 'write' ? paper.write : paper.read, 0.25 + 0.75 * f.age); ctx.fillRect(x, y, cell - 1, cell - 1) }
+      const h = heat.current.get(base + i)
+      if (h) { ctx.fillStyle = heatColor(h); ctx.fillRect(x, y, cell - 1, cell - 1) }
       if (off === sp) { ctx.fillStyle = paper.sp; ctx.fillRect(x, y, cell - 1, cell - 1) }
     }
-  }, [stack, regs, tick])
+  }, [stack, vRegs, tick])
 
   // Redraw the arrows when the panel changes size.
   useEffect(() => {
@@ -254,7 +288,26 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
     setArrows(out)
   }, [flowList, tick, mem, stack, size])
 
-  const onHover =(e: React.MouseEvent<HTMLCanvasElement>, w: MemWindow | null, label: string) => {
+  // Accesses the field and the stack strip cannot show, named by the memory map region: "the DOS read the BIOS data area".
+  const justDone: MemAccess[] | null = cur ? (at > 0 ? frames![at - 1].accesses : []) : accesses
+  const elsewhere = useMemo(() => {
+    if (!justDone || !justDone.length) return []
+    const inside = (a: number) => (mem && a >= linear(mem.seg, mem.base) && a < linear(mem.seg, mem.base) + mem.bytes.length)
+      || (stack && a >= linear(stack.seg, stack.base) && a < linear(stack.seg, stack.base) + stack.bytes.length)
+    const groups = new Map<string, { name: string; reads: number; writes: number; lo: number; hi: number }>()
+    for (const a of justDone) {
+      if (inside(a.address)) continue
+      const region = REGIONS.find((r) => a.address >= r.from && a.address <= r.to)
+      const name = region ? region.name : `${(a.address >> 4).toString(16).toUpperCase().padStart(4, '0')}:xxxx`
+      let g = groups.get(name)
+      if (!g) { g = { name, reads: 0, writes: 0, lo: a.address, hi: a.address }; groups.set(name, g) }
+      if (a.write) g.writes += a.size; else g.reads += a.size
+      g.lo = Math.min(g.lo, a.address); g.hi = Math.max(g.hi, a.address + a.size - 1)
+    }
+    return [...groups.values()]
+  }, [justDone, mem, stack])
+
+  const onHover = (e: React.MouseEvent<HTMLCanvasElement>, w: MemWindow | null, label: string) => {
     if (!w) return
     const r = e.currentTarget.getBoundingClientRect()
     const cell = Math.max(3, Math.floor(e.currentTarget.clientWidth / COLS))
@@ -264,25 +317,43 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
     if (i < 0 || i >= w.bytes.length) { setHover(''); return }
     const v = w.bytes[i]
     const off = w.base + i
-    setHover(`${label}:${off.toString(16).toUpperCase().padStart(4, '0')}${bytesPerCell > 1 ? `..${(off + bytesPerCell - 1).toString(16).toUpperCase().padStart(4, '0')}` : ''} = ${v.toString(16).toUpperCase().padStart(2, '0')}${v >= 32 && v < 127 ? ` '${String.fromCharCode(v)}'` : ''}`)
+    const h = heat.current.get(linear(w.seg, off))
+    setHover(`${label}:${off.toString(16).toUpperCase().padStart(4, '0')}${bytesPerCell > 1 ? `..${(off + bytesPerCell - 1).toString(16).toUpperCase().padStart(4, '0')}` : ''} = ${v.toString(16).toUpperCase().padStart(2, '0')}${v >= 32 && v < 127 ? ` '${String.fromCharCode(v)}'` : ''}${h ? ` · heat r${h.r.toFixed(1)} w${h.w.toFixed(1)}` : ''}`)
   }
 
-  const changed = (k: string, v: string) => prevRegs && regs && prevRegs !== regs && ((prevRegs.general[k] ?? prevRegs.segments[k]) !== v) ? 'changed' : ''
+  const changed = (k: string, v: string) => vPrev && vRegs && vPrev !== vRegs && ((vPrev.general[k] ?? vPrev.segments[k]) !== v) ? 'changed' : ''
   const flagBits: [number, string][] = [[0x800, 'OF'], [0x400, 'DF'], [0x200, 'IF'], [0x100, 'TF'], [0x80, 'SF'], [0x40, 'ZF'], [0x10, 'AF'], [0x4, 'PF'], [0x1, 'CF']]
-  const flags = regs ? parseInt(regs.flags, 16) : 0
-  const prevFlags = prevRegs ? parseInt(prevRegs.flags, 16) : flags
-  const tape = ip !== null ? lines.filter((l) => l.offset >= ip).slice(0, 7) : []
+  const flags = vRegs ? parseInt(vRegs.flags, 16) : 0
+  const prevFlags = vPrev ? parseInt(vPrev.flags, 16) : flags
+
+  // The conveyor: the instruction just executed (faded), the one in the CPU slot, the queue after it.
+  type Item = { key: string; offset: number; text: string; bytes: string; state: 'done' | 'now' | 'next' }
+  const tape: Item[] = useMemo(() => {
+    if (cur && frames) {
+      return frames.slice(Math.max(0, at - 1), at + 6).map((f, i) => ({
+        key: `f${f.seq}`, offset: f.ip, text: f.text, bytes: '', state: f === cur ? 'now' : (at > 0 && i === 0 ? 'done' : 'next'),
+      }))
+    }
+    if (ip === null) return []
+    const items: Item[] = []
+    const done = prevIp.current !== null && prevIp.current !== ip ? lines.find((l) => l.offset === prevIp.current) : undefined
+    if (done) items.push({ key: `o${done.offset}`, offset: done.offset, text: done.text, bytes: done.bytes, state: 'done' })
+    for (const l of lines.filter((l) => l.offset >= ip).slice(0, 7)) items.push({ key: `o${l.offset}`, offset: l.offset, text: l.text, bytes: l.bytes, state: l.offset === ip ? 'now' : 'next' })
+    return items
+  }, [cur, frames, at, ip, lines])
+
   // About to call an interrupt: name the function from AH (or AX).
   const intCall = useMemo(() => {
-    if (!current || !regs) return null
-    const m = /^int\s+([0-9a-f]+)h?$/i.exec(current.text.trim())
+    if (!vText || !vRegs) return null
+    const m = /^int\s+([0-9a-f]+)h?$/i.exec(vText.trim())
     if (!m) return null
     const int = parseInt(m[1], 16)
-    const ax = parseInt(regs.general.eax, 16) & 0xffff
+    const ax = parseInt(vRegs.general.eax, 16) & 0xffff
     const hit = lookupInt(int, ax)
     return { int, ax, vector: hit?.vector, fn: hit?.fn }
-  }, [current, regs])
+  }, [vText, vRegs])
 
+  const liveOff = dbg.busy || !stopped || dbg.playing || !!frames
   return (
     <div className="machine" ref={rootRef}>
       <svg className="machine-arrows" width={size.w} height={size.h} aria-hidden>
@@ -293,18 +364,40 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         {arrows.map((a, i) => <path key={i} d={a.d} className={`flow ${a.warm ? 'warm' : 'cool'}`} markerEnd={`url(#arrow-${a.warm ? 'warm' : 'cool'})`} />)}
       </svg>
       <div className="machine-tools">
-        <button onClick={() => dbg.step('into')} disabled={dbg.busy || !stopped || dbg.playing} title="Step (F7)">↓</button>
-        <button onClick={() => dbg.step('over')} disabled={dbg.busy || !stopped || dbg.playing} title="Step over a call (F8)">↷</button>
+        <button onClick={() => dbg.step('into')} disabled={liveOff} title="Step (F7)">↓</button>
+        <button onClick={() => dbg.step('over')} disabled={liveOff} title="Step over a call (F8)">↷</button>
         {dbg.playing
           ? <button onClick={dbg.pausePlay} title="Pause">‖</button>
-          : <button onClick={() => dbg.play(speed)} disabled={!stopped} title="Play: step on its own">▶</button>}
+          : <button onClick={() => dbg.play(speed)} disabled={!stopped || !!frames} title="Play: step on its own">▶</button>}
         <select value={speed} onChange={(e) => { setSpeed(Number(e.target.value)); if (dbg.playing) dbg.play(Number(e.target.value)) }} title="steps per second">
           {[1, 2, 5, 10, 20].map((n) => <option key={n} value={n}>{n}/s</option>)}
         </select>
-        <button onClick={dbg.cont} disabled={dbg.busy || !stopped || dbg.playing} title="Run to the next breakpoint (F9)">▶▶</button>
+        <button onClick={dbg.cont} disabled={liveOff} title="Run to the next breakpoint (F9)">▶▶</button>
         <button className="danger" onClick={dbg.stop} disabled={dbg.busy} title="Stop the program">■</button>
-        <span className="muted small">{dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : ''}</span>
+        <span className="machine-record">
+          <button onClick={() => dbg.record(recordN)} disabled={liveOff} title="Run this many instructions recording each with what it touched, then replay them here">⏺ record</button>
+          <select value={recordN} onChange={(e) => setRecordN(Number(e.target.value))} title="instructions to record">
+            {[500, 2000, 5000, 10000].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </span>
+        <span className="muted small">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : ''}</span>
       </div>
+      {frames && (
+        <div className="machine-replay">
+          <button onClick={() => { setReplaying(false); setFrame(0) }} title="First instruction">⏮</button>
+          <button onClick={() => { setReplaying(false); setFrame((f) => Math.max(0, f - 1)) }} title="Back one">◀</button>
+          {replaying
+            ? <button onClick={() => setReplaying(false)} title="Pause">‖</button>
+            : <button onClick={() => { if (at >= frames.length - 1) setFrame(0); setReplaying(true) }} title="Play the recording">▶</button>}
+          <button onClick={() => { setReplaying(false); setFrame((f) => Math.min(frames.length - 1, f + 1)) }} title="Forward one">▶|</button>
+          <input type="range" min={0} max={Math.max(0, frames.length - 1)} value={at} onChange={(e) => { setReplaying(false); setFrame(Number(e.target.value)) }} title="scrub" />
+          <span className="muted">{at + 1} / {frames.length}</span>
+          <select value={fps} onChange={(e) => setFps(Number(e.target.value))} title="instructions per second">
+            {[2, 5, 10, 20, 30, 60].map((n) => <option key={n} value={n}>{n}/s</option>)}
+          </select>
+          <button className="ghost" onClick={() => { setReplaying(false); dbg.clearRecording() }} title="Back to the live machine">✕ replay</button>
+        </div>
+      )}
 
       <div className="machine-mem">
         <div className="machine-label">
@@ -319,7 +412,7 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         <canvas ref={fieldRef} className="machine-field" onMouseMove={(e) => onHover(e, mem, 'DS')} onMouseLeave={() => setHover('')} />
         <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>
         <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, stack, 'SS')} onMouseLeave={() => setHover('')} />
-        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses ? 'read' : 'about to be read'} <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
+        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses || cur ? 'read' : 'about to be read'} · heat fades with each instruction <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
         {elsewhere.length > 0 && (
           <div className="machine-elsewhere">
             <span className="muted">also touched:</span>
@@ -328,7 +421,7 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
                 {g.name}{g.reads ? <em className="r"> r{g.reads}</em> : null}{g.writes ? <em className="w"> w{g.writes}</em> : null}
               </span>
             ))}
-            {dbg.accessesDropped > 0 && <span className="muted">+{dbg.accessesDropped} more</span>}
+            {live && dbg.accessesDropped > 0 && <span className="muted">+{dbg.accessesDropped} more</span>}
           </div>
         )}
       </div>
@@ -337,12 +430,12 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         <div className="machine-label"><span>cpu</span></div>
         <div className="cpu-regs">
           {(['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'] as const).map((k) => (
-            <div key={k} data-anchor={`reg:${k.slice(1)}`} className={`cpu-cell ${regs ? changed(k, regs.general[k]) : ''}`}><b>{k.slice(1).toUpperCase()}</b><span>{regs ? hex(regs.general[k]).slice(-4) : '----'}</span></div>
+            <div key={k} data-anchor={`reg:${k.slice(1)}`} className={`cpu-cell ${vRegs ? changed(k, vRegs.general[k]) : ''}`}><b>{k.slice(1).toUpperCase()}</b><span>{vRegs ? hex(vRegs.general[k]).slice(-4) : '----'}</span></div>
           ))}
           {(['cs', 'ds', 'es', 'ss'] as const).map((k) => (
-            <div key={k} data-anchor={`reg:${k}`} className={`cpu-cell seg ${regs ? changed(k, regs.segments[k]) : ''}`}><b>{k.toUpperCase()}</b><span>{regs ? hex(regs.segments[k]).slice(-4) : '----'}</span></div>
+            <div key={k} data-anchor={`reg:${k}`} className={`cpu-cell seg ${vRegs ? changed(k, vRegs.segments[k]) : ''}`}><b>{k.toUpperCase()}</b><span>{vRegs ? hex(vRegs.segments[k]).slice(-4) : '----'}</span></div>
           ))}
-          <div className={`cpu-cell ip ${prevRegs && regs && prevRegs !== regs && prevRegs.instruction_pointer !== regs.instruction_pointer ? 'changed' : ''}`}><b>IP</b><span>{regs ? hex(regs.instruction_pointer).slice(-4) : '----'}</span></div>
+          <div className={`cpu-cell ip ${vPrev && vRegs && vPrev !== vRegs && vPrev.instruction_pointer !== vRegs.instruction_pointer ? 'changed' : ''}`}><b>IP</b><span>{vRegs ? hex(vRegs.instruction_pointer).slice(-4) : '----'}</span></div>
         </div>
         <div className="cpu-flags" data-anchor="flags">
           {flagBits.map(([bit, name]) => (
@@ -360,12 +453,20 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
           </div>
         )}
         <div className="cpu-tape">
-          {tape.map((l, i) => (
-            <div key={l.offset} data-anchor={i === 0 ? 'imm' : undefined} className={`tape-item ${i === 0 ? 'now' : ''} ${dbg.breakpoints.has(l.offset) ? 'bp' : ''}`} title={`${hex(dbg.cs).slice(-4)}:${l.offset.toString(16).toUpperCase().padStart(4, '0')} — click: run to here; ●: breakpoint`} onClick={() => i > 0 && dbg.runTo(l.offset)}>
+          {tape.map((l) => (
+            <div
+              key={l.key}
+              data-anchor={l.state === 'now' ? 'imm' : undefined}
+              className={`tape-item ${l.state} ${live && dbg.breakpoints.has(l.offset) ? 'bp' : ''}`}
+              title={live ? `${hex(dbg.cs).slice(-4)}:${l.offset.toString(16).toUpperCase().padStart(4, '0')} — click: run to here; ●: breakpoint` : `${vCs.toString(16).toUpperCase().padStart(4, '0')}:${l.offset.toString(16).toUpperCase().padStart(4, '0')}`}
+              onClick={() => live && l.state === 'next' && dbg.runTo(l.offset)}
+            >
               <span className="tape-addr">{l.offset.toString(16).toUpperCase().padStart(4, '0')}</span>
               <span className="tape-text">{l.text}</span>
               <span className="tape-bytes">{l.bytes.replace(/(..)/g, '$1 ').trim()}</span>
-              <span className="tape-bp" onClick={(e) => { e.stopPropagation(); dbg.toggleBreakpoint(l.offset) }}>{dbg.breakpoints.has(l.offset) ? '●' : '○'}</span>
+              {live
+                ? <span className="tape-bp" onClick={(e) => { e.stopPropagation(); dbg.toggleBreakpoint(l.offset) }}>{dbg.breakpoints.has(l.offset) ? '●' : '○'}</span>
+                : <span className="tape-bp" />}
             </div>
           ))}
           {tape.length === 0 && <div className="muted small">{dbg.session ? 'running…' : 'Debug a program to see it run.'}</div>}
