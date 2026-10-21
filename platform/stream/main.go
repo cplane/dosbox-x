@@ -67,6 +67,8 @@ func main() {
 	agent := NewAgent(env("AGENT_SOCK", "/dev/shm/dosbox-agent.sock"))
 	pump := NewConPump(hub, con)
 	go pump.Run()
+	heat := NewHeatPump(hub, env("GAMELINK_HEAT", "/dev/shm/DWD_GAMELINK_HEAT_R1"))
+	go heat.Run()
 	ctl := &Control{
 		gl:        gl,
 		in:        in,
@@ -152,6 +154,8 @@ type clientMsg struct {
 		Text int `json:"text"`
 		Con  int `json:"con"` // the console stream too (conpump.go)
 	} `json:"hello"`
+	// Live heat (heat.go): 1 to get the ticks, 0 to stop.
+	Heat *int `json:"heat"`
 	// RPC: a JSON-RPC request for the debugger agent (agent.go); answered
 	// with {"type":"rpc","response":…}.
 	RPC json.RawMessage `json:"rpc"`
@@ -237,6 +241,8 @@ func serveWS(hub *Hub, in *InputWriter, agent *Agent, pump *ConPump, w http.Resp
 					err = write(websocket.TextMessage, p)
 				case b := <-c.conOut:
 					err = write(websocket.BinaryMessage, b)
+				case b := <-c.heatOut:
+					err = write(websocket.BinaryMessage, b)
 				case <-ping.C:
 					err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 				}
@@ -300,6 +306,8 @@ func serveWS(hub *Hub, in *InputWriter, agent *Agent, pump *ConPump, w http.Resp
 				pump.wantCon(c)
 			}
 			helloOnce.Do(func() { close(hello) })
+		case m.Heat != nil:
+			hub.setHeat(c, *m.Heat != 0)
 		}
 	}
 	conn.Close()

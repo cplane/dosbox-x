@@ -3,6 +3,7 @@ import { touches } from './operands'
 import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
 import { REGIONS } from './MemoryMapPanel'
+import { LiveHeat, type HeatTick } from './heat'
 import { hex, type Debugger, type MemAccess, type MemWindow, type Registers } from './useDebugger'
 
 /**
@@ -24,7 +25,14 @@ interface Props {
   dbg: Debugger
   /** The current instruction is an INT: show its function in the reference. */
   onShowInterrupt?: (int: number, ax: number) => void
+  /** Live heat while a program runs at full speed: the ticks, and the switch that asks the box for them. */
+  subscribeHeat?: (fn: (tick: HeatTick) => void) => () => void
+  setHeat?: (on: boolean) => void
+  /** What the box runs (COMMAND when nothing does). */
+  program?: string
 }
+
+const OVERVIEW_CELL = 256 // bytes per cell of the all-memory view: 1 MB in 64×64
 
 const COLS = 64
 const paper = { empty: '#efeeea', ink: '#35342f', exec: '#d5dce6', ip: '#3b63a8', write: [224, 120, 90] as const, read: [90, 143, 216] as const, sp: '#5f5a4e' }
@@ -68,10 +76,13 @@ function bump(heat: Map<number, Heat>, accesses: MemAccess[]) {
   }
 }
 
-export function Machine({ dbg, onShowInterrupt }: Props) {
+export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program }: Props) {
   const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses, recording } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
   const stackRef = useRef<HTMLCanvasElement>(null)
+  const overviewRef = useRef<HTMLCanvasElement>(null)
+  const [liveOn, setLiveOn] = useState(false)
+  const liveHeat = useRef(new LiveHeat())
   const prevMem = useRef<MemWindow | null>(null)
   const prevIp = useRef<number | null>(null)
   const heat = useRef(new Map<number, Heat>())   // linear address -> heat
@@ -158,6 +169,51 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
     if (!dbg.session) { heat.current.clear(); executed.current.clear(); prevMem.current = null; prevIp.current = null; setTick((t) => t + 1) }
   }, [dbg.session])
 
+  // Live heat: ask the box for the ticks while the switch is on, and fold each one in.
+  useEffect(() => {
+    if (!liveOn || !subscribeHeat) return
+    setHeat?.(true)
+    const off = subscribeHeat((t) => { liveHeat.current.apply(t); setTick((n) => n + 1) })
+    return () => { off(); setHeat?.(false); liveHeat.current.map.clear() }
+  }, [liveOn, subscribeHeat, setHeat])
+
+  // The all-memory view: the first megabyte at 256 bytes per cell, heat only.
+  useEffect(() => {
+    const canvas = overviewRef.current
+    if (!canvas || !liveOn) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const cell = Math.max(3, Math.floor(canvas.clientWidth / COLS))
+    if (canvas.width !== cell * COLS || canvas.height !== cell * COLS) { canvas.width = cell * COLS; canvas.height = cell * COLS }
+    ctx.fillStyle = paper.empty
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    const perCell = OVERVIEW_CELL / 16
+    for (let c = 0; c < COLS * COLS; c++) {
+      const x = (c % COLS) * cell, y = Math.floor(c / COLS) * cell
+      // Regions people know get a faint base tint, so the heat has a map under it.
+      const region = REGIONS.find((r) => c * OVERVIEW_CELL >= r.from && c * OVERVIEW_CELL <= r.to)
+      ctx.fillStyle = region?.cls === 'video' ? '#e8e4ea' : region?.cls === 'rom' || region?.cls === 'dos' || region?.cls === 'ivt' || region?.cls === 'bda' ? '#e6e5e0' : paper.empty
+      ctx.fillRect(x, y, cell - 1, cell - 1)
+      const h = liveHeat.current.over(c * perCell, c * perCell + perCell)
+      if (h) { ctx.fillStyle = heatColor(h); ctx.fillRect(x, y, cell - 1, cell - 1) }
+    }
+  }, [liveOn, tick])
+
+  // The hottest regions right now, for the line under the all-memory view.
+  const hotRegions = useMemo(() => {
+    if (!liveOn) return []
+    const sums = new Map<string, { name: string; heat: number }>()
+    for (const [b, h] of liveHeat.current.map) {
+      const addr = b * 16
+      const region = REGIONS.find((r) => addr >= r.from && addr <= r.to)
+      const name = region ? region.name : 'beyond 1 MB'
+      const s = sums.get(name) ?? { name, heat: 0 }
+      s.heat += h.r + h.w
+      sums.set(name, s)
+    }
+    return [...sums.values()].sort((a, b) => b.heat - a.heat).slice(0, 4)
+  }, [liveOn, tick]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // The field.
   useEffect(() => {
     const canvas = fieldRef.current
@@ -186,13 +242,19 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         if (a === ipLin) isIp = true
         if (executed.current.has(a)) wasExec = true
       }
+      if (liveOn) {
+        // Live: the heat of the paragraphs this cell covers, from the box's counters.
+        const a0 = base + i0
+        const lh = liveHeat.current.over(a0 >> 4, ((a0 + bytesPerCell - 1) >> 4) + 1)
+        hr = lh ? lh.r : 0; hw = lh ? lh.w : 0
+      }
       const x = (c % COLS) * cell, y = Math.floor(c / COLS) * cell
       ctx.fillStyle = wasExec ? paper.exec : any ? shade(max) : paper.empty
       ctx.fillRect(x, y, cell - 1, cell - 1)
       if (hr + hw > 0) { ctx.fillStyle = heatColor({ r: hr, w: hw }); ctx.fillRect(x, y, cell - 1, cell - 1) }
       if (isIp) { ctx.fillStyle = paper.ip; ctx.fillRect(x, y, cell - 1, cell - 1) }
     }
-  }, [mem, vIp, vCs, tick])
+  }, [mem, vIp, vCs, tick, liveOn])
 
   // The stack strip: 256 bytes, SP marked, heat as in the field.
   useEffect(() => {
@@ -380,8 +442,22 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
             {[500, 2000, 5000, 10000].map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </span>
-        <span className="muted small">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : ''}</span>
+        {subscribeHeat && (
+          <button className={`machine-live ${liveOn ? 'on' : ''}`} onClick={() => setLiveOn((v) => !v)} title="Watch memory while the program runs at full speed: the box counts every read and write per 16 bytes, ten times a second">
+            {liveOn ? '● live heat' : '○ live heat'}
+          </button>
+        )}
+        <span className="muted small">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : program && program.toUpperCase() !== 'COMMAND' ? `${program} running` : ''}</span>
       </div>
+      {liveOn && (
+        <div className="machine-overview">
+          <div className="machine-label"><span>all memory · 1 MB · 256 bytes per cell · live</span></div>
+          <canvas ref={overviewRef} className="machine-field" />
+          <div className="machine-hot">
+            {hotRegions.length ? hotRegions.map((r) => <span key={r.name}>{r.name}</span>) : <span className="muted">waiting for the box…</span>}
+          </div>
+        </div>
+      )}
       {frames && (
         <div className="machine-replay">
           <button onClick={() => { setReplaying(false); setFrame(0) }} title="First instruction">⏮</button>

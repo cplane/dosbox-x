@@ -477,3 +477,10 @@ html.paper body { overflow: hidden; }
 .machine-replay button { padding: 2px 7px; }
 .machine-replay select { font-size: 11px; padding: 2px 4px; }
 .machine-record { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
+
+/* Live heat while a program runs: the switch, the all-memory view, the hottest regions. */
+.machine-live { margin-left: 6px; }
+.machine-live.on { border-color: #e0785a; color: #b9553f; }
+.machine-overview { display: grid; gap: 2px; }
+.machine-hot { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; }
+.machine-hot span { padding: 1px 6px; border-radius: 4px; background: rgba(224, 120, 90, 0.12); }

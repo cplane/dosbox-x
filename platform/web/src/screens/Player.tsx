@@ -8,6 +8,7 @@ import { Console, type ConsoleHandle, type Step } from './Console'
 import type { TerminalHandle } from './Terminal'
 import { useDebugger } from '../workbench/useDebugger'
 import { Workspace } from '../workbench/Workspace'
+import type { HeatTick } from '../workbench/heat'
 
 /** Screen: the DOS screen with panels under it (as it was). Workbench: editor + terminal on paper, the screen put away. */
 type View = 'screen' | 'workbench'
@@ -81,6 +82,13 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     conSubs.current.add(fn)
     return () => { conSubs.current.delete(fn) }
   }, [])
+  // Live heat ticks ("H") fan out the same way; the box counts only while asked ({heat:1}).
+  const heatSubs = useRef(new Set<(tick: HeatTick) => void>())
+  const subscribeHeat = useCallback((fn: (tick: HeatTick) => void) => {
+    heatSubs.current.add(fn)
+    return () => { heatSubs.current.delete(fn) }
+  }, [])
+  const setHeat = useCallback((on: boolean) => { sendRef.current({ heat: on ? 1 : 0 }) }, [])
   // The screen's key path, for the terminal to send keys the same way.
   const keyRef = useRef<(e: KeyboardEvent, down: boolean) => void>(() => undefined)
   const onTermKey = useCallback((e: KeyboardEvent, down: boolean) => keyRef.current(e, down), [])
@@ -228,6 +236,11 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           const lost = new Uint8Array(ev.data, 2, 1)[0] === 1
           const chunk = new Uint8Array(ev.data, 3)
           for (const fn of conSubs.current) fn(chunk, lost)
+        } else if (new Uint8Array(ev.data, 0, 1)[0] === 0x48) { // "H": live heat tick (paragraph, reads, writes)×n
+          const fresh = new Uint8Array(ev.data, 2, 1)[0] === 1
+          const n = new DataView(ev.data).getUint32(3, true)
+          const tick: HeatTick = { fresh, entries: new Uint16Array(ev.data.slice(7, 7 + n * 6)) }
+          for (const fn of heatSubs.current) fn(tick)
         } else draw(ev.data)
       }
       ws.onclose = () => {
@@ -529,6 +542,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <Workspace
           boxId={boxId} running={running} program={meta?.program} rpc={rpc} dbg={dbg} available={agentAvailable}
           onRun={runSteps} terminalRef={terminalRef} subscribeCon={subscribeCon} onTermKey={onTermKey}
+          subscribeHeat={subscribeHeat} setHeat={setHeat}
         />
       )}
       {view === 'screen' && showEditor && running && (

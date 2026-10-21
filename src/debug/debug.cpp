@@ -6607,12 +6607,18 @@ void DEBUG_HeavyLogInstruction(void) {
 #if defined(C_DEBUG) && defined(C_DOSBOX_AGENT)
 /* The memory access log: bounded, so a long RUN costs a counter at most. */
 static const size_t AGENT_MEMLOG_MAX = 8192;
-bool agent_memlog_active = false;
+bool agent_memhook_active = false;   // the log or the heat wants accesses
+static bool agent_memlog_active = false;
+static bool agent_heat_active = false;
 static vector<DEBUG_AgentMemAccess> agent_memlog;
 static uint32_t agent_memlog_dropped = 0;
 
-void AGENT_MemLogRecord(const LinearPt address, const uint8_t size, const bool write)
+void OUTPUT_GAMELINK_HeatCount(uint32_t address, bool write);
+
+void AGENT_MemHook(const LinearPt address, const uint8_t size, const bool write)
 {
+	if (agent_heat_active) OUTPUT_GAMELINK_HeatCount((uint32_t)address, write);
+	if (!agent_memlog_active) return;
 	if (agent_memlog.size() >= AGENT_MEMLOG_MAX) { agent_memlog_dropped++; return; }
 	DEBUG_AgentMemAccess a;
 	a.address = (uint32_t)address;
@@ -6628,11 +6634,20 @@ void DEBUG_AgentMemLogStart(void)
 	agent_memlog.clear();
 	agent_memlog_dropped = 0;
 	agent_memlog_active = true;
+	agent_memhook_active = true;
 }
 
 void DEBUG_AgentMemLogStop(void)
 {
 	agent_memlog_active = false;
+	agent_memhook_active = agent_heat_active;
+}
+
+/* The sidecar asked for (or dropped) the live heat: called once per frame from the Game Link output. */
+void DEBUG_AgentHeatEnable(bool on)
+{
+	agent_heat_active = on;
+	agent_memhook_active = agent_memlog_active || on;
 }
 
 void DEBUG_AgentMemLogCopy(vector<DEBUG_AgentMemAccess>* accesses, uint32_t* dropped)

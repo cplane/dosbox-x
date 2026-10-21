@@ -549,6 +549,99 @@ bool con_open()
 } // namespace
 #endif // !WIN32
 
+// Live heat: how often each 16-byte paragraph of the first megabyte was read
+// and written, in /DWD_GAMELINK_HEAT_R1, counted by the agent's memory hook
+// (debug build only) while the sidecar has `enabled` set — a heat map of a
+// program running at full speed. Counters wrap; a reader keeps its own copy
+// and takes differences. `frame` ticks once per output frame so a reader
+// can tell the emulator is alive.
+#if !defined(WIN32)
+namespace {
+
+enum { HEAT_BUCKETS = 65536, HEAT_SHIFT = 4 };
+
+#pragma pack( push, 1 )
+struct sGameLinkHeat_R1
+{
+    uint32_t magic;            // "DBXH"
+    uint16_t version;          // 1
+    uint16_t bucket_shift;     // HEAT_SHIFT: a bucket is 1 << shift bytes
+    uint32_t buckets;          // HEAT_BUCKETS
+    volatile uint32_t enabled; // set by the sidecar: count accesses
+    volatile uint64_t frame;   // output frames so far
+    uint16_t reads[HEAT_BUCKETS];
+    uint16_t writes[HEAT_BUCKETS];
+};
+#pragma pack( pop )
+
+sGameLinkHeat_R1* heat_block = nullptr;
+bool heat_unavailable = false;
+bool heat_was_enabled = false;
+
+bool heat_open()
+{
+    if ( heat_block ) return true;
+    if ( heat_unavailable ) return false;
+    const int fd = shm_open( "/DWD_GAMELINK_HEAT_R1", O_CREAT | O_RDWR, 0644 );
+    if ( fd < 0 || ftruncate( fd, sizeof( sGameLinkHeat_R1 ) ) != 0 ) {
+        LOG_MSG( "GAMELINK: heat map unavailable (errno %d)", errno );
+        if ( fd >= 0 ) close( fd );
+        heat_unavailable = true;
+        return false;
+    }
+    void* p = mmap( nullptr, sizeof( sGameLinkHeat_R1 ), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    close( fd );
+    if ( p == MAP_FAILED ) {
+        heat_unavailable = true;
+        return false;
+    }
+    heat_block = static_cast< sGameLinkHeat_R1* >( p );
+    memset( heat_block, 0, sizeof( sGameLinkHeat_R1 ) );
+    heat_block->version = 1;
+    heat_block->bucket_shift = HEAT_SHIFT;
+    heat_block->buckets = HEAT_BUCKETS;
+    __sync_synchronize();
+    heat_block->magic = 0x48584244; // "DBXH"
+    return true;
+}
+
+} // namespace
+#endif // !WIN32
+
+#if defined(C_DEBUG) && defined(C_DOSBOX_AGENT) && defined(C_HEAVY_DEBUG)
+void DEBUG_AgentHeatEnable(bool on);
+#endif
+
+// Once per output frame: the sidecar's wish, and the frame counter.
+void OUTPUT_GAMELINK_HeatFrame()
+{
+#if !defined(WIN32)
+    if ( !sdl.gamelink.enable || sdl.desktop.want_type != SCREEN_GAMELINK ) return;
+    if ( !heat_open() ) return;
+    heat_block->frame++;
+#if defined(C_DEBUG) && defined(C_DOSBOX_AGENT) && defined(C_HEAVY_DEBUG)
+    const bool on = heat_block->enabled != 0;
+    if ( on != heat_was_enabled ) {
+        heat_was_enabled = on;
+        DEBUG_AgentHeatEnable( on );
+    }
+#endif
+#endif
+}
+
+// From the agent's memory hook, for every data access while enabled.
+void OUTPUT_GAMELINK_HeatCount(uint32_t address, bool write)
+{
+#if !defined(WIN32)
+    if ( !heat_block ) return;
+    const uint32_t b = address >> HEAT_SHIFT;
+    if ( b >= HEAT_BUCKETS ) return;
+    if ( write ) heat_block->writes[ b ]++; else heat_block->reads[ b ]++;
+#else
+    (void)address; (void)write;
+#endif
+}
+
 void OUTPUT_GAMELINK_ConsoleWrite(const uint8_t* data, size_t n)
 {
 #if !defined(WIN32)
@@ -568,6 +661,7 @@ void OUTPUT_GAMELINK_ConsoleWrite(const uint8_t* data, size_t n)
 void OUTPUT_GAMELINK_Transfer()
 {
     //LOG_MSG("OUTPUT_GAMELINK: Transfer");
+    OUTPUT_GAMELINK_HeatFrame();
     GameLink::Out( (uint16_t)sdl.clip.w+2*sdl.clip.x, (uint16_t)sdl.clip.h+2*sdl.clip.y, render.src.ratio,
         sdl.gamelink.want_mouse,
         RunningProgram.c_str(),
