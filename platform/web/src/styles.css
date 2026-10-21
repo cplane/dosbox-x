@@ -484,3 +484,11 @@ html.paper body { overflow: hidden; }
 .machine-overview { display: grid; gap: 2px; }
 .machine-hot { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; }
 .machine-hot span { padding: 1px 6px; border-radius: 4px; background: rgba(224, 120, 90, 0.12); }
+
+/* The editor's debug controls, as media buttons: play / pause, step over, step into, stop. */
+.media { display: inline-flex; gap: 2px; align-items: center; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.media-btn { width: 26px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--ink); display: inline-grid; place-items: center; }
+.media-btn svg { width: 14px; height: 14px; display: block; }
+.media-btn:hover:not(:disabled) { background: rgba(70, 70, 65, 0.08); border-color: transparent; }
+.media-btn.stop { color: #b9553f; }
+.dbg-bp.pending::after { opacity: .55; }

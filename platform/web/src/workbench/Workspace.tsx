@@ -154,9 +154,9 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   }, [active, model])
 
   const debug: EditorDebug = useMemo(() => ({
-    active, stopped: dbg.stopped, ip: dbg.ip, breakpoints: dbg.breakpoints,
-    toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, cont: dbg.cont,
-  }), [active, dbg.stopped, dbg.ip, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.cont])
+    active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && !dbg.stopped, busy: dbg.busy, ip: dbg.ip, breakpoints: dbg.breakpoints,
+    toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, cont: dbg.cont, pause: dbg.pause, stop: dbg.stop,
+  }), [dbg.session, dbg.stopped, dbg.busy, dbg.ip, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.cont, dbg.pause, dbg.stop])
 
   const factory = (node: TabNode) => {
     switch (node.getComponent()) {
