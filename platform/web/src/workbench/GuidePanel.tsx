@@ -35,7 +35,7 @@ export function GuidePanel({ onOpen }: Props) {
               <div className="guide-head">
                 <b>{p.name}</b>
                 {onOpen
-                  ? <button className="guide-file" title="Open in the editor" onClick={() => onOpen(p.file, p.code)}>{p.file}</button>
+                  ? <button className="ghost guide-file" title="Open in the editor" onClick={() => onOpen(p.file, p.code)}>{p.file}</button>
                   : <code>{p.file}</code>}
               </div>
               <div className="guide-desc">{p.what}</div>
@@ -59,7 +59,7 @@ export function GuidePanel({ onOpen }: Props) {
                   {open && e.ex && (
                     <div className="guide-example">
                       <pre>{[...e.ex, ...(e.data ?? [])].join('\n')}</pre>
-                      {onOpen && <button className="guide-file" title="Open in the editor" onClick={() => onOpen(exampleFile(e.m), wrapExample(e.m, e.ex!, e.data))}>{exampleFile(e.m)}</button>}
+                      {onOpen && <button className="ghost guide-file" title="Open in the editor" onClick={() => onOpen(exampleFile(e.m), wrapExample(e.m, e.ex!, e.data))}>{exampleFile(e.m)}</button>}
                     </div>
                   )}
                 </div>
