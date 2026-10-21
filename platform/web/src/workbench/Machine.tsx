@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { touches } from './operands'
+import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
 import { hex, type Debugger, type DisLine, type MemWindow } from './useDebugger'
 
@@ -46,9 +47,14 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
   const [hover, setHover] = useState<string>('')
   const [tick, setTick] = useState(0)
   const [speed, setSpeed] = useState(5)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [arrows, setArrows] = useState<{ d: string; warm: boolean }[]>([])
+  const [size, setSize] = useState({ w: 0, h: 0 })
 
   const current: DisLine | undefined = useMemo(() => lines.find((l) => l.offset === ip), [lines, ip])
   const linear = (seg: number, off: number) => (seg << 4) + off
+  // Where the data of the current instruction goes: the arrows between the tape, the registers, the flags and the cells.
+  const flowList = useMemo(() => (current && regs && stopped ? flows(current.text, regs) : []), [current, regs, stopped])
 
   // A new stop: age the flashes, add the writes (diff) and the reads (decoded), note where IP is.
   useEffect(() => {
@@ -150,7 +156,75 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
     }
   }, [stack, regs, tick])
 
-  const onHover = (e: React.MouseEvent<HTMLCanvasElement>, w: MemWindow | null, label: string) => {
+  // Redraw the arrows when the panel changes size.
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const ro = new ResizeObserver(() => setSize({ w: root.clientWidth, h: root.clientHeight }))
+    ro.observe(root)
+    return () => ro.disconnect()
+  }, [])
+
+  // The arrows: after the canvases are drawn (this effect comes after theirs), find each anchor on screen.
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const rr = root.getBoundingClientRect()
+    type Box = { x: number; y: number; w: number; h: number }
+    const box = (a: Anchor): Box | null => {
+      if (a.kind === 'mem') {
+        const lin = linear(a.seg, a.offset)
+        const windows: [HTMLCanvasElement | null, MemWindow | null, number][] = [
+          [fieldRef.current, mem, mem ? Math.max(1, Math.floor(mem.bytes.length / (COLS * COLS))) : 1],
+          [stackRef.current, stack, 1],
+        ]
+        for (const [canvas, w, perCell] of windows) {
+          if (!canvas || !w || canvas.width === 0) continue
+          const i = lin - linear(w.seg, w.base)
+          if (i < 0 || i >= w.bytes.length) continue
+          const c = Math.floor(i / perCell)
+          const r = canvas.getBoundingClientRect()
+          const scale = r.width / canvas.width
+          const cell = (canvas.width / COLS) * scale
+          return { x: r.left - rr.left + (c % COLS) * cell, y: r.top - rr.top + Math.floor(c / COLS) * cell, w: cell, h: cell }
+        }
+        return null
+      }
+      const sel = a.kind === 'reg' ? `[data-anchor="reg:${a.name}"]` : `[data-anchor="${a.kind}"]`
+      const el = root.querySelector(sel)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.left - rr.left, y: r.top - rr.top, w: r.width, h: r.height }
+    }
+    // The point on a box's edge in the direction of another point.
+    const edge = (b: Box, to: { x: number; y: number }) => {
+      const cx = b.x + b.w / 2, cy = b.y + b.h / 2
+      const dx = to.x - cx, dy = to.y - cy
+      if (!dx && !dy) return { x: cx, y: cy }
+      const t = Math.min(dx ? (b.w / 2) / Math.abs(dx) : Infinity, dy ? (b.h / 2) / Math.abs(dy) : Infinity)
+      return { x: cx + dx * t, y: cy + dy * t }
+    }
+    const out: { d: string; warm: boolean }[] = []
+    for (const f of flowList) {
+      const a = box(f.from), b = box(f.to)
+      if (!a || !b) continue
+      const ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 }, bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 }
+      const p = edge(a, bc), q = edge(b, ac)
+      let d: string
+      if (Math.abs(q.y - p.y) < 24) {
+        // Side by side: an arc over the top.
+        const lift = Math.max(18, Math.abs(q.x - p.x) / 4)
+        d = `M${p.x},${a.y} C${p.x},${a.y - lift} ${q.x},${b.y - lift} ${q.x},${b.y}`
+      } else {
+        const my = (p.y + q.y) / 2
+        d = `M${p.x},${p.y} C${p.x},${my} ${q.x},${my} ${q.x},${q.y}`
+      }
+      out.push({ d, warm: f.to.kind === 'mem' })
+    }
+    setArrows(out)
+  }, [flowList, tick, mem, stack, size])
+
+  const onHover =(e: React.MouseEvent<HTMLCanvasElement>, w: MemWindow | null, label: string) => {
     if (!w) return
     const r = e.currentTarget.getBoundingClientRect()
     const cell = Math.max(3, Math.floor(e.currentTarget.clientWidth / COLS))
@@ -180,7 +254,14 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
   }, [current, regs])
 
   return (
-    <div className="machine">
+    <div className="machine" ref={rootRef}>
+      <svg className="machine-arrows" width={size.w} height={size.h} aria-hidden>
+        <defs>
+          <marker id="arrow-cool" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0.5 L8,4 L0,7.5 z" fill="#3b63a8" /></marker>
+          <marker id="arrow-warm" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0.5 L8,4 L0,7.5 z" fill="#e0785a" /></marker>
+        </defs>
+        {arrows.map((a, i) => <path key={i} d={a.d} className={`flow ${a.warm ? 'warm' : 'cool'}`} markerEnd={`url(#arrow-${a.warm ? 'warm' : 'cool'})`} />)}
+      </svg>
       <div className="machine-tools">
         <button onClick={() => dbg.step('into')} disabled={dbg.busy || !stopped || dbg.playing} title="Step (F7)">↓</button>
         <button onClick={() => dbg.step('over')} disabled={dbg.busy || !stopped || dbg.playing} title="Step over a call (F8)">↷</button>
@@ -208,21 +289,21 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         <canvas ref={fieldRef} className="machine-field" onMouseMove={(e) => onHover(e, mem, 'DS')} onMouseLeave={() => setHover('')} />
         <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>
         <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, stack, 'SS')} onMouseLeave={() => setHover('')} />
-        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> about to be read <i style={{ background: paper.sp }} /> SP</div>
+        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> about to be read <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
       </div>
 
       <div className="machine-cpu">
         <div className="machine-label"><span>cpu</span></div>
         <div className="cpu-regs">
           {(['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'] as const).map((k) => (
-            <div key={k} className={`cpu-cell ${regs ? changed(k, regs.general[k]) : ''}`}><b>{k.slice(1).toUpperCase()}</b><span>{regs ? hex(regs.general[k]).slice(-4) : '----'}</span></div>
+            <div key={k} data-anchor={`reg:${k.slice(1)}`} className={`cpu-cell ${regs ? changed(k, regs.general[k]) : ''}`}><b>{k.slice(1).toUpperCase()}</b><span>{regs ? hex(regs.general[k]).slice(-4) : '----'}</span></div>
           ))}
           {(['cs', 'ds', 'es', 'ss'] as const).map((k) => (
-            <div key={k} className={`cpu-cell seg ${regs ? changed(k, regs.segments[k]) : ''}`}><b>{k.toUpperCase()}</b><span>{regs ? hex(regs.segments[k]).slice(-4) : '----'}</span></div>
+            <div key={k} data-anchor={`reg:${k}`} className={`cpu-cell seg ${regs ? changed(k, regs.segments[k]) : ''}`}><b>{k.toUpperCase()}</b><span>{regs ? hex(regs.segments[k]).slice(-4) : '----'}</span></div>
           ))}
           <div className={`cpu-cell ip ${prevRegs && regs && prevRegs !== regs && prevRegs.instruction_pointer !== regs.instruction_pointer ? 'changed' : ''}`}><b>IP</b><span>{regs ? hex(regs.instruction_pointer).slice(-4) : '----'}</span></div>
         </div>
-        <div className="cpu-flags">
+        <div className="cpu-flags" data-anchor="flags">
           {flagBits.map(([bit, name]) => (
             <div key={name} className={`cpu-flag ${flags & bit ? 'on' : ''} ${(flags & bit) !== (prevFlags & bit) ? 'changed' : ''}`} title={name}>{name}</div>
           ))}
@@ -239,7 +320,7 @@ export function Machine({ dbg, onShowInterrupt }: Props) {
         )}
         <div className="cpu-tape">
           {tape.map((l, i) => (
-            <div key={l.offset} className={`tape-item ${i === 0 ? 'now' : ''} ${dbg.breakpoints.has(l.offset) ? 'bp' : ''}`} title={`${hex(dbg.cs).slice(-4)}:${l.offset.toString(16).toUpperCase().padStart(4, '0')} — click: run to here; ●: breakpoint`} onClick={() => i > 0 && dbg.runTo(l.offset)}>
+            <div key={l.offset} data-anchor={i === 0 ? 'imm' : undefined} className={`tape-item ${i === 0 ? 'now' : ''} ${dbg.breakpoints.has(l.offset) ? 'bp' : ''}`} title={`${hex(dbg.cs).slice(-4)}:${l.offset.toString(16).toUpperCase().padStart(4, '0')} — click: run to here; ●: breakpoint`} onClick={() => i > 0 && dbg.runTo(l.offset)}>
               <span className="tape-addr">{l.offset.toString(16).toUpperCase().padStart(4, '0')}</span>
               <span className="tape-text">{l.text}</span>
               <span className="tape-bytes">{l.bytes.replace(/(..)/g, '$1 ').trim()}</span>
