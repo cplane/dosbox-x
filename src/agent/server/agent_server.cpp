@@ -453,6 +453,7 @@ static bool IsKnownMethod(const std::string& method)
            method == "memory.read" ||
            method == "memory.write" ||
            method == "code.disassemble" ||
+           method == "memory.accesses" ||
            method == "breakpoints.create" ||
            method == "breakpoints.list" ||
            method == "breakpoints.delete" ||
@@ -519,6 +520,8 @@ public:
         RegisterSnapshot registers;
         std::vector<std::uint8_t> data;
         std::vector<DisassembledLine> lines;
+        std::vector<MemoryAccess> accesses;
+        std::uint32_t dropped = 0;
         NativeBreakpoint breakpoint;
         std::string raw_output;
         std::vector<TraceSample> trace_samples;
@@ -628,6 +631,7 @@ public:
                              std::vector<std::uint8_t>* after,
                              MemoryAccessError* access_error,
                              std::string* error) const = 0;
+    virtual bool ReadMemoryAccesses(std::vector<MemoryAccess>* accesses, std::uint32_t* dropped, std::string* error) const = 0;
     virtual bool CreateBreakpoint(BreakpointKind kind,
                                   const MemoryAddress& address,
                                   bool once,
@@ -675,6 +679,7 @@ public:
     AGENT_RUNTIME_FORWARD(ReadMemory, bool ReadMemory(const MemoryAddress& address, std::size_t length, std::vector<std::uint8_t>* data, MemoryAccessError* access_error, std::string* error) const, (address, length, data, access_error, error))
     AGENT_RUNTIME_FORWARD(Disassemble, bool Disassemble(const MemoryAddress& address, std::size_t count, std::vector<DisassembledLine>* lines, MemoryAccessError* access_error, std::string* error) const, (address, count, lines, access_error, error))
     AGENT_RUNTIME_FORWARD(WriteMemory, bool WriteMemory(const MemoryAddress& address, const std::vector<std::uint8_t>& data, std::vector<std::uint8_t>* after, MemoryAccessError* access_error, std::string* error) const, (address, data, after, access_error, error))
+    AGENT_RUNTIME_FORWARD(ReadMemoryAccesses, bool ReadMemoryAccesses(std::vector<MemoryAccess>* accesses, std::uint32_t* dropped, std::string* error) const, (accesses, dropped, error))
     AGENT_RUNTIME_FORWARD(CreateBreakpoint, bool CreateBreakpoint(BreakpointKind kind, const MemoryAddress& address, bool once, NativeBreakpoint* breakpoint, MemoryAccessError* access_error, std::string* error) const, (kind, address, once, breakpoint, access_error, error))
     AGENT_RUNTIME_FORWARD(DeleteBreakpoint, bool DeleteBreakpoint(const NativeBreakpoint& breakpoint, std::string* error) const, (breakpoint, error))
     AGENT_RUNTIME_FORWARD(ConsumeLastBreakpointHandle, std::uintptr_t ConsumeLastBreakpointHandle() const, ())
@@ -729,6 +734,7 @@ public:
     AGENT_RUNTIME_UNAVAILABLE(ReadMemory, bool ReadMemory(const MemoryAddress&, std::size_t, std::vector<std::uint8_t>*, MemoryAccessError*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(Disassemble, bool Disassemble(const MemoryAddress&, std::size_t, std::vector<DisassembledLine>*, MemoryAccessError*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(WriteMemory, bool WriteMemory(const MemoryAddress&, const std::vector<std::uint8_t>&, std::vector<std::uint8_t>*, MemoryAccessError*, std::string* error) const)
+    AGENT_RUNTIME_UNAVAILABLE(ReadMemoryAccesses, bool ReadMemoryAccesses(std::vector<MemoryAccess>*, std::uint32_t*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(CreateBreakpoint, bool CreateBreakpoint(BreakpointKind, const MemoryAddress&, bool, NativeBreakpoint*, MemoryAccessError*, std::string* error) const)
     AGENT_RUNTIME_UNAVAILABLE(DeleteBreakpoint, bool DeleteBreakpoint(const NativeBreakpoint&, std::string* error) const)
     std::uintptr_t ConsumeLastBreakpointHandle() const override { return 0; }
@@ -1215,9 +1221,15 @@ static std::string Capabilities(const AgentConfig& config)
 #if C_DEBUG
     Add(&result, "debugger", JsonValue::Bool(true));
     Add(&result, "disassembly", JsonValue::Bool(true)); // code.disassemble
+#if C_HEAVY_DEBUG
+    Add(&result, "memory_accesses", JsonValue::Bool(true)); // memory.accesses
+#else
+    Add(&result, "memory_accesses", JsonValue::Bool(false));
+#endif
 #else
     Add(&result, "debugger", JsonValue::Bool(false));
     Add(&result, "disassembly", JsonValue::Bool(false));
+    Add(&result, "memory_accesses", JsonValue::Bool(false));
 #endif
     JsonValue trace = Object();
 #ifdef C_HEAVY_DEBUG
@@ -1822,6 +1834,68 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
                                      "COMMAND_REJECTED");
                 } else {
                     response = AGENT_MakeJsonRpcResult(parsed.id, RegistersResult(operation->registers, *session));
+                }
+            }
+        }
+    } else if (parsed.method == "memory.accesses") {
+        // {} -> {"accesses": [{"address", "size", "kind", "cs", "ip"}], "dropped": n}: what the last step or run touched.
+        if (session->state == Impl::SessionState::Running) {
+            response = SessionError(parsed.id, kErrorTargetRunning,
+                                    "Target must be stopped before reading its memory accesses", "TARGET_RUNNING", session);
+        } else if (session->state == Impl::SessionState::Exited) {
+            response = SessionError(parsed.id, kErrorCapabilityUnavailable, "Target has exited", "TARGET_EXITED", session);
+        } else {
+            const std::shared_ptr<Impl::AdapterOperation> operation(new Impl::AdapterOperation());
+            const std::string session_id = session->id;
+            if (SubmitEmulationCommandLocked(impl, [impl, operation](const std::uint64_t) {
+                    AgentRuntime& adapter = *impl->runtime;
+                    std::string adapter_error;
+                    std::vector<MemoryAccess> accesses;
+                    std::uint32_t dropped = 0;
+                    const bool success = adapter.ReadMemoryAccesses(&accesses, &dropped, &adapter_error);
+                    {
+                        std::lock_guard<std::mutex> operation_lock(operation->mutex);
+                        operation->success = success;
+                        operation->error = adapter_error;
+                        operation->accesses.swap(accesses);
+                        operation->dropped = dropped;
+                        operation->done = true;
+                    }
+                    operation->completed.notify_all();
+                }) == 0) {
+                response = Error(parsed.id, kErrorCapabilityUnavailable,
+                                 "Emulation-thread bridge is unavailable", "COMMAND_REJECTED");
+            } else {
+                std::unique_lock<std::mutex> operation_lock(operation->mutex);
+                lock.unlock();
+                const bool completed = operation->completed.wait_for(operation_lock,
+                        std::chrono::milliseconds(impl->config.request_timeout_ms),
+                        [operation]() { return operation->done; });
+                lock.lock();
+                if (!RebindSessionAfterWait(impl, session_id, &session, &response, parsed.id))
+                    return response;
+                if (!completed) {
+                    response = Error(parsed.id, kErrorOperationTimeout,
+                                     "Timed out waiting for memory.accesses on the emulation thread", "OPERATION_TIMEOUT");
+                } else if (!operation->success) {
+                    response = Error(parsed.id, kErrorCapabilityUnavailable,
+                                     operation->error.empty() ? "The memory access log is unavailable" : operation->error, "CAPABILITY_UNAVAILABLE");
+                } else {
+                    JsonValue result = SessionResult(*session);
+                    JsonValue accesses = JsonValue::Array();
+                    for (std::size_t i = 0; i < operation->accesses.size(); ++i) {
+                        const MemoryAccess& a = operation->accesses[i];
+                        JsonValue entry = JsonValue::Object();
+                        Add(&entry, "address", String(Hex32(a.address)));
+                        Add(&entry, "size", Number(a.size));
+                        Add(&entry, "kind", String(a.write ? "write" : "read"));
+                        Add(&entry, "cs", String(Hex16(a.cs)));
+                        Add(&entry, "ip", String(Hex32(a.instruction_pointer)));
+                        accesses.array.push_back(entry);
+                    }
+                    Add(&result, "accesses", accesses);
+                    Add(&result, "dropped", Number(operation->dropped));
+                    response = AGENT_MakeJsonRpcResult(parsed.id, result);
                 }
             }
         }
@@ -2561,7 +2635,7 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
             }
         }
     } else if (parsed.method == "state.get_registers" || parsed.method == "memory.read" || parsed.method == "code.disassemble" ||
-               parsed.method == "breakpoints.create" || parsed.method == "breakpoints.list" || parsed.method == "breakpoints.delete" ||
+               parsed.method == "memory.accesses" || parsed.method == "breakpoints.create" || parsed.method == "breakpoints.list" || parsed.method == "breakpoints.delete" ||
                parsed.method == "execution.step") {
         if (session->state == Impl::SessionState::Running) {
             response = SessionError(parsed.id, kErrorTargetRunning,

@@ -1114,6 +1114,23 @@ bool DEBUG_AgentStep(bool over, bool* continued)
 
 	DEBUG_AgentClearLastBreakpoint();
 	DrawRegistersUpdateOld();
+	DEBUG_AgentMemLogStart();
+
+	/* A callback instruction is a DOS/BIOS service written in C++. Stepping it
+	 * with the core only hands its index back (the service never runs, and a
+	 * step into INT 21h would silently skip the whole DOS call), so it goes
+	 * through the normal loop, which runs callbacks, with a breakpoint after
+	 * it — a step over, whichever step was asked for. */
+	char dline[200];
+	DasmI386(dline, (PhysPt)GetAddress(SegValue(cs),reg_eip), reg_eip, cpu.code.big);
+	if (strncmp(dline, "callback", 8) == 0 && StepOver()) {
+		skipFirstInstruction = true;
+		CBreakpoint::ActivateBreakpoints();
+		DOSBOX_SetNormalLoop();
+		*continued = true;
+		return true; // the log stays on until the breakpoint after it stops the target
+	}
+
 	if (over && StepOver()) {
 		mustCompleteInstruction = true;
 		inhibit_int_breakpoint = true;
@@ -1121,13 +1138,14 @@ bool DEBUG_AgentStep(bool over, bool* continued)
 		inhibit_int_breakpoint = false;
 		mustCompleteInstruction = false;
 		*continued = true;
-		return true;
+		return true; // the log stays on until the breakpoint after the call stops the target
 	}
 
 	exitLoop = false;
 	mustCompleteInstruction = true;
 	DEBUG_Run(1,true);
 	mustCompleteInstruction = false;
+	DEBUG_AgentMemLogStop();
 	*continued = false;
 	return true;
 }
@@ -2927,7 +2945,7 @@ bool ParseCommand(char* str) {
 		mainMenu.get_item("debugger_runnormal").check(true).refresh_item(mainMenu);
 		mainMenu.get_item("debugger_runwatch").check(false).refresh_item(mainMenu);
 
-		DOSBOX_SetNormalLoop();	
+		DOSBOX_SetNormalLoop();
 		GFX_SetTitle(-1,-1,-1,is_paused);
 		return true;
 	}
@@ -6159,6 +6177,9 @@ void DEBUG_CheckExecuteBreakpoint(uint16_t seg, uint32_t off)
 Bitu DEBUG_EnableDebugger(void)
 {
 	exitLoop = true;
+#if defined(C_DOSBOX_AGENT) && defined(C_HEAVY_DEBUG)
+	DEBUG_AgentMemLogStop(); // the target stopped: what the agent reads from now on is not the program's
+#endif
 
 	if (!debugging || (debugging && debug_running))
 		DEBUG_Enable_Handler(true);
@@ -6584,6 +6605,42 @@ void DEBUG_HeavyLogInstruction(void) {
 }
 
 #if defined(C_DEBUG) && defined(C_DOSBOX_AGENT)
+/* The memory access log: bounded, so a long RUN costs a counter at most. */
+static const size_t AGENT_MEMLOG_MAX = 8192;
+bool agent_memlog_active = false;
+static vector<DEBUG_AgentMemAccess> agent_memlog;
+static uint32_t agent_memlog_dropped = 0;
+
+void AGENT_MemLogRecord(const LinearPt address, const uint8_t size, const bool write)
+{
+	if (agent_memlog.size() >= AGENT_MEMLOG_MAX) { agent_memlog_dropped++; return; }
+	DEBUG_AgentMemAccess a;
+	a.address = (uint32_t)address;
+	a.size = size;
+	a.write = write;
+	a.cs = SegValue(cs);
+	a.eip = reg_eip;
+	agent_memlog.push_back(a);
+}
+
+void DEBUG_AgentMemLogStart(void)
+{
+	agent_memlog.clear();
+	agent_memlog_dropped = 0;
+	agent_memlog_active = true;
+}
+
+void DEBUG_AgentMemLogStop(void)
+{
+	agent_memlog_active = false;
+}
+
+void DEBUG_AgentMemLogCopy(vector<DEBUG_AgentMemAccess>* accesses, uint32_t* dropped)
+{
+	if (accesses != nullptr) *accesses = agent_memlog;
+	if (dropped != nullptr) *dropped = agent_memlog_dropped;
+}
+
 bool DEBUG_AgentStartTrace(const uint32_t instruction_count)
 {
 	if (instruction_count == 0 || agent_trace_active)

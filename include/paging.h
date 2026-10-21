@@ -438,13 +438,24 @@ static INLINE PhysPt64 PAGING_GetPhysicalAddress64(const LinearPt linAddr) {
 
 /* Special inlined memory reading/writing */
 
-static INLINE uint8_t mem_readb_inline(const LinearPt address) {
+#if defined(C_DOSBOX_AGENT) && defined(C_HEAVY_DEBUG)
+/* The debugger agent's memory access log: while a session steps or runs, every data
+ * read and write goes to a bounded list the web machine view reads after the stop.
+ * Code fetches use the _raw variants and stay out of it. Off: one predictable branch. */
+extern bool agent_memlog_active;
+void AGENT_MemLogRecord(LinearPt address, uint8_t size, bool write);
+#define AGENT_MEMLOG(address,size,write) do { if (agent_memlog_active) AGENT_MemLogRecord((address),(size),(write)); } while (0)
+#else
+#define AGENT_MEMLOG(address,size,write) do { } while (0)
+#endif
+
+static INLINE uint8_t mem_readb_inline_raw(const LinearPt address) {
 	const HostPt tlb_addr=get_tlb_read(address);
 	if (tlb_addr) return host_readb(tlb_addr+address);
 	else return (uint8_t)(get_tlb_readhandler(address))->readb(address);
 }
 
-static INLINE uint16_t mem_readw_inline(const LinearPt address) {
+static INLINE uint16_t mem_readw_inline_raw(const LinearPt address) {
 	if ((address & 0xfff)<0xfff) {
 		const HostPt tlb_addr=get_tlb_read(address);
 		if (tlb_addr) return host_readw(tlb_addr+address);
@@ -452,7 +463,7 @@ static INLINE uint16_t mem_readw_inline(const LinearPt address) {
 	} else return mem_unalignedreadw(address);
 }
 
-static INLINE uint32_t mem_readd_inline(const LinearPt address) {
+static INLINE uint32_t mem_readd_inline_raw(const LinearPt address) {
 	if ((address & 0xfff)<0xffd) {
 		const HostPt tlb_addr=get_tlb_read(address);
 		if (tlb_addr) return host_readd(tlb_addr+address);
@@ -460,13 +471,30 @@ static INLINE uint32_t mem_readd_inline(const LinearPt address) {
 	} else return mem_unalignedreadd(address);
 }
 
+static INLINE uint8_t mem_readb_inline(const LinearPt address) {
+	AGENT_MEMLOG(address,1,false);
+	return mem_readb_inline_raw(address);
+}
+
+static INLINE uint16_t mem_readw_inline(const LinearPt address) {
+	AGENT_MEMLOG(address,2,false);
+	return mem_readw_inline_raw(address);
+}
+
+static INLINE uint32_t mem_readd_inline(const LinearPt address) {
+	AGENT_MEMLOG(address,4,false);
+	return mem_readd_inline_raw(address);
+}
+
 static INLINE void mem_writeb_inline(const LinearPt address,const uint8_t val) {
+	AGENT_MEMLOG(address,1,true);
 	const HostPt tlb_addr=get_tlb_write(address);
 	if (tlb_addr) host_writeb(tlb_addr+address,val);
 	else (get_tlb_writehandler(address))->writeb(address,val);
 }
 
 static INLINE void mem_writew_inline(const LinearPt address,const uint16_t val) {
+	AGENT_MEMLOG(address,2,true);
 	if ((address & 0xfffu)<0xfffu) {
 		const HostPt tlb_addr=get_tlb_write(address);
 		if (tlb_addr) host_writew(tlb_addr+address,val);
@@ -475,6 +503,7 @@ static INLINE void mem_writew_inline(const LinearPt address,const uint16_t val) 
 }
 
 static INLINE void mem_writed_inline(const LinearPt address,const uint32_t val) {
+	AGENT_MEMLOG(address,4,true);
 	if ((address & 0xfffu)<0xffdu) {
 		const HostPt tlb_addr=get_tlb_write(address);
 		if (tlb_addr) host_writed(tlb_addr+address,val);
