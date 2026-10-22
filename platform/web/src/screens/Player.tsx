@@ -108,7 +108,8 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   // JSON-RPC calls to the debugger agent ride the player socket: id -> settler.
   const rpcWaiters = useRef(new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>())
-  const rpcSeq = useRef(0)
+  // Request ids start at a random point: the agent remembers ids with their payloads, so a reload must not reuse old ones.
+  const rpcSeq = useRef(Math.floor(Math.random() * 0x40000000))
   const [captured, setCaptured] = useState(false)
   const [focused, setFocused] = useState(false)
   const [generation, setGeneration] = useState(0) // bump to restart polling/connecting
