@@ -227,7 +227,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
             const w = rpcWaiters.current.get(Number(resp.id))
             if (w) {
               rpcWaiters.current.delete(Number(resp.id))
-              if (resp.error) w.reject(new Error(resp.error.message ?? 'rpc error'))
+              if (resp.error) w.reject(Object.assign(new Error(resp.error.message ?? 'rpc error'), { data: resp.error.data }))
               else w.resolve(resp.result)
             }
           } else if (m.type === 'pong') {

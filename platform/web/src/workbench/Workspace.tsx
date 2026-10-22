@@ -5,6 +5,7 @@ import type { RPC } from '../screens/DebugPanel'
 import type { EditorDebug, EditorHandle } from '../screens/Editor'
 import type { Step } from '../screens/Console'
 import { Terminal, type TerminalHandle } from '../screens/Terminal'
+import { pressKeys } from '../api/client'
 import { FilesTab } from './FilesTab'
 import { GuidePanel } from './GuidePanel'
 import { InterruptsPanel } from './InterruptsPanel'
@@ -96,8 +97,21 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   // The variable values on show, for the editor's hover.
   const valuesRef = useRef<VarValue[]>([])
   const onValues = useCallback((values: VarValue[]) => { valuesRef.current = values }, [])
-  // The line of the frame chosen in the Variables panel, for the editor to mark when IP is outside the program.
+  // The frame chosen in the Variables panel: its line for the editor to mark when IP is outside the program,
+  // its address for Stop to bring the program back to before terminating it.
   const [frameLine, setFrameLine] = useState<number | null>(null)
+  const frameIp = useRef<number | null>(null)
+  const onFrame = useCallback((line: number | null, ip: number | null) => { setFrameLine(line); frameIp.current = ip }, [])
+  // A program waiting for a key gets Enter, then Escape, then a space, so it comes back to its own code to be ended.
+  const nudge = useCallback((attempt: number) => pressKeys(boxId, ['enter', 'esc', 'space'][attempt] ?? 'enter'), [boxId])
+  const stopProgram = useCallback(() => dbg.stop(frameIp.current ?? undefined, nudge), [dbg.stop, nudge])
+  const startProgram = useCallback((command: string) => dbg.start(command, nudge), [dbg.start, nudge])
+  // The shell's input line was interrupted by the program: an Enter brings the prompt back, as after any session.
+  const endOrphan = useCallback(async () => {
+    const ended = await dbg.endOrphan(nudge)
+    if (ended) setTimeout(() => { terminalRef.current?.run('').catch(() => undefined) }, 300)
+    return ended
+  }, [dbg.endOrphan, nudge, terminalRef])
   const lookupValue = useCallback((name: string) => {
     const v = valuesRef.current.find((x) => x.name === name) ?? valuesRef.current.find((x) => x.name.toLowerCase() === name.toLowerCase())
     return v ? `${v.value}  ·  ${v.type}` : undefined
@@ -183,8 +197,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const debug: EditorDebug = useMemo(() => ({
     // "running" covers a step in progress too (a line step is many short runs), so pause stays put and can halt it.
     active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && (!dbg.stopped || dbg.busy), busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, entryCs: dbg.entryCs, breakpoints: dbg.breakpoints,
-    toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: dbg.stop, runTo: dbg.runTo,
-  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, dbg.stop, dbg.runTo])
+    toggleBreakpoint: dbg.toggleBreakpoint, start: startProgram, endOrphan, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: stopProgram, runTo: dbg.runTo,
+  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, startProgram, endOrphan, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, stopProgram, dbg.runTo])
 
   // When a session ends, the program's output sits on the prompt line: an Enter gives DOS a fresh prompt,
   // so the next build (and the sidecar's prompt check) finds it.
@@ -218,7 +232,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'machine':
         return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
       case 'vars':
-        return symbols ? <VariablesPanel dbg={dbg} tds={symbols.tds} source={symbols.source} onValues={onValues} onFrame={setFrameLine} /> : <div className="muted">no symbols</div>
+        return symbols ? <VariablesPanel dbg={dbg} tds={symbols.tds} source={symbols.source} onValues={onValues} onFrame={onFrame} /> : <div className="muted">no symbols</div>
     }
     return <div className="muted">?</div>
   }

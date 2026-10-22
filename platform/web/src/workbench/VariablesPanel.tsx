@@ -17,8 +17,8 @@ interface Props {
   source: string
   /** The values on show, for the editor's hover. */
   onValues?: (values: VarValue[]) => void
-  /** The chosen frame's source line (null when none), for the editor to mark. */
-  onFrame?: (line: number | null) => void
+  /** The chosen frame's source line and address (null when none): the editor marks the line, Stop returns to the address. */
+  onFrame?: (line: number | null, ip: number | null) => void
 }
 
 export function VariablesPanel({ dbg, tds, source, onValues, onFrame }: Props) {
@@ -31,7 +31,7 @@ export function VariablesPanel({ dbg, tds, source, onValues, onFrame }: Props) {
   const [note, setNote] = useState('')
   const previous = useRef(new Map<string, string>())
   const globalSyms = useMemo(() => globalsOf(tds, source), [tds, source])
-  const inProgram = !!regs && entryCs !== null && (parseInt(cs, 16) & 0xffff) === entryCs
+  const inProgram = !!regs && entryCs !== null && dbg.inProgram(parseInt(cs, 16) & 0xffff, regs)
 
   // A new stop: the stack from here (walked from BP even inside the runtime or DOS, since their frames link back
   // into the program's), the innermost frame of ours chosen.
@@ -49,14 +49,15 @@ export function VariablesPanel({ dbg, tds, source, onValues, onFrame }: Props) {
       setNote(inProgram ? '' : 'paused outside the program (the runtime, DOS or the BIOS): the nearest frame of yours is shown')
     })()
     return () => { cancelled = true }
-  }, [stopped, regs, ip, entryCs, inProgram, tds, dbg.readMemory])
+  }, [stopped, regs, ip, entryCs, inProgram, tds, dbg.readMemory]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The chosen frame's line, for the editor; none once the panel goes.
   useEffect(() => {
     const f = frames[chosen]
-    onFrame?.(f && f.fn !== null ? lineForOffset(lineMap, f.ip) : null)
+    if (f && f.fn !== null) onFrame?.(lineForOffset(lineMap, f.ip), f.ip)
+    else onFrame?.(null, null)
   }, [frames, chosen, lineMap]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => onFrame?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onFrame?.(null, null), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The chosen frame's locals and the globals.
   useEffect(() => {
