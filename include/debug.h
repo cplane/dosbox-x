@@ -40,6 +40,8 @@ bool DEBUG_AgentCreateMemoryBreakpoint(uint16_t seg, uint32_t off, bool protecte
 bool DEBUG_AgentDeleteBreakpoint(uintptr_t handle);
 uintptr_t DEBUG_AgentConsumeLastBreakpoint(void);
 void DEBUG_AgentClearLastBreakpoint(void);
+/* Every breakpoint the debugger holds, the agent's and leftovers alike: a session starts from none. */
+void DEBUG_AgentDeleteAllBreakpoints(void);
 bool DEBUG_AgentBeginOutputCapture(void);
 std::string DEBUG_AgentEndOutputCapture(void);
 #if C_HEAVY_DEBUG
