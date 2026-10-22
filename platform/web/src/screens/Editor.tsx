@@ -179,6 +179,12 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
 }
 
 /** The one step the console types for a build. */
+/** A Pascal source whose first word is `unit`: it builds to a .TPU, there is no program to run. */
+export function isPascalUnit(text: string): boolean {
+  const body = text.replace(/\{[^}]*\}|\(\*[\s\S]*?\*\)/g, ' ')
+  return /^\s*unit\b/i.test(body)
+}
+
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
 // The variable hover: one provider for all editors, asking whichever editor is current.
@@ -324,15 +330,17 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     if (!path || !running) return
     if (!(await endWhatRuns())) return
     if (dirty && !(await save())) return
-    setStatus('running…')
+    const unit = lang === 'pas' && isPascalUnit(editorRef.current?.getValue() ?? text)
+    setStatus(unit ? 'building the unit…' : 'running…')
     try {
-      await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles))
+      await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles, { run: !unit, listing: false }))
       await writeTextFile(boxId, '$FAIL.COM', FAIL_COM)
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
       return
     }
     const ok = await onRun(buildSteps)
+    if (unit) { setStatus(ok ? `${split(path)[1]} is a unit (nothing to run): built` : 'failed (see the console)'); return }
     setStatus(ok ? (look === 'paper' ? 'running in the terminal' : 'done') : 'failed (see the console)')
   }
 
@@ -380,6 +388,10 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     if (dirty && !(await save())) return
     const [dir, name] = split(path)
     const base = name.replace(/\.[^.]*$/, '')
+    if (lang === 'pas' && isPascalUnit(editorRef.current?.getValue() ?? text)) {
+      setStatus(`${name} is a unit, not a program: open the program that uses it and debug that`)
+      return
+    }
     setStatus('building…')
     try {
       await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles, { run: false, listing: true }))
@@ -398,7 +410,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           if (tds) { const map = lineMapFromTds(tds); setLineMap(map); lineMapRef.current = map }
           else setStatus('no debug symbols in the EXE; stepping by instruction')
         } catch {
-          setStatus('could not read the EXE; stepping by instruction')
+          setStatus(`the build produced no ${base}.EXE (a unit, or a different output name?)`)
+          return
         }
       }
       onSymbols?.(tds, text)
