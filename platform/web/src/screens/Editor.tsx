@@ -29,6 +29,8 @@ export interface EditorDebug {
   cont: () => void
   pause: () => void
   stop: () => void
+  /** Run to a code offset (a one-shot breakpoint). */
+  runTo: (offset: number) => Promise<void>
 }
 
 // The media-style debug buttons.
@@ -379,15 +381,28 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       const mapped = lineMapRef.current?.lineOf.size ?? 0
       setStatus(mapped ? `debugging ${base} · ${mapped} lines mapped` : `debugging ${base} · no line map, stepping by instruction`)
       await debug.start(exe)
-      await new Promise((r) => setTimeout(r, 0)) // let the session state land
+      // Let the session state land (a few renders may be needed before the live debugger shows it stopped).
+      for (let i = 0; i < 30 && !(debugRef.current?.active && debugRef.current.stopped && debugRef.current.ip !== null); i++) await new Promise((r) => setTimeout(r, 100))
       if (!debugRef.current?.active) { setStatus(debugRef.current?.error ? `debugger: ${debugRef.current.error}` : 'the debugger did not start'); return }
-      // The breakpoints set in the gutter beforehand, now that lines map to code.
+      // The breakpoints set in the gutter beforehand, now that lines map to code (through the live debugger, not
+      // the one captured when this started).
       const map = lineMapRef.current
       const lines = pendingRef.current[path]
+      let armed = 0
       if (map && lines) {
         for (const line of lines) {
           const off = map.offsetOf.get(line)
-          if (off !== undefined) await debug.toggleBreakpoint(off)
+          if (off !== undefined) { await debugRef.current?.toggleBreakpoint(off); armed++ }
+        }
+      }
+      // Stopped in the runtime before any line of ours: on to the first breakpoint when there is one, else to main's first line.
+      const d = debugRef.current
+      if (map && d?.stopped && d.ip !== null && lineForOffset(map, d.ip) === null) {
+        if (armed > 0) d.cont()
+        else if (tds) {
+          const mainSym = tds.symbols.find((s) => s.seg === 0 && /^_?main$/i.test(s.name))
+          const first = mainSym ? [...map.lineOf.keys()].filter((o) => o >= mainSym.offset).sort((a, b) => a - b)[0] : undefined
+          if (first !== undefined) await d.runTo(first)
         }
       }
     } catch (err) {
@@ -395,8 +410,13 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     }
   }
 
-  // A debugger error shows in the status line, where the build errors show.
+  // A debugger error shows in the status line, where the build errors show; so does the end of a session.
   useEffect(() => { if (debug?.error) setStatus(`debugger: ${debug.error}`) }, [debug?.error])
+  const wasActive = useRef(false)
+  useEffect(() => {
+    if (debug?.active) wasActive.current = true
+    else if (wasActive.current) { wasActive.current = false; setStatus('debugging ended') }
+  }, [debug?.active])
 
   // CS at the program's entry (the load segment): the symbols' and the listing's offsets are relative to it; elsewhere
   // (DOS, the BIOS, a Pascal unit's segment) no line applies.

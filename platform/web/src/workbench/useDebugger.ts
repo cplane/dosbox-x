@@ -165,6 +165,8 @@ export function useDebugger(rpc: RPC): Debugger {
   regsRef.current = regs
   const bpsRef = useRef<Map<number, string>>(new Map())
   bpsRef.current = bps
+  const csRef = useRef('')
+  csRef.current = cs
   const windowRef = useRef<{ seg: string; start: number; end: number; lines: DisLine[] } | null>(null)
   const [mem, setMem] = useState<MemWindow | null>(null)
   const [stack, setStack] = useState<MemWindow | null>(null)
@@ -270,10 +272,28 @@ export function useDebugger(rpc: RPC): Debugger {
     }
   }, [rpc])
 
+  // No session: everything the view showed goes.
+  const clear = useCallback(() => {
+    playRef.current.on = false
+    setPlaying(false)
+    setSession(null)
+    setRegs(null)
+    setPrevRegs(null)
+    setLines([])
+    setBps(new Map())
+    setMem(null)
+    setStack(null)
+    setAccesses(null)
+    setRecording(null)
+    setEntryCs(null)
+    windowRef.current = null
+  }, [])
+
   const afterStop = useCallback(async (next: Session) => {
+    if (next.state === 'exited') { clear(); return } // the program ended: nothing is left to look at
     setSession(next)
     if (next.state === 'stopped') await refresh(next)
-  }, [refresh])
+  }, [refresh, clear])
 
   const start = useCallback((command: string) => guard(async () => {
     const [cmd, ...args] = command.trim().split(/\s+/)
@@ -383,48 +403,38 @@ export function useDebugger(rpc: RPC): Debugger {
         await waitOp(s, op.operation_id)
       } catch { /* the session may already be gone (the program ended as it was stopped) */ }
     }
-    playRef.current.on = false
-    setPlaying(false)
-    setSession(null)
-    setRegs(null)
-    setPrevRegs(null)
-    setLines([])
-    setBps(new Map())
-    setMem(null)
-    setStack(null)
-    setAccesses(null)
-    setRecording(null)
-    setEntryCs(null)
-    windowRef.current = null
-  }), [guard, rpc, waitOp])
+    clear()
+  }), [guard, rpc, waitOp, clear])
 
   const toggleBreakpoint = useCallback((offset: number) => guard(async () => {
+    // The live CS and breakpoints (refs): a caller may hold this function from before the session started.
     const s = sessionRef.current
     if (!s || s.state !== 'stopped') return
-    const id = bps.get(offset)
+    const id = bpsRef.current.get(offset)
     if (id) {
       await rpc('breakpoints.delete', { session_id: s.session_id, breakpoint_id: id })
       setBps((b) => { const n = new Map(b); n.delete(offset); return n })
     } else {
       const r = (await rpc('breakpoints.create', {
         session_id: s.session_id, kind: 'execution',
-        address: { space: 'segmented', segment: seg4(cs), offset: off8(offset) },
+        address: { space: 'segmented', segment: seg4(csRef.current), offset: off8(offset) },
       })) as { breakpoint_id: string }
       setBps((b) => new Map(b).set(offset, r.breakpoint_id))
+      bpsRef.current = new Map(bpsRef.current).set(offset, r.breakpoint_id)
     }
-  }), [guard, rpc, bps, cs])
+  }), [guard, rpc])
 
   const runTo = useCallback((offset: number) => guard(async () => {
     const s = sessionRef.current
     if (!s || s.state !== 'stopped') return
     await rpc('breakpoints.create', {
       session_id: s.session_id, kind: 'execution', once: true,
-      address: { space: 'segmented', segment: seg4(cs), offset: off8(offset) },
+      address: { space: 'segmented', segment: seg4(csRef.current), offset: off8(offset) },
     })
     const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
     setSession({ ...s, state: 'running' })
     await afterStop(await waitOp(s, op.operation_id))
-  }), [guard, rpc, cs, waitOp, afterStop])
+  }), [guard, rpc, waitOp, afterStop])
 
   // Play: step on a timer until paused, a breakpoint, or the program ends.
   const pausePlay = useCallback(() => { playRef.current.on = false; setPlaying(false) }, [])
