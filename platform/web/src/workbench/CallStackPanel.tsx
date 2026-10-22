@@ -15,7 +15,7 @@ export function CallStackPanel({ values, stopped }: { values: DebugValues; stopp
       {frames.length === 0 && stopped && <p className="muted small">no frames</p>}
       <div className="calls-list">
         {frames.map((f, i) => {
-          const line = lineForOffset(lineMap, f.ip)
+          const line = lineForOffset(lineMap, f.at)
           return (
             <button key={i} className={`calls-frame ${i === chosen ? 'on' : ''}`} onClick={() => setChosen(i)} title={`${f.ip.toString(16).toUpperCase().padStart(4, '0')} · BP ${f.bp.toString(16).toUpperCase().padStart(4, '0')}`}>
               <span className="calls-depth muted">{i}</span>

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -183,6 +184,69 @@ func (s *Server) handleFilePut(w http.ResponseWriter, r *http.Request, _ auth.Id
 		code = http.StatusCreated
 	}
 	writeJSON(w, code, resp)
+}
+
+// POST /api/boxes/{id}/files/<path> {"op": "mkdir"} or {"op": "rename", "to": "<path>"}: make a folder
+// (its parents too), or rename / move a file or folder within C:. Neither may replace something that exists.
+func (s *Server) handleFileOp(w http.ResponseWriter, r *http.Request, _ auth.Identity, b *Box) {
+	hp, err := s.cPath(b, r.PathValue("path"))
+	if err != nil || hp == s.cDir(b.ID) {
+		httpErr(w, http.StatusBadRequest, "bad path")
+		return
+	}
+	var req struct {
+		Op string `json:"op"`
+		To string `json:"to"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		httpErr(w, http.StatusBadRequest, "bad request: %v", err)
+		return
+	}
+	defer s.lockBox(b)()
+	switch req.Op {
+	case "mkdir":
+		if _, err := os.Lstat(hp); err == nil {
+			httpErr(w, http.StatusConflict, "%s already exists", r.PathValue("path"))
+			return
+		}
+		if err := os.MkdirAll(hp, 0o755); err != nil {
+			httpErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+	case "rename":
+		to, err := s.cPath(b, req.To)
+		if err != nil || to == s.cDir(b.ID) {
+			httpErr(w, http.StatusBadRequest, "bad target path")
+			return
+		}
+		if _, err := os.Lstat(hp); errors.Is(err, fs.ErrNotExist) {
+			httpErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		// Only a change of case may name something that "exists" (DOS names are case-blind).
+		if _, err := os.Lstat(to); err == nil && !strings.EqualFold(hp, to) {
+			httpErr(w, http.StatusConflict, "%s already exists", req.To)
+			return
+		}
+		if rel, err := filepath.Rel(hp, to); err == nil && filepath.IsLocal(rel) && rel != "." {
+			httpErr(w, http.StatusBadRequest, "a folder cannot move into itself")
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			httpErr(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if err := os.Rename(hp, to); err != nil {
+			httpErr(w, http.StatusConflict, "%v", err)
+			return
+		}
+	default:
+		httpErr(w, http.StatusBadRequest, "unknown op %q", req.Op)
+		return
+	}
+	s.touch(b.ID)
+	s.rescan(r.Context(), b.ID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // DELETE /api/boxes/{id}/files/<path>[?recursive=1]

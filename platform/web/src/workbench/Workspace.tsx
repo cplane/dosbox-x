@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Actions, BorderNode, DockLocation, Layout, Model, RowNode, TabNode, TabSetNode, type Action, type IJsonModel } from 'flexlayout-react'
+import { Actions, BorderNode, DockLocation, I18nLabel, Layout, Model, RowNode, TabNode, TabSetNode, type Action, type IJsonModel } from 'flexlayout-react'
 import 'flexlayout-react/style/light.css'
 import type { RPC } from '../screens/DebugPanel'
 import type { EditorDebug, EditorHandle } from '../screens/Editor'
@@ -28,7 +28,11 @@ import { VariablesPanel } from './VariablesPanel'
 
 const Editor = lazy(() => import('../screens/Editor').then((m) => ({ default: m.Editor })))
 
-const LAYOUT_KEY = 'dosbox.layout.v4'
+// Two layouts, each kept as the user leaves it: one for writing code, one for debugging it (the workspace
+// switches when a debug session starts and when it ends).
+type Mode = 'edit' | 'debug'
+const LAYOUT_KEYS: Record<Mode, string> = { edit: 'dosbox.layout.edit.v5', debug: 'dosbox.layout.debug.v5' }
+const OLD_LAYOUT_KEY = 'dosbox.layout.v4' // the single layout before the split: the edit layout starts from it
 
 const defaultLayout: IJsonModel = {
   global: { tabEnableClose: true, tabSetEnableMaximize: true, splitterSize: 6, tabEnableRenderOnDemand: true },
@@ -56,6 +60,44 @@ const defaultLayout: IJsonModel = {
     ],
   },
 }
+
+// Debugging: the files narrow, the editor over the terminal, and on the right what the program is doing:
+// variables, watches and the machine above, the call stack below.
+const debugLayout: IJsonModel = {
+  global: defaultLayout.global,
+  borders: [{ type: 'border', location: 'bottom', size: 320, children: [] }],
+  layout: {
+    type: 'row',
+    children: [
+      { type: 'tabset', id: 'left', weight: 14, children: [{ type: 'tab', id: 'files', name: 'Files', component: 'files', enableClose: false }] },
+      {
+        type: 'row', weight: 52,
+        children: [
+          { type: 'tabset', id: 'main', weight: 68, children: [{ type: 'tab', id: 'editor', name: 'Editor', component: 'editor', enableClose: false }] },
+          { type: 'tabset', id: 'bottom', weight: 32, children: [{ type: 'tab', id: 'terminal', name: 'Terminal', component: 'terminal', enableClose: false }] },
+        ],
+      },
+      {
+        type: 'row', weight: 34,
+        children: [
+          {
+            type: 'tabset', id: 'side', weight: 62, selected: 0,
+            children: [
+              { type: 'tab', id: 'vars', name: 'Variables', component: 'vars' },
+              { type: 'tab', id: 'watch', name: 'Watch', component: 'watch' },
+              { type: 'tab', id: 'machine', name: 'Machine', component: 'machine' },
+              { type: 'tab', id: 'memmap', name: 'Memory map', component: 'memmap' },
+              { type: 'tab', id: 'ints', name: 'Interrupts', component: 'ints' },
+              { type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' },
+            ],
+          },
+          { type: 'tabset', id: 'stack', weight: 38, children: [{ type: 'tab', id: 'calls', name: 'Call stack', component: 'calls' }] },
+        ],
+      },
+    ],
+  },
+}
+const DEFAULTS: Record<Mode, IJsonModel> = { edit: defaultLayout, debug: debugLayout }
 
 /**
  * Where a collapsed tab comes back: next to the tab `with` (into its group for `center`, else in a new group on
@@ -120,13 +162,15 @@ function defaultSpot(model: Model, id: string): Spot {
 
 const SIDE = ['guide', 'ints', 'memmap', 'machine', 'vars', 'watch']
 
-function loadModel(): Model {
+function loadModel(mode: Mode): Model {
   try {
-    const raw = localStorage.getItem(LAYOUT_KEY)
+    const raw = localStorage.getItem(LAYOUT_KEYS[mode]) ?? (mode === 'edit' ? localStorage.getItem(OLD_LAYOUT_KEY) : null)
     if (raw) {
       const m = Model.fromJson(JSON.parse(raw) as IJsonModel)
-      if (m.getNodeById('machine')) m.doAction(Actions.deleteTab('machine')) // only while a program runs
-      for (const id of ['vars', 'watch', 'calls']) if (m.getNodeById(id)) m.doAction(Actions.deleteTab(id)) // only while debugging
+      if (mode === 'edit') {
+        if (m.getNodeById('machine')) m.doAction(Actions.deleteTab('machine')) // only while a program runs
+        for (const id of ['vars', 'watch', 'calls']) if (m.getNodeById(id)) m.doAction(Actions.deleteTab(id)) // only while debugging
+      }
       // Empty groups kept by an earlier version of collapsing: they only take space.
       const empty: string[] = []
       m.visitNodes((n) => { if (n instanceof TabSetNode && n.getChildren().length === 0) empty.push(n.getId()) })
@@ -134,7 +178,7 @@ function loadModel(): Model {
       if (m.getNodeById('editor') && m.getNodeById('files') && m.getNodeById('terminal')) return m
     }
   } catch { /* a stale or broken layout: start over */ }
-  return Model.fromJson(defaultLayout)
+  return Model.fromJson(DEFAULTS[mode])
 }
 
 interface Props {
@@ -165,7 +209,15 @@ export interface WorkbenchHandoff {
 }
 
 export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey, subscribeHeat, setHeat, handoff }: Props) {
-  const [model, setModel] = useState<Model>(loadModel)
+  // Debugging from the moment Start is pressed (the build runs in the debug layout) until the session ends.
+  const [startingDebug, setStartingDebug] = useState(false)
+  const mode: Mode = dbg.session || startingDebug ? 'debug' : 'edit'
+  const [layout, setLayout] = useState<{ mode: Mode; model: Model }>(() => ({ mode, model: loadModel(mode) }))
+  useEffect(() => {
+    // The layout being left was saved as it changed (onModelChange); the other comes back as it was left.
+    if (layout.mode !== mode) setLayout({ mode, model: loadModel(mode) })
+  }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  const model = layout.model
   const editorRef = useRef<EditorHandle | null>(null)
   useEffect(() => {
     if (!handoff) return
@@ -194,6 +246,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const nudge = useCallback((attempt: number) => pressKeys(boxId, ['enter', 'esc', 'space'][attempt] ?? 'enter'), [boxId])
   const stopProgram = useCallback(() => dbg.stop(frameIp.current ?? undefined, nudge), [dbg.stop, nudge])
   const startProgram = useCallback((command: string) => dbg.start(command, nudge), [dbg.start, nudge])
+  const debugStarting = useCallback((on: boolean) => setStartingDebug(on), [])
   // The shell's input line was interrupted by the program: an Enter brings the prompt back, as after any session.
   const endOrphan = useCallback(async () => {
     const ended = await dbg.endOrphan(nudge)
@@ -203,7 +256,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const valuesRef = useRef(values)
   valuesRef.current = values
   const lookupValue = useCallback((name: string) => {
-    const all = [...valuesRef.current.locals, ...valuesRef.current.globals]
+    const all = [...valuesRef.current.locals, ...valuesRef.current.enclosing.flatMap((e) => e.values), ...valuesRef.current.globals]
     const v = all.find((x) => x.name === name) ?? all.find((x) => x.name.toLowerCase() === name.toLowerCase())
     return v ? `${v.value}  ·  ${v.type}` : undefined
   }, [])
@@ -297,8 +350,16 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       const node = model.getNodeById((action.data as { tabNode: string }).tabNode)
       if (node instanceof TabNode && node.getParent() instanceof BorderNode) { restore(node); return undefined }
     }
+    // A tab's × collapses it to the bottom bar rather than dropping it: a panel closed by mistake (or by a click
+    // meant for the overflow menu) is always one click away. In the bar itself, × does nothing.
+    if (action.type === Actions.DELETE_TAB) {
+      const node = model.getNodeById((action.data as { node: string }).node)
+      if (node instanceof TabNode && node.getParent() instanceof TabSetNode) { collapse(node); return undefined }
+      if (node instanceof TabNode && node.getParent() instanceof BorderNode) return undefined
+    }
     return action
   }
+  const i18n = (id: I18nLabel) => (id === I18nLabel.Close_Tab ? 'Collapse to the bottom bar' : undefined)
 
   // Show a tab (adding it back if it was closed) and select it.
   const show = (id: string, name: string, component: string) => {
@@ -323,37 +384,57 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   }
 
   // The Machine tab appears on execution: a debug session, or any program running on the box (live heat).
-  const active = !!dbg.session || (!!program && program.toUpperCase() !== 'COMMAND')
+  const active = mode === 'debug' || (!!program && program.toUpperCase() !== 'COMMAND')
+  // In the edit layout it comes and goes with a running program, and the tab that was selected there before it
+  // is selected again when it goes. Neither effect touches a layout that is about to be swapped out (its mode is
+  // not the current one): what it did would be saved into the wrong layout.
+  const beforeMachine = useRef<string | null>(null)
+  const inSync = layout.mode === mode
   useEffect(() => {
+    if (!inSync) return
     const has = !!model.getNodeById('machine')
     if (active && !has) {
       const target = model.getNodeById('side') ?? model.getNodeById('main')
-      if (target) model.doAction(Actions.addNode({ type: 'tab', id: 'machine', name: 'Machine', component: 'machine' }, target.getId(), DockLocation.CENTER, -1, true))
-    } else if (!active && has) {
+      if (!(target instanceof TabSetNode)) return
+      beforeMachine.current = target.getSelectedNode()?.getId() ?? null
+      model.doAction(Actions.addNode({ type: 'tab', id: 'machine', name: 'Machine', component: 'machine' }, target.getId(), DockLocation.CENTER, -1, true))
+    } else if (!active && has && mode === 'edit') {
       model.doAction(Actions.deleteTab('machine'))
+      const back = beforeMachine.current
+      beforeMachine.current = null
+      if (back && model.getNodeById(back)) model.doAction(Actions.selectTab(back))
     }
-  }, [active, model])
+  }, [active, model, inSync, mode])
   // The debug panels follow a debug session of a program with symbols: Variables and Watch in the side tabset
   // (top right), the Call stack in a tabset of its own below it.
+  // Only once the session is up (while building, the symbols are the previous program's).
   const vars = !!dbg.session && !!symbols
   useEffect(() => {
+    if (!dbg.session || !inSync) return
     const has = !!model.getNodeById('vars')
     if (vars && !has) {
       const side = model.getNodeById('side') ?? model.getNodeById('main')
       if (!side) return
-      model.doAction(Actions.addNode({ type: 'tab', id: 'watch', name: 'Watch', component: 'watch' }, side.getId(), DockLocation.CENTER, -1, false))
-      model.doAction(Actions.addNode({ type: 'tab', id: 'vars', name: 'Variables', component: 'vars' }, side.getId(), DockLocation.CENTER, -1, true))
-      model.doAction(Actions.addNode({ type: 'tab', id: 'calls', name: 'Call stack', component: 'calls' }, side.getId(), DockLocation.BOTTOM, -1, true))
+      model.doAction(Actions.addNode({ type: 'tab', id: 'watch', name: 'Watch', component: 'watch' }, side.getId(), DockLocation.CENTER, 0, false))
+      model.doAction(Actions.addNode({ type: 'tab', id: 'vars', name: 'Variables', component: 'vars' }, side.getId(), DockLocation.CENTER, 0, true))
+      if (!model.getNodeById('calls')) model.doAction(Actions.addNode({ type: 'tab', id: 'calls', name: 'Call stack', component: 'calls' }, side.getId(), DockLocation.BOTTOM, -1, true))
     } else if (!vars && has) {
+      // Assembly: nothing for these to show; the Machine view is the one to look at.
       for (const id of ['vars', 'watch', 'calls']) if (model.getNodeById(id)) model.doAction(Actions.deleteTab(id))
+      if (model.getNodeById('machine')) model.doAction(Actions.selectTab('machine'))
     }
-  }, [vars, model])
+  }, [vars, model, dbg.session, inSync])
+
+  // Step out of the innermost frame: back in its caller (frame 1), once that frame's SP is above frame 0's BP.
+  const caller = values.frames[1]
+  const innermost = values.frames[0]
+  const stepOut = useMemo(() => (caller && innermost ? () => { void dbg.stepOut(caller.ip, innermost.bp) } : undefined), [caller?.ip, innermost?.bp, dbg.stepOut]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const debug: EditorDebug = useMemo(() => ({
     // "running" covers a step in progress too (a line step is many short runs), so pause stays put and can halt it.
     active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && (!dbg.stopped || dbg.busy), busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, entryCs: dbg.entryCs, breakpoints: dbg.breakpoints,
-    toggleBreakpoint: dbg.toggleBreakpoint, start: startProgram, endOrphan, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: stopProgram, runTo: dbg.runTo,
-  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, startProgram, endOrphan, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, stopProgram, dbg.runTo])
+    toggleBreakpoint: dbg.toggleBreakpoint, start: startProgram, endOrphan, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: stopProgram, runTo: dbg.runTo, stepOut, starting: debugStarting,
+  }), [stepOut, debugStarting, dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, startProgram, endOrphan, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, stopProgram, dbg.runTo])
 
   // When a session ends, the program's output sits on the prompt line: an Enter gives DOS a fresh prompt,
   // so the next build (and the sidecar's prompt check) finds it.
@@ -366,7 +447,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const factory = (node: TabNode) => {
     switch (node.getComponent()) {
       case 'files':
-        return <FilesTab boxId={boxId} withEditor={withEditor} selected={path} dir={dir} refreshKey={treeKey} onDir={setDir} />
+        return <FilesTab boxId={boxId} withEditor={withEditor} editor={() => editorRef.current} selected={path} dir={dir} refreshKey={treeKey} onDir={setDir} />
       case 'editor':
         return (
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
@@ -397,8 +478,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   }
 
   const reset = () => {
-    try { localStorage.removeItem(LAYOUT_KEY) } catch { /* ignore */ }
-    setModel(Model.fromJson(defaultLayout))
+    try { localStorage.removeItem(LAYOUT_KEYS[layout.mode]) } catch { /* ignore */ }
+    setLayout({ mode: layout.mode, model: Model.fromJson(DEFAULTS[layout.mode]) })
   }
 
   return (
@@ -408,9 +489,10 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
         factory={factory}
         onRenderTabSet={onRenderTabSet}
         onAction={onAction}
-        onModelChange={(m) => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(m.toJson())) } catch { /* private mode */ } }}
+        i18nMapper={i18n}
+        onModelChange={(m) => { try { localStorage.setItem(LAYOUT_KEYS[layout.mode], JSON.stringify(m.toJson())) } catch { /* private mode */ } }}
       />
-      <button className="ghost workspace-reset" onClick={reset} title="Put the panels back where they started">⟲ layout</button>
+      <button className="ghost workspace-reset" onClick={reset} title={`Put the panels of the ${layout.mode === 'debug' ? 'debugging' : 'editing'} layout back where they started`}>⟲ {layout.mode === 'debug' ? 'debug layout' : 'layout'}</button>
       {available === false && <span className="workspace-note muted small">no debugger on this box (plain image)</span>}
     </div>
   )

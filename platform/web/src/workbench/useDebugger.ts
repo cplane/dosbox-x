@@ -165,6 +165,8 @@ export interface Debugger {
   stop: (returnTo?: number, nudge?: (attempt: number) => Promise<void>) => Promise<void>
   toggleBreakpoint: (offset: number) => Promise<void>
   runTo: (offset: number) => Promise<void>
+  /** Run until the frame whose BP is frameBp has returned to returnIp (its caller). */
+  stepOut: (returnIp: number, frameBp: number) => Promise<void>
 }
 
 export function useDebugger(rpc: RPC): Debugger {
@@ -614,6 +616,33 @@ export function useDebugger(rpc: RPC): Debugger {
     }
   }), [guard, rpc])
 
+  // Step out (Turbo Debugger's "until return"): run to the caller's return address, again and again while the
+  // stop there is a deeper call of the same function returning (recursion) rather than this frame's: this frame
+  // has returned once SP is above its BP. A breakpoint on the way stops it there as usual.
+  const stepOut = useCallback((returnIp: number, frameBp: number) => guard(async () => {
+    for (let round = 0; round < 64; round++) {
+      const s = sessionRef.current
+      if (!s || s.state !== 'stopped') return
+      const bp = (await rpc('breakpoints.create', {
+        session_id: s.session_id, kind: 'execution', once: true,
+        address: { space: 'segmented', segment: seg4(csRef.current), offset: off8(returnIp) },
+      })) as { breakpoint_id: string }
+      const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
+      setSession({ ...s, state: 'running' })
+      const next = await waitOp(s, op.operation_id)
+      if (next.state !== 'stopped') { await afterStop(next); return }
+      const r = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
+      const ip = parseInt(r.instruction_pointer, 16) & 0xffff
+      const sp = parseInt(r.general.esp, 16) & 0xffff
+      if (ip !== returnIp) {
+        // Stopped elsewhere (a breakpoint of the user's): the one-shot one would catch a later run, so it goes.
+        try { await rpc('breakpoints.delete', { session_id: s.session_id, breakpoint_id: bp.breakpoint_id }) } catch { /* already gone */ }
+      }
+      if (ip !== returnIp || sp > frameBp) { await afterStop(next); return }
+      sessionRef.current = next
+    }
+  }), [guard, rpc, waitOp, afterStop])
+
   const runTo = useCallback((offset: number) => guard(async () => {
     const s = sessionRef.current
     if (!s || s.state !== 'stopped') return
@@ -661,6 +690,6 @@ export function useDebugger(rpc: RPC): Debugger {
     cs, entryCs, inProgram, readMemory, lines, breakpoints: bpSet, busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
-    start, endOrphan, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
+    start, endOrphan, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo, stepOut,
   }
 }

@@ -51,6 +51,10 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ bo
     focus() { termRef.current?.focus() },
   }), [boxId])
 
+  // The key handler through a ref: a new one from the parent must not recreate the terminal (and lose what it shows).
+  const onKeyRef = useRef(onKey)
+  onKeyRef.current = onKey
+
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
@@ -76,7 +80,7 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ bo
     termRef.current = term
     // Every key goes to DOS (it echoes); xterm itself types nothing.
     term.attachCustomKeyEventHandler((e) => {
-      if (e.type === 'keydown' || e.type === 'keyup') onKey(e, e.type === 'keydown')
+      if (e.type === 'keydown' || e.type === 'keyup') onKeyRef.current(e, e.type === 'keydown')
       return false
     })
     // What still reaches onData is a paste (or IME text): type it.
@@ -95,7 +99,7 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal({ bo
       term.dispose()
       termRef.current = null
     }
-  }, [boxId, subscribe, onKey])
+  }, [boxId, subscribe])
 
   return (
     <div className={`terminal ${running ? '' : 'stopped'}`}>

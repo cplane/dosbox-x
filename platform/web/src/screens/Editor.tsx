@@ -33,6 +33,10 @@ export interface EditorDebug {
   stop: () => void
   /** Run to a code offset (a one-shot breakpoint). */
   runTo: (offset: number) => Promise<void>
+  /** Run until the current function returns (none when there is no caller to return to). */
+  stepOut?: () => void
+  /** Start begins (true) and is over (false): the workspace shows its debugging layout from the first moment. */
+  starting?: (on: boolean) => void
 }
 
 // The media-style debug buttons.
@@ -44,6 +48,8 @@ const Icon = {
   // Start (build, then debug from the beginning): the plain triangle.
   start: <svg viewBox="0 0 16 16" aria-hidden><path d="M4 2.5v11l9-5.5z" fill="currentColor" /></svg>,
   over: <svg viewBox="0 0 16 16" aria-hidden><path d="M3 8.5a5 5 0 0 1 9.2-2.7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M12.5 2.5v3.6h-3.6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="12.6" r="1.7" fill="currentColor" /></svg>,
+  // Step out: up and out of the function.
+  out: <svg viewBox="0 0 16 16" aria-hidden><path d="M8 10V3.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M5 6l3-3 3 3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="13" r="1.7" fill="currentColor" /></svg>,
   into: <svg viewBox="0 0 16 16" aria-hidden><path d="M8 1.8v7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M5 6l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="13" r="1.7" fill="currentColor" /></svg>,
 }
 
@@ -89,6 +95,10 @@ export interface EditorHandle {
   create: () => void
   /** A new file with this content, in the current folder, unsaved (the guide's examples). */
   createFile: (name: string, text: string) => void
+  /** A file or folder was renamed on the box: open files under it follow. */
+  renamed: (from: string, to: string) => void
+  /** A file or folder was deleted on the box: its open files close (nothing left to save them to). */
+  deleted: (path: string) => void
 }
 
 type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
@@ -248,6 +258,19 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       show(dir ? `${dir}/${name}` : name, content, '\0')
       setStatus('from the guide: Save, then Build & Run or Debug')
     },
+    renamed: (from: string, to: string) => {
+      const move = (x: string) => (x === from ? to : x.startsWith(from + '/') ? to + x.slice(from.length) : x)
+      setDocs((all) => Object.fromEntries(Object.entries(all).map(([k, v]) => [move(k), v])))
+      setOrder((o) => o.map(move))
+      setPath((cur) => (cur ? move(cur) : cur))
+    },
+    deleted: (gone: string) => {
+      const under = (x: string) => x === gone || x.startsWith(gone + '/')
+      const rest = order.filter((x) => !under(x))
+      setDocs((all) => Object.fromEntries(Object.entries(all).filter(([k]) => !under(k))))
+      setOrder(rest)
+      if (path && under(path)) setPath(rest[0] ?? null)
+    },
   }))
   // Every open file: its text as edited and as last saved (a new file's "saved" is '\0', never equal). Tabs in `order`.
   const [docs, setDocs] = useState<Record<string, Doc>>({})
@@ -390,6 +413,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   }
 
   async function debugRun() {
+    debugRef.current?.starting?.(true)
+    try { await debugRunSteps() } finally { debugRef.current?.starting?.(false) }
+  }
+
+  async function debugRunSteps() {
     if (!path || !running || !debug) return
     if (!(await endWhatRuns())) return
     if (dirty && !(await save())) return
@@ -452,9 +480,15 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           if (off !== undefined) { await debugRef.current?.toggleBreakpoint(off); armed++ }
         }
       }
-      // Stopped in the runtime before any line of ours: run on, to the first breakpoint or to the end.
+      // Stopped in the runtime before any line of ours (C's startup code): on to main, as Turbo Debugger does
+      // (a breakpoint on the way stops it first); without a main, to the first breakpoint or the end.
       const d = debugRef.current
-      if (map && d?.stopped && d.ip !== null && lineForOffset(map, d.ip) === null) d.cont()
+      if (map && d?.stopped && d.ip !== null && lineForOffset(map, d.ip) === null) {
+        const main = tds?.symbols.find((s) => (s.name === '_main' || s.name === 'main') && s.seg === 0)
+        const first = main ? [...map.offsetOf.values()].filter((o) => o >= main.offset).sort((a, b) => a - b)[0] : undefined
+        if (first !== undefined) d.runTo(first)
+        else d.cont()
+      }
       void armed
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
@@ -537,6 +571,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     editor.addCommand(monaco.KeyCode.F7, () => stepSourceRef.current('into'))
     editor.addCommand(monaco.KeyCode.F8, () => stepSourceRef.current('over'))
     editor.addCommand(monaco.KeyCode.F9, () => debugRef.current?.cont())
+    editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.F8, () => debugRef.current?.stepOut?.())
     editor.onMouseDown((e) => {
       const t = e.target.type
       if (t !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && t !== monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) return
@@ -605,6 +640,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
                 : <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint or the end (F9)">{Icon.play}</button>}
               <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
               <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
+              <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped || !debug.stepOut} onClick={() => debug.stepOut?.()} title="Step out: run until this function returns (Alt+F8)">{Icon.out}</button>
               <button className="media-btn stop" disabled={!debug.active} onClick={debug.stop} title="Stop debugging (ends the program)">{Icon.stop}</button>
             </span>
           )}
