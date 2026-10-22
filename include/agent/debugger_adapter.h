@@ -49,6 +49,9 @@ struct RegisterSnapshot {
     std::uint32_t instruction_pointer = 0;
     std::uint32_t flags = 0;
     std::string cpu_mode;
+    // The program's memory block (its PSP's): code outside it is the runtime of DOS or the BIOS.
+    std::uint16_t psp = 0;
+    std::uint16_t psp_paragraphs = 0;
 };
 
 // One data access the target (or DOS/BIOS emulation on its behalf) made since the last step or continue.
@@ -141,6 +144,8 @@ public:
     bool StopTrace(std::size_t* event_count, std::string* error) const;
     bool IsTraceComplete() const;
     bool TerminateTarget(std::string* error) const;
+    // Leaves the debugger if the emulator is paused in it (a stop nobody will act on would freeze the machine).
+    bool ResumeIfPaused(std::string* error) const;
 };
 
 } // namespace dosbox_agent

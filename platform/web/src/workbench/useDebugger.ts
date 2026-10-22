@@ -14,12 +14,23 @@ export interface Registers {
   instruction_pointer: string
   flags: string
   cpu_mode?: string
+  /** The program's memory block (hex paragraphs): code outside it is the runtime of DOS or the BIOS. */
+  program?: { psp: string; paragraphs: string }
 }
 
 export interface Session {
   session_id: string
   state: string
   stop_reason?: { kind: string; breakpoint_id?: string; address?: { segment?: string; offset?: string } }
+  /** Why the last operation faulted (a refused stop, say). */
+  failure?: string
+}
+
+/** The program's memory block from a registers snapshot (an older agent has none). */
+function blockOf(r: Registers): { psp: number; end: number } | null {
+  if (!r.program) return null
+  const psp = parseInt(r.program.psp, 16) & 0xffff
+  return { psp, end: psp + (parseInt(r.program.paragraphs, 16) & 0xffff) }
 }
 
 export interface DisLine {
@@ -113,6 +124,8 @@ export interface Debugger {
   cs: string
   /** CS at the program's entry: the load segment, which symbols and line maps are relative to. */
   entryCs: number | null
+  /** Whether a code segment lies in the program's own memory block (else: DOS, the BIOS). */
+  inProgram: (cs: number, regs?: Registers) => boolean
   /** Bytes of memory while stopped (segment:offset, real mode). */
   readMemory: (seg: number, offset: number, length: number) => Promise<Uint8Array>
   lines: DisLine[]
@@ -138,13 +151,18 @@ export interface Debugger {
   playing: boolean
   play: (stepsPerSec: number) => void
   pausePlay: () => void
-  start: (command: string) => Promise<void>
+  start: (command: string, nudge?: (attempt: number) => Promise<void>) => Promise<void>
+  /** Ends a session this page does not know (left by a reload): true when there was one and it ended. */
+  endOrphan: (nudge?: (attempt: number) => Promise<void>) => Promise<boolean>
   step: (mode: 'into' | 'over') => Promise<void>
   /** Many instructions in one go, each decided before it runs; the view refreshes at the end. */
   stepUntil: (decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max?: number) => Promise<void>
   cont: () => Promise<void>
   pause: () => Promise<void>
-  stop: () => Promise<void>
+  /** Ends the program; `returnTo` is where in its own code to let it get back to first when it sits in DOS. */
+  /** Ends the program. `returnTo`: the chosen frame's address to come back to first when paused outside the program;
+   *  `nudge(attempt)`: gives a program waiting for input a key so it comes back (called a few times). */
+  stop: (returnTo?: number, nudge?: (attempt: number) => Promise<void>) => Promise<void>
   toggleBreakpoint: (offset: number) => Promise<void>
   runTo: (offset: number) => Promise<void>
 }
@@ -156,6 +174,7 @@ export function useDebugger(rpc: RPC): Debugger {
   const [lines, setLines] = useState<DisLine[]>([])
   const [cs, setCs] = useState('')
   const [entryCs, setEntryCs] = useState<number | null>(null)
+  const [program, setProgram] = useState<{ psp: number; end: number } | null>(null)
   const [bps, setBps] = useState<Map<number, string>>(new Map()) // offset -> breakpoint_id
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -222,6 +241,7 @@ export function useDebugger(rpc: RPC): Debugger {
   const refresh = useCallback(async (s: Session) => {
     const r = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
     setRegs((old) => { setPrevRegs(old); return r })
+    setProgram(blockOf(r))
     const ip = parseInt(r.instruction_pointer, 16)
     const seg = r.segments.cs
     const w = windowRef.current
@@ -259,7 +279,9 @@ export function useDebugger(rpc: RPC): Debugger {
     try {
       await fn()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      // A call that lost its target to a stop or an exit in the meantime is not an error worth showing.
+      const msg = err instanceof Error ? err.message : String(err)
+      if (sessionRef.current || !/has exited|not found|not known|TARGET_EXITED|SESSION_NOT_FOUND/i.test(msg)) setError(msg)
     } finally {
       setBusy(false)
     }
@@ -268,8 +290,8 @@ export function useDebugger(rpc: RPC): Debugger {
   const waitOp = useCallback(async (s: Session, operation_id: string): Promise<Session> => {
     for (;;) {
       const r = (await rpc('execution.wait', { session_id: s.session_id, operation_id, timeout_ms: 3000 })) as
-        { running: boolean; session?: Session; state?: string; stop_reason?: Session['stop_reason'] }
-      if (!r.running) return { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? 'stopped', stop_reason: r.session?.stop_reason ?? r.stop_reason }
+        { running: boolean; session?: Session; state?: string; stop_reason?: Session['stop_reason']; failure?: string }
+      if (!r.running) return { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? 'stopped', stop_reason: r.session?.stop_reason ?? r.stop_reason, failure: r.failure }
     }
   }, [rpc])
 
@@ -287,6 +309,7 @@ export function useDebugger(rpc: RPC): Debugger {
     setAccesses(null)
     setRecording(null)
     setEntryCs(null)
+    setProgram(null)
     windowRef.current = null
   }, [])
 
@@ -296,26 +319,7 @@ export function useDebugger(rpc: RPC): Debugger {
     if (next.state === 'stopped') await refresh(next)
   }, [refresh, clear])
 
-  const start = useCallback((command: string) => guard(async () => {
-    const [cmd, ...args] = command.trim().split(/\s+/)
-    const s = (await rpc('session.start', {
-      target: { command: cmd, arguments: args },
-      mounts: [{ drive: 'C', host_path: '/data/c' }],
-      break_at: 'entry',
-    })) as Session
-    setSession(s)
-    setPrevRegs(null)
-    setBps(new Map())
-    windowRef.current = null
-    await refresh(s)
-    // The entry stop: CS is the load segment.
-    const r0 = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
-    setEntryCs(parseInt(r0.segments.cs, 16) & 0xffff)
-  }), [guard, rpc, refresh])
-
-  const readMemory = useCallback(async (seg: number, offset: number, length: number): Promise<Uint8Array> => {
-    const s = sessionRef.current
-    if (!s) throw new Error('no session')
+  const readMemoryOf = useCallback(async (s: Session, seg: number, offset: number, length: number): Promise<Uint8Array> => {
     const r = (await rpc('memory.read', {
       session_id: s.session_id,
       address: { space: 'segmented', segment: '0x' + (seg & 0xffff).toString(16).toUpperCase().padStart(4, '0'), offset: off8(offset & 0xffff) },
@@ -324,12 +328,46 @@ export function useDebugger(rpc: RPC): Debugger {
     return Uint8Array.from(atob(r.data_base64), (c) => c.charCodeAt(0))
   }, [rpc])
 
+  const readMemory = useCallback((seg: number, offset: number, length: number): Promise<Uint8Array> => {
+    const s = sessionRef.current
+    if (!s) throw new Error('no session')
+    return readMemoryOf(s, seg, offset, length)
+  }, [readMemoryOf])
+
+  // One instruction. A step over a call that does not come back within the agent's timeout (the program waits for
+  // input inside it) leaves the target running: the session shows as running until it stops, polled through
+  // session.status, which the agent answers while the step is still pending.
+  const blockedRef = useRef(false)
+  const stepOnce = useCallback(async (s: Session, mode: 'into' | 'over'): Promise<{ session: Session; registers?: Registers }> => {
+    try {
+      const r = (await rpc('execution.step', { session_id: s.session_id, mode })) as
+        { session?: Session; state?: string; stop_reason?: Session['stop_reason']; registers?: Registers }
+      return { session: { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? s.state, stop_reason: r.session?.stop_reason ?? r.stop_reason }, registers: r.registers }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/execution\.step to complete|still executing/i.test(msg)) throw err
+      setSession({ ...s, state: 'running' })
+      blockedRef.current = true
+      try {
+        for (;;) {
+          await new Promise((f) => setTimeout(f, 500))
+          const st = (await rpc('session.status', { session_id: s.session_id })) as { state: string }
+          if (st.state === 'running') continue
+          if (st.state !== 'stopped') return { session: { ...s, state: st.state } }
+          const registers = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
+          return { session: { ...s, state: 'stopped' }, registers }
+        }
+      } finally {
+        blockedRef.current = false
+      }
+    }
+  }, [rpc])
+
   const step = useCallback((mode: 'into' | 'over') => guard(async () => {
     const s = sessionRef.current
     if (!s) return
-    const r = (await rpc('execution.step', { session_id: s.session_id, mode })) as { session?: Session; state?: string; stop_reason?: Session['stop_reason'] }
-    await afterStop({ ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? s.state, stop_reason: r.session?.stop_reason ?? r.stop_reason ?? s.stop_reason })
-  }), [guard, rpc, afterStop])
+    await afterStop((await stepOnce(s, mode)).session)
+  }), [guard, stepOnce, afterStop])
 
   // Step instruction by instruction until `decide` says stop (or a breakpoint, the end, or `max`), refreshing
   // the view only at the end: a source line in one go. `decide` sees each instruction before it runs.
@@ -358,16 +396,15 @@ export function useDebugger(rpc: RPC): Debugger {
       if (cancelRef.current) break
       const mode = decide(ip, csNow, await textAt(csNow, ip))
       if (mode === 'stop') break
-      const r = (await rpc('execution.step', { session_id: s.session_id, mode })) as
-        { session?: Session; state?: string; stop_reason?: Session['stop_reason']; registers?: Registers }
-      next = { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? s.state, stop_reason: r.session?.stop_reason ?? r.stop_reason }
+      const r = await stepOnce(s, mode)
+      next = r.session
       if (next.state !== 'stopped' || !r.registers) break
       ip = parseInt(r.registers.instruction_pointer, 16); csNow = r.registers.segments.cs
       // A step over a call stops on the agent's own breakpoint after it; only the user's count as a stop here.
       if (bpsRef.current.has(ip) && csNow === cs) break
     }
     await afterStop(next)
-  }), [guard, rpc, afterStop])
+  }), [guard, rpc, stepOnce, afterStop])
 
   const cont = useCallback(() => guard(async () => {
     const s = sessionRef.current
@@ -382,6 +419,7 @@ export function useDebugger(rpc: RPC): Debugger {
     cancelRef.current = true
     const s = sessionRef.current
     if (!s || s.state !== 'running') return
+    if (blockedRef.current) throw new Error('the program waits for input inside a call it was stepped over: give it a key in the Screen view')
     const op = (await rpc('execution.pause', { session_id: s.session_id })) as { operation_id: string }
     await afterStop(await waitOp(s, op.operation_id))
   }), [guard, rpc, waitOp, afterStop])
@@ -410,17 +448,153 @@ export function useDebugger(rpc: RPC): Debugger {
   }), [guard, rpc, regs, waitOp, afterStop])
   const clearRecording = useCallback(() => setRecording(null), [])
 
-  const stop = useCallback(() => guard(async () => {
-    const s = sessionRef.current
-    if (!s) return
+  // Waits for an operation up to a deadline; null when it is still running then.
+  const waitOpFor = useCallback(async (s: Session, operation_id: string, ms: number): Promise<Session | null> => {
+    const until = performance.now() + ms
+    while (performance.now() < until) {
+      const r = (await rpc('execution.wait', { session_id: s.session_id, operation_id, timeout_ms: Math.round(Math.max(100, Math.min(1000, until - performance.now()))) })) as
+        { running: boolean; session?: Session; state?: string; stop_reason?: Session['stop_reason'] }
+      if (!r.running) return { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? 'stopped', stop_reason: r.session?.stop_reason ?? r.stop_reason }
+    }
+    return null
+  }, [rpc])
+
+  const inProgram = useCallback((seg: number, r?: Registers) => {
+    const block = (r && blockOf(r)) ?? program
+    if (block) return seg >= block.psp && seg < block.end
+    return entryCs !== null && seg === entryCs
+  }, [program, entryCs])
+
+  // Ends a session's program. A running one is paused first; one paused inside DOS or the BIOS is brought back
+  // into its own code (`returnTo`: the nearest frame's address from the call stack; else the interrupt return
+  // frame on the stack whose CS is the program's; else the frame BP points at) so DOS is in a sane state when
+  // the target is terminated. Throws when the program could not be ended: the session is then still there.
+  const endSession = useCallback(async (s0: Session, returnTo?: number, nudge?: (attempt: number) => Promise<void>) => {
+    let s = s0
+    // The state once the target is at rest (a pause can take a moment to land).
+    const settle = async (): Promise<Session> => {
+      for (let i = 0; i < 30; i++) {
+        const r = (await rpc('session.status', { session_id: s.session_id })) as { state: string }
+        if (r.state !== 'running' && r.state !== 'starting') return { ...s, state: r.state }
+        await new Promise((f) => setTimeout(f, 100))
+      }
+      return s
+    }
+    const atRest = () => s.state === 'stopped' || s.state === 'exited' // a closure: `s` changes under the narrowing
+    const pauseNow = async () => {
+      const op = (await rpc('execution.pause', { session_id: s.session_id })) as { operation_id: string }
+      s = (await waitOpFor(s, op.operation_id, 3000)) ?? await settle()
+    }
+    if (s.state === 'running' || s.state === 'starting') {
+      try { await pauseNow() } catch (err) { console.warn('stop: pause', err) }
+      if (!atRest()) throw new Error('could not stop the program: it did not pause')
+    }
+    if (s.state === 'stopped') {
+      try {
+        const r = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
+        const cs = parseInt(r.segments.cs, 16) & 0xffff
+        if (!inProgram(cs, r)) {
+          let target = returnTo
+          let targetCs = entryCs ?? cs
+          const ss = parseInt(r.segments.ss, 16) & 0xffff
+          if (target === undefined) {
+            const sp = parseInt(r.general.esp, 16) & 0xffff
+            const stack = await readMemoryOf(s, ss, sp, Math.min(512, 0x10000 - sp))
+            // An IRET frame (IP, CS, FLAGS) whose CS is the program's and whose IP follows an INT instruction.
+            for (let k = 0; k + 5 < stack.length; k += 2) {
+              const ip = stack[k] | (stack[k + 1] << 8), seg = stack[k + 2] | (stack[k + 3] << 8), fl = stack[k + 4] | (stack[k + 5] << 8)
+              if (!inProgram(seg, r) || !(fl & 0x0002) || ip < 2) continue
+              const code = await readMemoryOf(s, seg, ip - 2, 2)
+              if (code[0] === 0xcd) { target = ip; targetCs = seg; break }
+            }
+          }
+          if (target === undefined) {
+            const bp = parseInt(r.general.ebp, 16) & 0xffff
+            const link = await readMemoryOf(s, ss, bp + 2, 2)
+            target = link[0] | (link[1] << 8)
+          }
+          await rpc('breakpoints.create', {
+            session_id: s.session_id, kind: 'execution', once: true,
+            address: { space: 'segmented', segment: seg4('0x' + targetCs.toString(16)), offset: off8(target) },
+          })
+          const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
+          let back = await waitOpFor(s, op.operation_id, 1500)
+          // Not back: it waits for input inside DOS or the BIOS. A key or two (Enter, Escape) usually lets it return.
+          for (let attempt = 0; !back && nudge && attempt < 3; attempt++) {
+            try { await nudge(attempt) } catch { break }
+            back = await waitOpFor(s, op.operation_id, 1000)
+          }
+          // Still inside: pause where it is; the stop below is refused there and says so.
+          if (back) s = back
+          else await pauseNow()
+        }
+      } catch (err) { console.warn('stop: return to the program', err) }
+    }
+    if (!atRest()) throw new Error('could not stop the program: it did not pause')
     if (s.state !== 'exited') {
       try {
         const op = (await rpc('session.stop', { session_id: s.session_id })) as { operation_id: string }
-        await waitOp(s, op.operation_id)
-      } catch { /* the session may already be gone (the program ended as it was stopped) */ }
+        const done = await waitOp(s, op.operation_id)
+        if (done.state !== 'exited') throw new Error(done.failure ?? 'it did not end')
+      } catch (err) {
+        // The session may already be gone (the program ended as it was stopped): then it is fine to forget it.
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!/not known|not found|SESSION_NOT_FOUND|has exited|TARGET_EXITED/i.test(msg)) throw new Error(`could not stop the program: ${msg}`)
+      }
+    }
+  }, [rpc, waitOp, waitOpFor, entryCs, inProgram, readMemoryOf])
+
+  const stop = useCallback((returnTo?: number, nudge?: (attempt: number) => Promise<void>) => guard(async () => {
+    const s = sessionRef.current
+    if (!s) return
+    try {
+      await endSession(s, returnTo, nudge)
+    } catch (err) {
+      // Still there: show it as the agent has it now.
+      try { const r = (await rpc('session.status', { session_id: s.session_id })) as { state: string }; setSession({ ...s, state: r.state }) } catch { /* keep */ }
+      throw err
     }
     clear()
-  }), [guard, rpc, waitOp, clear])
+  }), [guard, rpc, endSession, clear])
+
+  const endOrphan = useCallback(async (nudge?: (attempt: number) => Promise<void>): Promise<boolean> => {
+    let s: Session
+    try {
+      s = (await rpc('session.status', {})) as Session
+    } catch { return false }
+    if (s.state !== 'running' && s.state !== 'stopped' && s.state !== 'starting') return false
+    await endSession(s, undefined, nudge)
+    return true
+  }, [rpc, endSession])
+
+  // Start: the program at its entry. A session left behind (a reload mid-debugging) is ended first.
+  const start = useCallback((command: string, nudge?: (attempt: number) => Promise<void>) => guard(async () => {
+    const [cmd, ...args] = command.trim().split(/\s+/)
+    const params = {
+      target: { command: cmd, arguments: args },
+      mounts: [{ drive: 'C', host_path: '/data/c' }],
+      break_at: 'entry',
+    }
+    let s: Session
+    try {
+      s = (await rpc('session.start', params)) as Session
+    } catch (err) {
+      const data = (err as { data?: { reason?: string; session_id?: string; state?: string } }).data
+      if (data?.reason !== 'SESSION_BUSY' || !data.session_id) throw err
+      await endSession({ session_id: data.session_id, state: data.state ?? 'running' }, undefined, nudge)
+      await new Promise((f) => setTimeout(f, 300))
+      s = (await rpc('session.start', params)) as Session
+    }
+    setSession(s)
+    setPrevRegs(null)
+    setBps(new Map())
+    windowRef.current = null
+    await refresh(s)
+    // The entry stop: CS is the load segment.
+    const r0 = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
+    setEntryCs(parseInt(r0.segments.cs, 16) & 0xffff)
+    setProgram(blockOf(r0))
+  }), [guard, rpc, refresh, endSession])
 
   const toggleBreakpoint = useCallback((offset: number) => guard(async () => {
     // The live CS and breakpoints (refs): a caller may hold this function from before the session started.
@@ -482,9 +656,9 @@ export function useDebugger(rpc: RPC): Debugger {
   return {
     session, stopped, regs, prevRegs,
     ip: stopped && regs ? parseInt(regs.instruction_pointer, 16) : null,
-    cs, entryCs, readMemory, lines, breakpoints: new Set(bps.keys()), busy, error,
+    cs, entryCs, inProgram, readMemory, lines, breakpoints: new Set(bps.keys()), busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
-    start, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
+    start, endOrphan, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
   }
 }

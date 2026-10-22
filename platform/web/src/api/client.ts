@@ -153,6 +153,15 @@ export async function readTextFile(id: string, path: string): Promise<string> {
   return new TextDecoder('latin1').decode(await response.arrayBuffer())
 }
 
+/** Presses a key combination in the box, e.g. "ctrl+c". */
+export async function pressKeys(id: string, combo: string): Promise<void> {
+  await json(await request(`${box(id)}/ctl/keys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ combo, action: 'press' }),
+  }))
+}
+
 /** A file's bytes as they are (an EXE, a binary). */
 export async function readBinaryFile(id: string, path: string): Promise<Uint8Array> {
   const response = await request(filePath(id, path))

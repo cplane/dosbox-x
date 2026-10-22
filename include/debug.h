@@ -34,6 +34,7 @@ Bitu DEBUG_EnableDebugger(void);
 bool DEBUG_AgentStep(bool over, bool* continued);
 bool DEBUG_AgentResumeAfterTerminate(void);
 bool DEBUG_AgentCanStartTarget(void);
+bool DEBUG_AgentIsPaused(void); // the emulator sits in the debugger, waiting (nothing runs until something resumes it)
 uint64_t DEBUG_AgentEntryBreakpointSequence(void);
 bool DEBUG_AgentCreateExecutionBreakpoint(uint16_t seg, uint32_t off, bool once, uintptr_t* handle);
 bool DEBUG_AgentCreateMemoryBreakpoint(uint16_t seg, uint32_t off, bool protected_mode, bool linear, uintptr_t* handle);

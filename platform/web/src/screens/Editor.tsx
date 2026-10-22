@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
-import { getBox, readBinaryFile, readTextFile, runCommand, writeTextFile } from '../api/client'
+import { getBox, pressKeys, readBinaryFile, readTextFile, runCommand, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
 import { FileTree } from './FileTree'
@@ -23,6 +23,8 @@ export interface EditorDebug {
   breakpoints: Set<number>
   toggleBreakpoint: (offset: number) => void | Promise<void>
   start: (command: string) => Promise<void>
+  /** Ends a debug session this page does not know about (left by a reload); true when there was one. */
+  endOrphan?: () => Promise<boolean>
   step: (mode: 'into' | 'over') => void
   /** Many instructions in one go, each decided before it runs. */
   stepUntil: (decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max?: number) => void
@@ -320,10 +322,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
 
   async function buildAndRun() {
     if (!path || !running) return
-    if (busyWith) {
-      setStatus(`${busyWith} has the keyboard: quit it first (the Screen view), then build`)
-      return
-    }
+    if (!(await endWhatRuns())) return
     if (dirty && !(await save())) return
     setStatus('running…')
     try {
@@ -339,20 +338,45 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
 
   // Debug: build (with the listing for .ASM), then start the program at its
   // entry; the current line and breakpoints then show in the gutter.
+  // Whatever runs on the box ends before a build: a debug session through the agent, a loose program with
+  // Ctrl+C / Ctrl+Break (DOS checks them on every console write), each followed by a fresh prompt.
+  async function endWhatRuns(): Promise<boolean> {
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const atPrompt = async () => { try { const r = await runCommand(boxId, 'ECHO.', 8000); return !r.timed_out } catch { return false } }
+    if (debugRef.current?.active) {
+      setStatus('stopping…')
+      debugRef.current.stop()
+      for (let i = 0; i < 80 && debugRef.current?.active; i++) await wait(100)
+      if (debugRef.current?.active) { setStatus(debugRef.current.error ? `could not stop the program: ${debugRef.current.error}` : 'could not stop the program'); return false }
+      await wait(900)
+      return true
+    }
+    if (busyWith && debugRef.current?.endOrphan) {
+      // A debug session this page lost (a reload): the agent still has it, so end it through the agent.
+      setStatus(`${busyWith} is running: ending it…`)
+      try {
+        if (await debugRef.current.endOrphan()) { await wait(900); return true }
+      } catch (err) {
+        setStatus(`could not end ${busyWith}: ${err instanceof Error ? err.message : String(err)}`)
+        return false
+      }
+    }
+    if (busyWith) {
+      setStatus(`${busyWith} is running: ending it…`)
+      for (const combo of ['ctrl+c', 'ctrl+pause', 'ctrl+c']) {
+        try { await pressKeys(boxId, combo) } catch { /* no key path: try the prompt anyway */ }
+        await wait(700)
+        if (await atPrompt()) return true
+      }
+      setStatus(`${busyWith} does not stop on Ctrl+Break: quit it in the Screen view, or restart the box`)
+      return false
+    }
+    return true
+  }
+
   async function debugRun() {
     if (!path || !running || !debug) return
-    // Starting again: end the session first, then let DOS get its prompt back before the build.
-    const restarting = debug.active
-    if (restarting) {
-      setStatus('stopping…')
-      debug.stop()
-      for (let i = 0; i < 50 && debugRef.current?.active; i++) await new Promise((r) => setTimeout(r, 100))
-      await new Promise((r) => setTimeout(r, 900))
-    }
-    if (busyWith && !restarting) {
-      setStatus(`${busyWith} has the keyboard: quit it first (the Screen view), then debug`)
-      return
-    }
+    if (!(await endWhatRuns())) return
     if (dirty && !(await save())) return
     const [dir, name] = split(path)
     const base = name.replace(/\.[^.]*$/, '')
@@ -542,16 +566,16 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           {lang !== 'none' && (
             <button
               className="primary"
-              disabled={!path || busy || !running || !!busyWith}
+              disabled={!path || busy || !running}
               onClick={buildAndRun}
-              title={busyWith ? `${busyWith} is running on the box; quit it first` : undefined}
+              title={busyWith ? `${busyWith} is running on the box: it is ended first` : undefined}
             >
               {lang === 'bat' || lang === 'prog' ? 'Run' : 'Build & Run'}
             </button>
           )}
           {debug && (lang === 'asm' || lang === 'c' || lang === 'pas') && (
             <span className="media" role="group" aria-label="debug">
-              <button className="media-btn" disabled={!path || busy || !running || (!debug.active && !!busyWith)} onClick={debugRun} title={debug.active ? 'Start again from the beginning (build, then debug)' : 'Start: build, then debug'}>{Icon.start}</button>
+              <button className="media-btn" disabled={!path || busy || !running} onClick={debugRun} title={debug.active ? 'Start again from the beginning (build, then debug)' : 'Start: build, then debug'}>{Icon.start}</button>
               {debug.running
                 ? <button className="media-btn" onClick={debug.pause} title="Pause">{Icon.pause}</button>
                 : <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint or the end (F9)">{Icon.play}</button>}

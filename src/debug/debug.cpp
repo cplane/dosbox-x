@@ -1179,6 +1179,11 @@ bool DEBUG_AgentResumeAfterTerminate(void)
 	return true;
 }
 
+bool DEBUG_AgentIsPaused(void)
+{
+	return debugging && !debug_running;
+}
+
 bool DEBUG_AgentCanStartTarget(void)
 {
 #if !defined(OSFREE)

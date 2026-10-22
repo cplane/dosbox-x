@@ -647,6 +647,7 @@ public:
     virtual bool ReadTrace(std::vector<TraceSample>* samples, bool* active, std::string* error) const = 0;
     virtual bool StopTrace(std::size_t* event_count, std::string* error) const = 0;
     virtual bool TerminateTarget(std::string* error) const = 0;
+    virtual bool ResumeIfPaused(std::string* error) const = 0;
 };
 
 class ProductionAgentRuntime final : public AgentRuntime {
@@ -688,6 +689,7 @@ public:
     AGENT_RUNTIME_FORWARD(ReadTrace, bool ReadTrace(std::vector<TraceSample>* samples, bool* active, std::string* error) const, (samples, active, error))
     AGENT_RUNTIME_FORWARD(StopTrace, bool StopTrace(std::size_t* event_count, std::string* error) const, (event_count, error))
     AGENT_RUNTIME_FORWARD(TerminateTarget, bool TerminateTarget(std::string* error) const, (error))
+    AGENT_RUNTIME_FORWARD(ResumeIfPaused, bool ResumeIfPaused(std::string* error) const, (error))
 #undef AGENT_RUNTIME_FORWARD
 };
 
@@ -726,6 +728,7 @@ public:
     }
 
     bool TerminateTarget(std::string*) const override { return true; }
+    bool ResumeIfPaused(std::string*) const override { return true; }
 
 #define AGENT_RUNTIME_UNAVAILABLE(method, signature) \
     signature override { SetUnavailable(error); return false; }
@@ -1060,6 +1063,10 @@ static JsonValue RegistersResult(const RegisterSnapshot& registers,
     Add(&result, "instruction_pointer", String(Hex32(registers.instruction_pointer)));
     Add(&result, "flags", String(Hex32(registers.flags)));
     Add(&result, "cpu_mode", String(registers.cpu_mode));
+    JsonValue program = Object();
+    Add(&program, "psp", String(Hex16(registers.psp)));
+    Add(&program, "paragraphs", String(Hex16(registers.psp_paragraphs)));
+    Add(&result, "program", program);
     return result;
 }
 
@@ -1164,6 +1171,14 @@ static AgentServer::Impl::Session* FindSession(AgentServer::Impl* impl,
 {
     std::string session_id;
     if (!GetString(request.params, "session_id", &session_id)) {
+        // session.status without an id asks after whatever session there is (a client that lost track of its own).
+        if (request.method == "session.status" && request.params.Find("session_id") == NULL) {
+            if (!impl->session) {
+                *response = Error(request.id, kErrorSessionNotFound, "No session", "SESSION_NOT_FOUND");
+                return NULL;
+            }
+            return impl->session.get();
+        }
         *response = InvalidParams(request.id, "session_id must be a string");
         return NULL;
     }
@@ -1627,9 +1642,17 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
 
     if (!session->deferred_requests.empty() && parsed.method != "session.status" &&
         parsed.method != "execution.wait" && parsed.method != "debug.output.read") {
+        // A retry of the deferred request itself waits on that one; any other request waits on the oldest.
+        // (Assigning the failed find's end() to `deferred` and dereferencing it below crashed the agent.)
         std::map<std::string, Impl::DeferredRequest>::iterator deferred = session->deferred_requests.begin();
-        const bool retrying_deferred_request = parsed.has_id && parsed.id.type != JsonType::Null &&
-                (deferred = session->deferred_requests.find(parsed.id_key)) != session->deferred_requests.end();
+        bool retrying_deferred_request = false;
+        if (parsed.has_id && parsed.id.type != JsonType::Null) {
+            const std::map<std::string, Impl::DeferredRequest>::iterator own = session->deferred_requests.find(parsed.id_key);
+            if (own != session->deferred_requests.end()) {
+                deferred = own;
+                retrying_deferred_request = true;
+            }
+        }
         if (retrying_deferred_request && deferred->second.fingerprint != parsed.fingerprint) {
                 return SessionError(parsed.id, kErrorRequestIdConflict,
                                     "request id was already used with a different payload", "REQUEST_ID_CONFLICT", session);
@@ -1797,6 +1820,8 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
                     JsonValue result = SessionResult(*session);
                     Add(&result, "state", String(StateName(operation->second.terminal_state)));
                     Add(&result, "stop_reason", StopReason(*session));
+                    if (operation->second.stop_kind == "fault" && !session->failure_message.empty())
+                        Add(&result, "failure", String(session->failure_message));
                     response = AGENT_MakeJsonRpcResult(parsed.id, result);
                 }
             }
@@ -2067,6 +2092,11 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
             session->has_last_stop_breakpoint_address = false;
             ++session->state_revision;
             impl->state_changed.notify_all();
+            // The session is gone; the emulator must not stay paused in the debugger on its account.
+            SubmitEmulationCommandLocked(impl, [impl](const std::uint64_t) {
+                std::string ignored;
+                impl->runtime->ResumeIfPaused(&ignored);
+            });
             JsonValue result = SessionResult(*session);
             Add(&result, "operation_id", String(operation_id));
             response = AGENT_MakeJsonRpcResult(parsed.id, result);
@@ -2083,18 +2113,33 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
             if (SubmitEmulationCommandLocked(impl, [impl, session_id, operation_id](const std::uint64_t) {
                     AgentRuntime& adapter = *impl->runtime;
                     std::string adapter_error;
-                    const bool success = adapter.TerminateTarget(&adapter_error);
+                    bool at_rest = false;
+                    {
+                        // Terminating needs the target stopped: on a running one the registers are whatever the
+                        // CPU is doing this instant, and DOS's state with them.
+                        std::lock_guard<std::mutex> state_lock(impl->mutex);
+                        at_rest = impl->session && impl->session->id == session_id &&
+                                impl->session->state == Impl::SessionState::Stopped;
+                    }
+                    const bool success = at_rest ? adapter.TerminateTarget(&adapter_error) : false;
+                    if (!at_rest)
+                        adapter_error = "Target is running: pause it before stopping the session";
                     std::lock_guard<std::mutex> command_lock(impl->mutex);
                     if (!impl->session || impl->session->id != session_id)
                         return;
                     Impl::Session& active = *impl->session;
                     std::map<std::string, Impl::Operation>::iterator pending = active.operations.find(operation_id);
                     if (!success || pending == active.operations.end()) {
+                        // A refused termination leaves the target as it was (stopped or running): the session stays
+                        // usable and the operation carries the reason.
                         active.failure_message = adapter_error;
-                        active.state = Impl::SessionState::Failed;
-                        active.last_stop_kind = "fault";
+                        const bool intact = !success;
+                        if (!intact) {
+                            active.state = Impl::SessionState::Failed;
+                            active.last_stop_kind = "fault";
+                        }
                         if (pending != active.operations.end()) {
-                            pending->second.terminal_state = Impl::SessionState::Failed;
+                            pending->second.terminal_state = intact ? active.state : Impl::SessionState::Failed;
                             pending->second.stop_kind = "fault";
                             pending->second.complete = true;
                         }
@@ -3233,13 +3278,18 @@ void AgentServer::OnDebuggerStopped(const std::shared_ptr<Impl>& impl,
     }
     const bool trace_read = should_read_trace &&
             adapter.ReadTrace(&trace_samples, &native_trace_active, &trace_error);
-    std::lock_guard<std::mutex> lock(impl->mutex);
-    if (impl->stopping || !impl->session)
+    std::unique_lock<std::mutex> lock(impl->mutex);
+    const bool live = !impl->stopping && impl->session &&
+            (impl->session->state == Impl::SessionState::Starting ||
+             impl->session->state == Impl::SessionState::Running);
+    if (!live) {
+        // Nobody will continue this stop (a breakpoint left behind, a session that failed or was stopped while
+        // its target was running): leaving the debugger paused would freeze the machine for good.
+        lock.unlock();
+        std::string ignored;
+        adapter.ResumeIfPaused(&ignored);
         return;
-
-    if (impl->session->state != Impl::SessionState::Starting &&
-        impl->session->state != Impl::SessionState::Running)
-        return;
+    }
 
     const bool startup = impl->session->state == Impl::SessionState::Starting;
     const bool trace_completed = impl->session->trace.IsActive() && trace_read && !native_trace_active;

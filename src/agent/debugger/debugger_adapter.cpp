@@ -378,6 +378,8 @@ bool DebuggerAdapter::GetRegisters(RegisterSnapshot* registers, std::string* err
     registers->instruction_pointer = reg_eip;
     registers->flags = static_cast<std::uint32_t>(reg_flags);
     registers->cpu_mode = !cpu.pmode ? "real" : ((reg_flags & FLAG_VM) ? "v86" : "protected");
+    registers->psp = dos.psp();
+    registers->psp_paragraphs = registers->psp > 0 ? DOS_MCB(registers->psp - 1).GetSize() : 0;
     return true;
 #else
     return false;
@@ -799,12 +801,39 @@ bool DebuggerAdapter::IsTraceComplete() const
 #endif
 }
 
+bool DebuggerAdapter::ResumeIfPaused(std::string* error) const
+{
+    if (!RequireAvailable(error) || !RequireEmulationThread(error))
+        return false;
+#if C_DEBUG
+    if (!DEBUG_AgentIsPaused())
+        return true;
+    return Continue(error);
+#else
+    return false;
+#endif
+}
+
 bool DebuggerAdapter::TerminateTarget(std::string* error) const
 {
     if (!RequireAvailable(error) || !RequireEmulationThread(error))
         return false;
 
 #if C_DEBUG
+    // Only from the program's own code: terminating while the CPU sits inside DOS or the BIOS (an INT 21h
+    // half done, the teletype loop) leaves DOS's state torn and the shell never comes back. The caller brings
+    // the target back into its code first (a one-shot breakpoint on the interrupt's return address).
+    {
+        const uint16_t psp = dos.psp();
+        DOS_MCB mcb(psp - 1);
+        const uint32_t code_segment = SegValue(cs);
+        const uint32_t end = psp + mcb.GetSize();
+        if (code_segment < psp || code_segment >= end) {
+            if (error != NULL)
+                *error = "Target is inside DOS or the BIOS: let it return to its own code first";
+            return false;
+        }
+    }
     DOS_Terminate(dos.psp(), false, 0);
 
     // Keep the externally initiated exit equivalent to DOS INT 21h/AH=4Ch.
