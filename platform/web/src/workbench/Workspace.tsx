@@ -14,7 +14,9 @@ import { MemoryMapPanel } from './MemoryMapPanel'
 import type { Debugger } from './useDebugger'
 import type { HeatTick } from './heat'
 import type { Tds } from './tds'
-import type { VarValue } from './symbols'
+import { CallStackPanel } from './CallStackPanel'
+import { WatchPanel } from './WatchPanel'
+import { useDebugValues } from './values'
 import { VariablesPanel } from './VariablesPanel'
 
 /**
@@ -26,7 +28,7 @@ import { VariablesPanel } from './VariablesPanel'
 
 const Editor = lazy(() => import('../screens/Editor').then((m) => ({ default: m.Editor })))
 
-const LAYOUT_KEY = 'dosbox.layout.v3'
+const LAYOUT_KEY = 'dosbox.layout.v4'
 
 const defaultLayout: IJsonModel = {
   global: { tabEnableClose: true, tabSetEnableMaximize: true, splitterSize: 6, tabEnableRenderOnDemand: true },
@@ -61,7 +63,7 @@ function loadModel(): Model {
     if (raw) {
       const m = Model.fromJson(JSON.parse(raw) as IJsonModel)
       if (m.getNodeById('machine')) m.doAction(Actions.deleteTab('machine')) // only while a program runs
-      if (m.getNodeById('vars')) m.doAction(Actions.deleteTab('vars'))
+      for (const id of ['vars', 'watch', 'calls']) if (m.getNodeById(id)) m.doAction(Actions.deleteTab(id)) // only while debugging
       if (m.getNodeById('editor') && m.getNodeById('files') && m.getNodeById('terminal')) return m
     }
   } catch { /* a stale or broken layout: start over */ }
@@ -115,14 +117,12 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   // The program's debug symbols, from the editor's last debug build, for the Variables panel.
   const [symbols, setSymbols] = useState<{ tds: Tds; source: string } | null>(null)
   const onSymbols = useCallback((tds: Tds | null, source: string) => setSymbols(tds ? { tds, source } : null), [])
-  // The variable values on show, for the editor's hover.
-  const valuesRef = useRef<VarValue[]>([])
-  const onValues = useCallback((values: VarValue[]) => { valuesRef.current = values }, [])
-  // The frame chosen in the Variables panel: its line for the editor to mark when IP is outside the program,
-  // its address for Stop to bring the program back to before terminating it.
-  const [frameLine, setFrameLine] = useState<number | null>(null)
+  // The call stack, the chosen frame's locals, the globals and the watch evaluator, shared by the debug panels.
+  // The chosen frame's line is marked in the editor when IP is outside the program; its address is where Stop
+  // brings the program back to before terminating it.
+  const values = useDebugValues(dbg, symbols)
   const frameIp = useRef<number | null>(null)
-  const onFrame = useCallback((line: number | null, ip: number | null) => { setFrameLine(line); frameIp.current = ip }, [])
+  frameIp.current = values.frameIp
   // A program waiting for a key gets Enter, then Escape, then a space, so it comes back to its own code to be ended.
   const nudge = useCallback((attempt: number) => pressKeys(boxId, ['enter', 'esc', 'space'][attempt] ?? 'enter'), [boxId])
   const stopProgram = useCallback(() => dbg.stop(frameIp.current ?? undefined, nudge), [dbg.stop, nudge])
@@ -133,8 +133,11 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     if (ended) setTimeout(() => { terminalRef.current?.run('').catch(() => undefined) }, 300)
     return ended
   }, [dbg.endOrphan, nudge, terminalRef])
+  const valuesRef = useRef(values)
+  valuesRef.current = values
   const lookupValue = useCallback((name: string) => {
-    const v = valuesRef.current.find((x) => x.name === name) ?? valuesRef.current.find((x) => x.name.toLowerCase() === name.toLowerCase())
+    const all = [...valuesRef.current.locals, ...valuesRef.current.globals]
+    const v = all.find((x) => x.name === name) ?? all.find((x) => x.name.toLowerCase() === name.toLowerCase())
     return v ? `${v.value}  ·  ${v.type}` : undefined
   }, [])
   // Where a collapsed tab came from, to put it back.
@@ -203,15 +206,19 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       model.doAction(Actions.deleteTab('machine'))
     }
   }, [active, model])
-  // The Variables tab follows a debug session of a program with symbols.
+  // The debug panels follow a debug session of a program with symbols: Variables and Watch in the side tabset
+  // (top right), the Call stack in a tabset of its own below it.
   const vars = !!dbg.session && !!symbols
   useEffect(() => {
     const has = !!model.getNodeById('vars')
     if (vars && !has) {
-      const target = model.getNodeById('side') ?? model.getNodeById('main')
-      if (target) model.doAction(Actions.addNode({ type: 'tab', id: 'vars', name: 'Variables', component: 'vars' }, target.getId(), DockLocation.CENTER, -1, true))
+      const side = model.getNodeById('side') ?? model.getNodeById('main')
+      if (!side) return
+      model.doAction(Actions.addNode({ type: 'tab', id: 'watch', name: 'Watch', component: 'watch' }, side.getId(), DockLocation.CENTER, -1, false))
+      model.doAction(Actions.addNode({ type: 'tab', id: 'vars', name: 'Variables', component: 'vars' }, side.getId(), DockLocation.CENTER, -1, true))
+      model.doAction(Actions.addNode({ type: 'tab', id: 'calls', name: 'Call stack', component: 'calls' }, side.getId(), DockLocation.BOTTOM, -1, true))
     } else if (!vars && has) {
-      model.doAction(Actions.deleteTab('vars'))
+      for (const id of ['vars', 'watch', 'calls']) if (model.getNodeById(id)) model.doAction(Actions.deleteTab(id))
     }
   }, [vars, model])
 
@@ -238,7 +245,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
             <Editor
               ref={editorRef} boxId={boxId} running={running} onRun={onRun} look="paper" program={program} debug={debug}
-              tree={false} onPathChange={setPath} onDirChange={setDir} onSaved={() => setTreeKey((k) => k + 1)} onSymbols={onSymbols} lookupValue={lookupValue} frameLine={frameLine}
+              tree={false} onPathChange={setPath} onDirChange={setDir} onSaved={() => setTreeKey((k) => k + 1)} onSymbols={onSymbols} lookupValue={lookupValue} frameLine={values.frameLine}
             />
           </Suspense>
         )
@@ -253,7 +260,11 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'machine':
         return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
       case 'vars':
-        return symbols ? <VariablesPanel dbg={dbg} tds={symbols.tds} source={symbols.source} onValues={onValues} onFrame={onFrame} /> : <div className="muted">no symbols</div>
+        return symbols ? <VariablesPanel values={values} stopped={dbg.stopped} /> : <div className="muted">no symbols</div>
+      case 'calls':
+        return symbols ? <CallStackPanel values={values} stopped={dbg.stopped} /> : <div className="muted">no symbols</div>
+      case 'watch':
+        return symbols ? <WatchPanel values={values} stopped={dbg.stopped} boxId={boxId} /> : <div className="muted">no symbols</div>
     }
     return <div className="muted">?</div>
   }

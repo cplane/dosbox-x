@@ -206,6 +206,7 @@ export async function format(tds: Tds, typeIndex: number, bytes: Uint8Array, m: 
         if (!mem) break
         const mt = tds.types[mem.type - 1]
         const size = mt?.size ?? 0
+        if (t.id !== TypeId.Union && t.size && off >= t.size) break // the next type's members start here
         parts.push(`${mem.name}: ${await format(tds, mem.type, bytes.subarray(off, off + size), m, depth + 1)}`)
         if (t.id !== TypeId.Union) off += size
       }
@@ -232,6 +233,10 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
   // ip < 0: stopped outside the program (the runtime, DOS); the chain from BP still leads back into it.
   const frames: StackFrame[] = [{ fn: ip >= 0 ? frameAt(tds, ip).fn : null, ip: Math.max(0, ip), bp }]
   const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
+  // A return address inside a source line's code is the program's even outside any function (a Pascal main
+  // block); the runtime before main has no lines.
+  const ours = (addr: number, f: Frame) => f.fn !== null || tds.lines.some((l) => addr >= l.offset && addr - l.offset < 32)
+  let sawOurs = ip >= 0
   let cur = bp
   for (let i = 0; i < max; i++) {
     if (cur === 0 || cur > 0xfffb) break
@@ -240,8 +245,7 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
     const savedBp = u16(link), ret = u16(link, 2)
     const f = frameAt(tds, ret)
     // Outside the program the first links may be the runtime's own frames: keep walking until ours.
-    if (!f.fn && frames.some((x) => x.fn !== null)) break
-    if (f.fn) frames.push({ fn: f.fn, ip: ret, bp: savedBp })
+    if (!ours(ret, f)) { if (sawOurs) break } else { sawOurs = true; frames.push({ fn: f.fn, ip: ret, bp: savedBp }) }
     if (savedBp <= cur) break
     cur = savedBp
   }
