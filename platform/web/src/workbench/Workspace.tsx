@@ -96,6 +96,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   // The variable values on show, for the editor's hover.
   const valuesRef = useRef<VarValue[]>([])
   const onValues = useCallback((values: VarValue[]) => { valuesRef.current = values }, [])
+  // The line of the frame chosen in the Variables panel, for the editor to mark when IP is outside the program.
+  const [frameLine, setFrameLine] = useState<number | null>(null)
   const lookupValue = useCallback((name: string) => {
     const v = valuesRef.current.find((x) => x.name === name) ?? valuesRef.current.find((x) => x.name.toLowerCase() === name.toLowerCase())
     return v ? `${v.value}  ·  ${v.type}` : undefined
@@ -201,7 +203,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
             <Editor
               ref={editorRef} boxId={boxId} running={running} onRun={onRun} look="paper" program={program} debug={debug}
-              tree={false} onPathChange={setPath} onDirChange={setDir} onSaved={() => setTreeKey((k) => k + 1)} onSymbols={onSymbols} lookupValue={lookupValue}
+              tree={false} onPathChange={setPath} onDirChange={setDir} onSaved={() => setTreeKey((k) => k + 1)} onSymbols={onSymbols} lookupValue={lookupValue} frameLine={frameLine}
             />
           </Suspense>
         )
@@ -216,7 +218,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'machine':
         return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
       case 'vars':
-        return symbols ? <VariablesPanel dbg={dbg} tds={symbols.tds} source={symbols.source} onValues={onValues} /> : <div className="muted">no symbols</div>
+        return symbols ? <VariablesPanel dbg={dbg} tds={symbols.tds} source={symbols.source} onValues={onValues} onFrame={setFrameLine} /> : <div className="muted">no symbols</div>
     }
     return <div className="muted">?</div>
   }

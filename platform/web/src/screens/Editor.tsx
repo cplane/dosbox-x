@@ -70,6 +70,8 @@ interface Props {
   onSymbols?: (tds: Tds | null, source: string) => void
   /** A variable's current value by name, for the hover while debugging. */
   lookupValue?: (name: string) => string | undefined
+  /** The line of the frame chosen in the call stack: marked when IP has no line of its own (paused in the runtime). */
+  frameLine?: number | null
 }
 
 /** What a Files tab (or anything else) can ask the editor to do. */
@@ -194,7 +196,7 @@ function registerVariableHover() {
 
 interface Doc { text: string; saved: string }
 
-export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, running, onRun, look = 'dos', program, debug, tree = true, onPathChange, onDirChange, onSaved, onSymbols, lookupValue }: Props, ref) {
+export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, running, onRun, look = 'dos', program, debug, tree = true, onPathChange, onDirChange, onSaved, onSymbols, lookupValue, frameLine }: Props, ref) {
   lookupRef.current = lookupValue
   // A program other than the shell has the keyboard: typing C:\BUILD would go to it.
   const busyWith = program && program.toUpperCase() !== 'COMMAND' ? program : null
@@ -454,6 +456,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
         decos.push({ range: new monaco.Range(cur, 1, cur, 1), options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-arrow' } })
         editor.revealLineInCenterIfOutsideViewport(cur)
       }
+      // The chosen frame's line (paused inside the runtime, or a caller picked in the stack): a hollow arrow.
+      if (debug.stopped && frameLine && frameLine !== cur) {
+        decos.push({ range: new monaco.Range(frameLine, 1, frameLine, 1), options: { isWholeLine: true, className: 'dbg-line outer', glyphMarginClassName: 'dbg-arrow outer' } })
+        if (!cur) editor.revealLineInCenterIfOutsideViewport(frameLine)
+      }
     } else if (path) {
       // No session: the breakpoints waiting for the next debug run.
       for (const line of pendingBps[path] ?? []) {
@@ -461,7 +468,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       }
     }
     decoRef.current.set(decos)
-  }, [debug?.active, debug?.stopped, debug?.ip, debug?.cs, debug?.entryCs, debug?.breakpoints, lineMap, pendingBps, path]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [debug?.active, debug?.stopped, debug?.ip, debug?.cs, debug?.entryCs, debug?.breakpoints, lineMap, pendingBps, path, frameLine]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
