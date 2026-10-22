@@ -175,6 +175,16 @@ export async function writeTextFile(id: string, path: string, text: string): Pro
   await uploadFile(id, path, new Blob([bytes]))
 }
 
+/** Makes a folder (and its parents) on the box's C: drive. */
+export async function makeDir(id: string, path: string): Promise<void> {
+  await json(await request(filePath(id, path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'mkdir' }) }))
+}
+
+/** Renames or moves a file or folder within C: (never over something that exists). */
+export async function renamePath(id: string, path: string, to: string): Promise<void> {
+  await json(await request(filePath(id, path), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: 'rename', to }) }))
+}
+
 export async function deleteFile(id: string, path: string, recursive: boolean): Promise<void> {
   await json(await request(filePath(id, path) + (recursive ? '?recursive=1' : ''), { method: 'DELETE' }))
 }

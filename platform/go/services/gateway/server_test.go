@@ -294,6 +294,49 @@ func TestFilesAndDiskLimit(t *testing.T) {
 	}
 }
 
+func TestFileOps(t *testing.T) {
+	e := newEnv(t)
+	b := e.create("alice", "ops")
+	base := "/api/boxes/" + b.ID.String() + "/files/"
+	op := func(path, body string) int {
+		resp, _ := e.do("alice", "POST", base+path, strings.NewReader(body))
+		return resp.StatusCode
+	}
+	exists := func(rel string) bool { _, err := os.Stat(filepath.Join(e.srv.cDir(b.ID), filepath.FromSlash(rel))); return err == nil }
+
+	if c := op("PROJ/SRC", `{"op":"mkdir"}`); c != 204 || !exists("PROJ/SRC") {
+		t.Fatalf("mkdir with parents: %d", c)
+	}
+	if c := op("PROJ/SRC", `{"op":"mkdir"}`); c != 409 {
+		t.Fatalf("mkdir over an existing folder: %d", c)
+	}
+	e.do("alice", "PUT", base+"PROJ/SRC/A.C", strings.NewReader("x"))
+	e.do("alice", "PUT", base+"PROJ/B.C", strings.NewReader("y"))
+	if c := op("PROJ/SRC/A.C", `{"op":"rename","to":"PROJ/SRC/MAIN.C"}`); c != 204 || !exists("PROJ/SRC/MAIN.C") || exists("PROJ/SRC/A.C") {
+		t.Fatalf("rename a file: %d", c)
+	}
+	if c := op("PROJ/SRC/MAIN.C", `{"op":"rename","to":"PROJ/B.C"}`); c != 409 {
+		t.Fatalf("rename over an existing file: %d", c)
+	}
+	if c := op("PROJ/SRC", `{"op":"rename","to":"PROJ/CODE"}`); c != 204 || !exists("PROJ/CODE/MAIN.C") {
+		t.Fatalf("rename a folder: %d", c)
+	}
+	if c := op("PROJ", `{"op":"rename","to":"PROJ/CODE/INNER"}`); c != 400 {
+		t.Fatalf("move a folder into itself: %d", c)
+	}
+	if c := op("NOPE.C", `{"op":"rename","to":"X.C"}`); c != 404 {
+		t.Fatalf("rename a missing file: %d", c)
+	}
+	for _, bad := range []string{`{"op":"rename","to":"../escape"}`, `{"op":"rename","to":""}`, `{"op":"chmod"}`, `not json`} {
+		if c := op("PROJ/B.C", bad); c != 400 {
+			t.Errorf("%s: %d", bad, c)
+		}
+	}
+	if resp, _ := e.do("bob", "POST", base+"PROJ/X", strings.NewReader(`{"op":"mkdir"}`)); resp.StatusCode != 404 || exists("PROJ/X") {
+		t.Fatalf("bob makes folders in alice's box: %d", resp.StatusCode)
+	}
+}
+
 func TestJanitor(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

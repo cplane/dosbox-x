@@ -3,10 +3,11 @@ import type { VarValue } from './symbols'
 import type { DebugValues } from './values'
 
 /**
- * Watch expressions: names from the chosen frame or the globals, with
- * `.field`, `->field`, `[index]`, `^` or a leading `*` to follow pointers
- * (`a[i]`, `Cursor.X`, `p->next`, `node^.value`), re-read at every stop;
- * what changed is lit. The list is kept per box.
+ * Watch expressions (expr.ts): variables of the chosen frame, the procedures
+ * it is nested in, or the globals, with `.field`, `->field`, `[index]`,
+ * `^` or a leading `*` (`a[i]`, `Cursor.X`, `p->next`, `node^.value`), and
+ * arithmetic over them (`Total * 2`, `a[i + 1] - a[i]`); re-read at every
+ * stop, each shown as soon as it is read, what changed lit. Kept per box.
  */
 export function WatchPanel({ values, stopped, boxId }: { values: DebugValues; stopped: boolean; boxId: string }) {
   const key = `dosbox.watch.${boxId}`
@@ -21,15 +22,17 @@ export function WatchPanel({ values, stopped, boxId }: { values: DebugValues; st
     if (!stopped) return
     let cancelled = false
     ;(async () => {
-      const out = new Map<string, VarValue>()
+      // One by one, each shown as soon as it is read (a stop does not wait for the slowest watch).
+      const before = previous.current
+      const seen = new Map<string, string>()
       for (const e of exprs) {
         const v = await values.evaluate(e)
-        const was = previous.current.get(e)
-        out.set(e, { ...v, changed: was !== undefined && was !== v.value })
+        if (cancelled) return
+        const was = before.get(e)
+        seen.set(e, v.value)
+        setResults((r) => new Map(r).set(e, { ...v, changed: was !== undefined && was !== v.value }))
       }
-      if (cancelled) return
-      previous.current = new Map([...out].map(([k, v]) => [k, v.value]))
-      setResults(out)
+      previous.current = seen
     })()
     return () => { cancelled = true }
   }, [stopped, exprs, values.stopSeq, values.chosen, values.evaluate]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -37,13 +40,13 @@ export function WatchPanel({ values, stopped, boxId }: { values: DebugValues; st
   const add = (e: FormEvent) => {
     e.preventDefault()
     const t = draft.trim()
-    if (t && !exprs.includes(t)) setExprs([...exprs, t])
+    if (t) setExprs((list) => (list.includes(t) ? list : [...list, t]))
     setDraft('')
   }
   return (
     <div className="vars">
       <form className="watch-add" onSubmit={add}>
-        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="a[i], Cursor.X, p->next, node^.value" spellCheck={false} />
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="a[i], Cursor.X, p->next^.value, Total * 2" spellCheck={false} />
         <button type="submit" disabled={!draft.trim()}>add</button>
       </form>
       {!stopped && exprs.length > 0 && <p className="muted small">running…</p>}
@@ -55,7 +58,7 @@ export function WatchPanel({ values, stopped, boxId }: { values: DebugValues; st
               <td className="var-name">{e}</td>
               <td className="var-type">{v?.type ?? ''}</td>
               <td className="var-value">{v?.value ?? ''}</td>
-              <td className="watch-x"><button className="watch-remove" title="Remove" onClick={() => setExprs(exprs.filter((x) => x !== e))}>×</button></td>
+              <td className="watch-x"><button className="watch-remove" title="Remove" onClick={() => setExprs((list) => list.filter((x) => x !== e))}>×</button></td>
             </tr>
           )
         })}

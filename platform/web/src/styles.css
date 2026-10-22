@@ -522,3 +522,19 @@ html.paper body { overflow: hidden; }
 .watch-x { width: 1.4em; text-align: right; }
 .watch-remove { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 13px; }
 .watch-remove:hover { color: var(--ink); }
+
+/* Files: the current folder, names typed in place, the right-click menu. */
+.files-actions { display: flex; gap: 2px; margin-left: auto; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 3px 5px; background: none; border: 1px solid transparent; border-radius: 4px; color: var(--wb-muted, var(--muted)); cursor: pointer; }
+.icon-btn:hover { color: var(--wb-ink, var(--ink)); border-color: var(--wb-line, var(--line)); }
+.tree-row.cur > span { font-weight: 600; }
+.tree-edit { padding: 1px 8px 1px 0; }
+.tree-edit-row { display: flex; align-items: center; gap: 5px; }
+.tree-edit input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 1px 4px; border: 1px solid var(--wb-ink, var(--ink)); border-radius: 3px; background: var(--wb-panel, var(--panel)); color: inherit; text-transform: uppercase; }
+.tree-error { color: #a3493c; font-size: 11.5px; padding: 2px 0 2px 20px; white-space: normal; }
+.tree-status { color: var(--wb-muted, var(--muted)); font-size: 11.5px; padding: 6px 8px; border-top: 1px solid var(--wb-line, var(--line)); margin-top: 4px; white-space: normal; cursor: pointer; }
+.tree-menu { position: fixed; z-index: 1000; min-width: 190px; padding: 4px; background: var(--wb-panel, var(--panel)); border: 1px solid var(--wb-line, var(--line)); border-radius: 6px; box-shadow: 0 6px 18px rgba(40, 38, 30, 0.14); display: flex; flex-direction: column; }
+.tree-menu-item { text-align: left; background: none; border: 0; border-radius: 4px; padding: 4px 10px; font: inherit; font-size: 12.5px; color: inherit; cursor: pointer; white-space: nowrap; }
+.tree-menu-item:hover { background: var(--wb-line, var(--line)); }
+.tree-menu-item.danger { color: #a3493c; }
+.tree-menu-title { font-size: 12px; padding: 4px 10px 6px; max-width: 260px; white-space: normal; }

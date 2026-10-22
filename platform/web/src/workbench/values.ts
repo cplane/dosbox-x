@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { lineForOffset, type LineMap } from './listing'
-import { callStack, format, frameAt, globalsOf, readValues, typeName, type Machine, type StackFrame, type VarValue } from './symbols'
-import { lineMapFromTds, SymbolClass, TypeId, type Tds, type TdsSymbol } from './tds'
-import type { Debugger } from './useDebugger'
+import { callStack, enclosingAt, frameAt, globalsOf, readValues, registersOf, typeName, type Machine, type StackFrame, type VarValue } from './symbols'
+import { evaluate as evaluateWatch } from './expr'
+import { lineMapFromTds, SymbolClass, type Tds, type TdsSymbol } from './tds'
+import type { Debugger, Registers } from './useDebugger'
 
 /**
  * What the debug panels share while the program is stopped: the call stack
@@ -16,6 +17,8 @@ export interface DebugValues {
   chosen: number
   setChosen: (i: number) => void
   locals: VarValue[]
+  /** A Pascal nested procedure's enclosing procedures (innermost first) with their variables. */
+  enclosing: { fn: string; values: VarValue[] }[]
   globals: VarValue[]
   /** Why the frames are not where the program stopped (paused in the runtime or DOS). */
   note: string
@@ -29,140 +32,27 @@ export interface DebugValues {
   stopSeq: number
 }
 
-const h4 = (n: number) => (n & 0xffff).toString(16).toUpperCase().padStart(4, '0')
 const u16 = (b: Uint8Array, o = 0) => b[o] | (b[o + 1] << 8)
 
-interface Place { seg: number; off: number }
+const EMPTY: LineMap = { lineOf: new Map(), offsetOf: new Map() }
 
-/** The byte-packed members of a struct, union or object type, with their offsets. */
-export function membersOf(tds: Tds, t: Tds['types'][number]): { name: string; type: number; off: number }[] {
-  const first = t.member
-  const next = Math.min(...tds.types.filter((x) => (x.id === TypeId.Struct || x.id === TypeId.Union || x.id === TypeId.Object) && x.member > first).map((x) => x.member), tds.members.length + 1)
-  const out: { name: string; type: number; off: number }[] = []
-  let off = 0
-  for (let i = first; i < next; i++) {
-    const mem = tds.members[i - 1]
-    if (!mem) break
-    if (t.id !== TypeId.Union && t.size && off >= t.size) break // the next type's members start here
-    out.push({ name: mem.name, type: mem.type, off })
-    if (t.id !== TypeId.Union) off += tds.types[mem.type - 1]?.size ?? 0
+/**
+ * The enclosing procedures of a Pascal nested procedure at ip, each with its frame: Turbo Pascal passes the
+ * enclosing procedure's BP (the static link) as the last parameter, at [BP+4] of the nested one's frame.
+ */
+async function enclosingFrames(tds: Tds, m: Machine, ip: number, bp: number): Promise<{ fn: string; locals: TdsSymbol[]; bp: number }[]> {
+  const levels = enclosingAt(tds, ip)
+  const out: { fn: string; locals: TdsSymbol[]; bp: number }[] = []
+  const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
+  let cur = bp
+  for (const level of levels) {
+    let link: Uint8Array
+    try { link = await m.read(ss, (cur + 4) & 0xffff, 2) } catch { break }
+    cur = u16(link)
+    out.push({ ...level, bp: cur })
   }
   return out
 }
-
-/**
- * A watch expression: a name, then any of `.field`, `->field`, `[index]`, a trailing `^` (Pascal) or a leading
- * `*` (C) to follow a pointer. Names are the chosen frame's locals first, then the program's globals.
- */
-export async function evaluateExpression(tds: Tds, m: Machine, locals: TdsSymbol[], bp: number, expr: string): Promise<VarValue> {
-  const src = expr.trim()
-  const fail = (value: string): VarValue => ({ name: expr, type: '', value, where: '', changed: false })
-  let s = src
-  let derefFirst = 0
-  while (s.startsWith('*')) { derefFirst++; s = s.slice(1).trim() }
-  const head = /^[A-Za-z_][A-Za-z0-9_]*/.exec(s)
-  if (!head) return fail('? (a name, then .field, [index], ^ or *)')
-  const name = head[0]
-  let rest = s.slice(name.length)
-
-  // The name: a local of the chosen frame, else a global of the program (any static symbol by that name).
-  const lc = name.toLowerCase()
-  const sym = locals.find((x) => x.name.toLowerCase() === lc || x.name.replace(/^_/, '').toLowerCase() === lc)
-    ?? tds.symbols.find((x) => x.cls === SymbolClass.Static && x.seg !== 0 && (x.name.toLowerCase() === lc || x.name.replace(/^_/, '').toLowerCase() === lc))
-  if (!sym) return fail('? (no such variable here)')
-  let type = sym.type
-  let place: Place | null = null
-  let registerDeref = false // the pointer in the register is already followed: the first -> or ^ is done
-  const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
-  const off = sym.offset > 0x7fff ? sym.offset - 0x10000 : sym.offset
-  if (sym.cls === SymbolClass.Register) {
-    const REG16 = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
-    const reg = REG16[sym.offset & 7]
-    const v = parseInt(m.regs.general[reg] ?? '0', 16) & 0xffff
-    const rt = tds.types[type - 1]
-    if (rest.trim() || derefFirst) {
-      // A register holding a near pointer: what it points at is in memory, so fields and elements can follow.
-      if (!rt || (rt.id !== TypeId.Near && rt.id !== TypeId.NRef)) return fail(`? (${name} lives in ${reg.slice(1).toUpperCase()}: no fields or elements to follow)`)
-      if (!v) return fail('null')
-      place = { seg: parseInt(m.regs.segments.ds, 16) & 0xffff, off: v }
-      type = rt.member
-      registerDeref = true
-    } else {
-      const size = rt?.size ?? 2
-      return { name: expr, type: typeName(tds, type), value: await format(tds, type, Uint8Array.from([v & 0xff, v >> 8]).subarray(0, Math.max(1, Math.min(size, 2))), m), where: reg.slice(1).toUpperCase(), changed: false }
-    }
-  } else if (sym.cls === SymbolClass.Auto) {
-    place = { seg: ss, off: (bp + off) & 0xffff }
-  } else if (sym.cls === SymbolClass.PascalVar) {
-    const p = await m.read(ss, (bp + off) & 0xffff, 4)
-    place = { seg: u16(p, 2), off: u16(p) }
-  } else if (sym.cls === SymbolClass.Static) {
-    place = { seg: (m.entryCs + sym.seg) & 0xffff, off: sym.offset }
-  } else {
-    return fail('? (not a variable)')
-  }
-
-  const deref = async (): Promise<string | null> => {
-    const t = tds.types[type - 1]
-    if (!t || !place) return '? (not a pointer)'
-    if (t.id === TypeId.Near || t.id === TypeId.NRef) {
-      const b = await m.read(place.seg, place.off, 2)
-      place = { seg: parseInt(m.regs.segments.ds, 16) & 0xffff, off: u16(b) }
-    } else if (t.id === TypeId.Far || t.id === TypeId.FRef) {
-      const b = await m.read(place.seg, place.off, 4)
-      place = { seg: u16(b, 2), off: u16(b) }
-    } else return `? (${typeName(tds, type)} is not a pointer)`
-    if (!place.seg && !place.off) return 'nil'
-    type = t.member
-    return null
-  }
-
-  // The accessors, left to right.
-  const ops: string[] = []
-  while (rest.trim()) {
-    rest = rest.trim()
-    let mm: RegExpExecArray | null
-    if ((mm = /^(?:\.|->)([A-Za-z_][A-Za-z0-9_]*)/.exec(rest))) { ops.push(rest.startsWith('->') ? `>${mm[1]}` : `.${mm[1]}`); rest = rest.slice(mm[0].length) }
-    else if ((mm = /^\[\s*(-?\d+)\s*\]/.exec(rest))) { ops.push(`[${mm[1]}`); rest = rest.slice(mm[0].length) }
-    else if (rest.startsWith('^')) { ops.push('^'); rest = rest.slice(1) }
-    else return fail(`? (cannot read "${rest}")`)
-  }
-  for (let i = 0; i < derefFirst; i++) ops.push('^')
-  if (registerDeref && ops.length && (ops[0] === '^' || ops[0].startsWith('>'))) ops[0] = ops[0] === '^' ? '' : '.' + ops[0].slice(1)
-  try {
-    for (const op of ops) {
-      if (op === '') continue
-      if (op === '^' || op.startsWith('>')) { const e = await deref(); if (e) return fail(e) }
-      const t = tds.types[type - 1]
-      if (!t || !place) return fail('?')
-      if (op.startsWith('.') || op.startsWith('>')) {
-        const field = op.slice(1).toLowerCase()
-        if (t.id !== TypeId.Struct && t.id !== TypeId.Union && t.id !== TypeId.Object) return fail(`? (${typeName(tds, type)} has no fields)`)
-        const mem = membersOf(tds, t).find((x) => x.name.toLowerCase() === field)
-        if (!mem) return fail(`? (no field ${op.slice(1)} in ${typeName(tds, type)})`)
-        place = { seg: place.seg, off: (place.off + mem.off) & 0xffff }
-        type = mem.type
-      } else if (op.startsWith('[')) {
-        const index = parseInt(op.slice(1), 10)
-        if (t.id === TypeId.Near || t.id === TypeId.NRef || t.id === TypeId.Far || t.id === TypeId.FRef) { const e = await deref(); if (e) return fail(e) }
-        const at = tds.types[type - 1]
-        if (!at || at.id !== TypeId.Array) return fail(`? (${typeName(tds, type)} is not an array)`)
-        const el = tds.types[at.member - 1]
-        if (!el || !el.size) return fail('? (unknown element size)')
-        place = { seg: place!.seg, off: (place!.off + index * el.size) & 0xffff }
-        type = at.member
-      }
-    }
-    const t = tds.types[type - 1]
-    const size = t?.size ?? 2
-    const bytes = await m.read(place!.seg, place!.off, Math.max(1, Math.min(size, 256)))
-    return { name: expr, type: typeName(tds, type), value: await format(tds, type, bytes, m), where: `${h4(place!.seg)}:${h4(place!.off)}`, changed: false }
-  } catch (err) {
-    return fail(`? (${err instanceof Error ? err.message : String(err)})`)
-  }
-}
-
-const EMPTY: LineMap = { lineOf: new Map(), offsetOf: new Map() }
 
 export function useDebugValues(dbg: Debugger, symbols: { tds: Tds; source: string } | null): DebugValues {
   const { regs, ip, cs, entryCs, stopped } = dbg
@@ -171,17 +61,20 @@ export function useDebugValues(dbg: Debugger, symbols: { tds: Tds; source: strin
   const [frames, setFrames] = useState<StackFrame[]>([])
   const [chosen, setChosen] = useState(0)
   const [locals, setLocals] = useState<VarValue[]>([])
+  const [enclosing, setEnclosing] = useState<{ fn: string; values: VarValue[] }[]>([])
   const [globals, setGlobals] = useState<VarValue[]>([])
   const [note, setNote] = useState('')
   const [stopSeq, setStopSeq] = useState(0)
   const previous = useRef(new Map<string, string>())
+  const shownFrame = useRef('') // the frame (function:BP) whose variables are on show
+  const contextCache = useRef<{ key: string; value: Promise<{ outer: { fn: string; locals: TdsSymbol[]; bp: number }[]; regs: Registers }> } | null>(null)
   const globalSyms = useMemo(() => (tds && symbols ? globalsOf(tds, symbols.source) : []), [tds, symbols])
   const inProgram = !!regs && entryCs !== null && dbg.inProgram(parseInt(cs, 16) & 0xffff, regs)
 
   // A new stop: the stack from here (walked from BP even inside the runtime or DOS, since their frames link back
   // into the program's), the innermost frame of ours chosen.
   useEffect(() => {
-    if (!tds || !stopped || !regs || ip === null || entryCs === null) { if (!dbg.session) { setFrames([]); setLocals([]); setGlobals([]); previous.current = new Map() } return }
+    if (!tds || !stopped || !regs || ip === null || entryCs === null) { if (!dbg.session) { setFrames([]); setLocals([]); setEnclosing([]); setGlobals([]); previous.current = new Map(); shownFrame.current = '' } return }
     let cancelled = false
     const bp = parseInt(regs.general.ebp, 16) & 0xffff
     const m = { regs, entryCs, read: dbg.readMemory }
@@ -197,22 +90,55 @@ export function useDebugValues(dbg: Debugger, symbols: { tds: Tds; source: strin
     return () => { cancelled = true }
   }, [tds, stopped, regs, ip, entryCs, inProgram, dbg.readMemory, dbg.session]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // For the chosen frame: the enclosing procedures' frames (Pascal) and the registers as that frame had them,
+  // worked out once per stop and frame (the panel and every watch share it).
+  type Context = { outer: { fn: string; locals: TdsSymbol[]; bp: number }[]; regs: Registers }
+  const frameContext = (m: Machine, frame: StackFrame | undefined): Promise<Context> => {
+    const key = `${m.regs.instruction_pointer}:${m.regs.general.esp}:${chosen}:${frame?.at}:${frame?.bp}`
+    if (contextCache.current?.key !== key) {
+      contextCache.current = {
+        key,
+        value: (async () => ({
+          outer: frame && tds ? await enclosingFrames(tds, m, frame.at, frame.bp).catch(() => []) : [],
+          regs: tds && chosen > 0 ? await registersOf(tds, m, frames, chosen).catch(() => m.regs) : m.regs,
+        }))(),
+      }
+    }
+    return contextCache.current.value
+  }
+
   // The chosen frame's locals and the globals.
   useEffect(() => {
     if (!tds || !stopped || !regs || entryCs === null) return
     const frame = frames[chosen]
-    const scope = frame ? frameAt(tds, frame.ip) : { fn: null, fnOffset: null, locals: [] }
+    const scope = frame ? frameAt(tds, frame.at) : { fn: null, fnOffset: null, locals: [] }
     const bp = frame ? frame.bp : parseInt(regs.general.ebp, 16) & 0xffff
     const m = { regs, entryCs, read: dbg.readMemory }
     let cancelled = false
+    // Another frame than before (a call, a return, a frame picked in the stack): its variables at once, with
+    // their values to come, so the panel never shows the previous frame's under the new one's name. The same
+    // frame keeps its values on show until the new ones are read (no flicker while stepping).
+    const frameKey = `${scope.fn}:${bp}`
+    if (frameKey !== shownFrame.current) {
+      shownFrame.current = frameKey
+      const placeholder = (s: TdsSymbol): VarValue => ({ name: s.name.replace(/^_/, ''), type: typeName(tds, s.type), value: '…', where: '', changed: false })
+      setLocals(scope.locals.map(placeholder))
+      setEnclosing((frame ? enclosingAt(tds, frame.at) : []).map((e) => ({ fn: e.fn, values: e.locals.filter((s) => s.cls !== SymbolClass.Register).map(placeholder) })))
+    }
     ;(async () => {
       const prev = previous.current
-      const [l, g] = await Promise.all([readValues(tds, scope.locals, m, bp, prev), readValues(tds, globalSyms, m, bp, prev)])
+      const { outer, regs: frameRegs } = await frameContext(m, frame)
+      const mf = { ...m, regs: frameRegs } // a caller's register variables: from the slots its callees saved them in
+      const [l, g, ...o] = await Promise.all([
+        readValues(tds, scope.locals, mf, bp, prev), readValues(tds, globalSyms, m, bp, prev),
+        ...outer.map((x) => readValues(tds, x.locals.filter((s) => s.cls !== SymbolClass.Register), m, x.bp, prev)),
+      ])
       if (cancelled) return
       const next = new Map<string, string>()
-      for (const v of [...l, ...g]) next.set(v.name, v.value)
+      for (const v of [...l, ...g, ...o.flat()]) next.set(v.name, v.value)
       previous.current = next
       setLocals(l); setGlobals(g)
+      setEnclosing(outer.map((x, i) => ({ fn: x.fn, values: o[i] })))
     })()
     return () => { cancelled = true }
   }, [tds, stopped, regs, entryCs, frames, chosen, globalSyms, dbg.readMemory]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -220,13 +146,15 @@ export function useDebugValues(dbg: Debugger, symbols: { tds: Tds; source: strin
   const evaluate = useCallback(async (expr: string): Promise<VarValue> => {
     if (!tds || !stopped || !regs || entryCs === null) return { name: expr, type: '', value: '', where: '', changed: false }
     const frame = frames[chosen]
-    const scope = frame ? frameAt(tds, frame.ip) : { fn: null, fnOffset: null, locals: [] }
+    const scope = frame ? frameAt(tds, frame.at) : { fn: null, fnOffset: null, locals: [] }
     const bp = frame ? frame.bp : parseInt(regs.general.ebp, 16) & 0xffff
-    return evaluateExpression(tds, { regs, entryCs, read: dbg.readMemory }, scope.locals, bp, expr)
-  }, [tds, stopped, regs, entryCs, frames, chosen, dbg.readMemory])
+    const m = { regs, entryCs, read: dbg.readMemory }
+    const { outer, regs: frameRegs } = await frameContext(m, frame)
+    return evaluateWatch(tds, { ...m, regs: frameRegs }, { locals: scope.locals, bp, enclosing: outer }, expr)
+  }, [tds, stopped, regs, entryCs, frames, chosen, dbg.readMemory]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = frames[chosen]
   const frameIp = f ? f.ip : null // the main block has no function but a line all the same
-  const frameLine = frameIp !== null ? lineForOffset(lineMap, frameIp) : null
-  return { frames, chosen, setChosen, locals, globals, note, lineMap, frameLine, frameIp, evaluate, stopSeq }
+  const frameLine = f ? lineForOffset(lineMap, f.at) : null
+  return { frames, chosen, setChosen, locals, enclosing, globals, note, lineMap, frameLine, frameIp, evaluate, stopSeq }
 }

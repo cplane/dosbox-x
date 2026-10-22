@@ -42,6 +42,9 @@ export interface TdsType {
   cls: number
   /** The element type (arrays), the target (pointers), the return type (functions), the first member (structs). */
   member: number
+  /** A Pascal array's index bounds (array[low..high]), from its index type. */
+  low?: number
+  high?: number
 }
 
 export interface TdsMember { info: number; name: string; type: number }
@@ -118,8 +121,20 @@ export function parseTds(exe: Uint8Array): Tds | null {
     correlations.push({ segment: u16(p), file: u16(p + 2), lineIndex: u16(p + 4), lineCount: u16(p + 6) })
   }
   const types: TdsType[] = []
+  const typesAt = p
   for (let i = 0; i < c.types; i++, p += 8) {
     types.push({ index: i + 1, id: exe[p] as TypeId, name: name(u16(p + 1)), size: u16(p + 3), cls: exe[p + 5], member: u16(p + 6) })
+  }
+  // A Pascal array's record is followed by one more holding its index type; a subrange's record is followed by
+  // one holding the bounds, two 32-bit numbers (array[5..7]: 05 00 00 00 07 00 00 00).
+  const rec = (index: number) => typesAt + (index - 1) * 8
+  for (const t of types) {
+    if (t.id !== TypeId.PArray || t.index >= types.length) continue
+    const indexType = u16(rec(t.index + 1))
+    if (indexType < 1 || indexType >= types.length) continue
+    const b = rec(indexType + 1)
+    const low = dv.getInt32(b, true), high = dv.getInt32(b + 4, true)
+    if (high >= low && high - low < 0x10000) { t.low = low; t.high = high }
   }
   const members: TdsMember[] = []
   for (let i = 0; i < c.members; i++, p += 5) members.push({ info: exe[p], name: name(u16(p + 1)), type: u16(p + 3) })

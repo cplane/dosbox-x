@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/boxes/{id}/files", s.owned(s.handleFileGet))
 	mux.HandleFunc("GET /api/boxes/{id}/files/{path...}", s.owned(s.handleFileGet))
 	mux.HandleFunc("PUT /api/boxes/{id}/files/{path...}", s.owned(s.handleFilePut))
+	mux.HandleFunc("POST /api/boxes/{id}/files/{path...}", s.owned(s.handleFileOp))
 	mux.HandleFunc("DELETE /api/boxes/{id}/files/{path...}", s.owned(s.handleFileDelete))
 	mux.HandleFunc("POST /api/boxes/{id}/attach", s.owned(s.handleAttach))
 	mux.HandleFunc("GET /api/catalog", s.signedIn(s.handleCatalogList))

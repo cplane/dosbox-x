@@ -53,6 +53,34 @@ export function frameAt(tds: Tds, ip: number): Frame {
   return { fn, fnOffset, locals }
 }
 
+/**
+ * A Pascal nested procedure's enclosing procedures, innermost first, with their parameters and locals: what
+ * the nested code may use besides its own. Their code is not around the nested one's (it comes before), so
+ * the nesting is found through the scopes' parent links, not by address.
+ */
+export function enclosingAt(tds: Tds, ip: number): { fn: string; locals: TdsSymbol[] }[] {
+  const all = entryScopes(tds)
+  const inner = all
+    .filter(({ scope }) => scope.length > 0 && ip >= scope.offset && ip < scope.offset + scope.length)
+    .sort((a, b) => b.scope.offset - a.scope.offset || a.scope.length - b.scope.length)[0]
+  const isFunction = (fn: number) => fn !== 0 && fn !== 0xffff && fn !== 0xfffe
+  const out: { fn: string; locals: TdsSymbol[] }[] = []
+  let parent = inner?.scope.parent ?? 0
+  for (let guard = 0; parent && guard < 8; guard++) {
+    const scope = tds.scopes[parent - 1]
+    if (!scope || !isFunction(scope.fn)) break
+    const sym = tds.symbols[scope.fn - 1]
+    const locals: TdsSymbol[] = []
+    for (let i = scope.symIndex; i < scope.symIndex + scope.symCount; i++) {
+      const s = tds.symbols[i - 1]
+      if (s && (s.cls === SymbolClass.Auto || s.cls === SymbolClass.PascalVar || s.cls === SymbolClass.Register)) locals.push(s)
+    }
+    out.push({ fn: (sym?.name ?? '?').replace(/^_/, ''), locals })
+    parent = scope.parent
+  }
+  return out
+}
+
 /** The function (name, start) whose code holds an address, for the call stack. */
 export function functionAt(tds: Tds, ip: number): { name: string; offset: number } | null {
   const f = frameAt(tds, ip)
@@ -94,6 +122,13 @@ export function typeName(tds: Tds, index: number, depth = 0): string {
       const el = tds.types[t.member - 1]
       const n = el && el.size ? Math.floor(t.size / el.size) : 0
       return depth > 2 ? 'array' : `${typeName(tds, t.member, depth + 1)}[${n}]`
+    }
+    case TypeId.PArray: {
+      // Pascal: array[1..3] of Item (the bounds from the index type; from 0 when they are not known).
+      const el = tds.types[t.member - 1]
+      const n = el && el.size ? Math.floor(t.size / el.size) : 0
+      const range = t.low !== undefined && t.high !== undefined ? `${t.low}..${t.high}` : `0..${n - 1}`
+      return depth > 2 ? 'array' : `array[${range}] of ${typeName(tds, t.member, depth + 1)}`
     }
     case TypeId.Near: case TypeId.Far: case TypeId.NRef: case TypeId.FRef:
       return depth > 2 ? 'pointer' : `${typeName(tds, t.member, depth + 1)}*`
@@ -157,6 +192,16 @@ export async function format(tds: Tds, typeIndex: number, bytes: Uint8Array, m: 
       const n = Math.min(bytes[0] ?? 0, bytes.length - 1)
       return `'${Array.from(bytes.subarray(1, 1 + n), chr).join('')}'`
     }
+    case TypeId.PArray: {
+      // Pascal: chars spelled out whole (no terminating zero), else the elements as in C.
+      const el = tds.types[t.member - 1]
+      if (el && el.id === TypeId.PChar && el.size === 1) return `'${Array.from(bytes.subarray(0, 64), chr).join('')}'${bytes.length > 64 ? '…' : ''}`
+      if (!el || !el.size || depth > 1) return '[…]'
+      const n = Math.min(Math.floor(bytes.length / el.size), 16)
+      const items: string[] = []
+      for (let i = 0; i < n; i++) items.push(await format(tds, t.member, bytes.subarray(i * el.size, (i + 1) * el.size), m, depth + 1))
+      return `[${items.join(', ')}${bytes.length / el.size > n ? ', …' : ''}]`
+    }
     case TypeId.Array: {
       const el = tds.types[t.member - 1]
       if (!el) return '[…]'
@@ -177,7 +222,7 @@ export async function format(tds: Tds, typeIndex: number, bytes: Uint8Array, m: 
       if (off && target && (target.id === TypeId.SChar || target.id === TypeId.UChar || target.id === TypeId.PChar) && depth < 2) {
         try { const s = await m.read(parseInt(m.regs.segments.ds, 16) & 0xffff, off, 40); const end = s.indexOf(0); return `${h4(off)} → "${Array.from(s.subarray(0, end < 0 ? 40 : end), chr).join('')}"` } catch { /* unreadable */ }
       }
-      if (off && target && target.size && target.size <= 8 && depth < 2) {
+      if (off && target && target.size && target.size <= 64 && depth < 2) {
         try { const v = await m.read(parseInt(m.regs.segments.ds, 16) & 0xffff, off, target.size); return `${h4(off)} → ${await format(tds, t.member, v, m, depth + 1)}` } catch { /* unreadable */ }
       }
       return off ? h4(off) : 'null'
@@ -189,7 +234,7 @@ export async function format(tds: Tds, typeIndex: number, bytes: Uint8Array, m: 
       if ((seg || off) && target && (target.id === TypeId.SChar || target.id === TypeId.UChar || target.id === TypeId.PChar) && depth < 2) {
         try { const s = await m.read(seg, off, 40); const end = s.indexOf(0); return `${h4(seg)}:${h4(off)} → "${Array.from(s.subarray(0, end < 0 ? 40 : end), chr).join('')}"` } catch { /* unreadable */ }
       }
-      if ((seg || off) && target && target.size && target.size <= 8 && depth < 2) {
+      if ((seg || off) && target && target.size && target.size <= 64 && depth < 2) {
         try { const v = await m.read(seg, off, target.size); return `${h4(seg)}:${h4(off)} → ${await format(tds, t.member, v, m, depth + 1)}` } catch { /* unreadable */ }
       }
       return seg || off ? `${h4(seg)}:${h4(off)}` : 'nil'
@@ -221,21 +266,45 @@ export interface StackFrame {
   fn: string | null
   /** CS-relative address: IP for the innermost frame, the return address for the others. */
   ip: number
+  /** The address whose line and scope the frame is at: IP, or for a caller the return address minus one (the
+   *  call itself, which may be the last instruction of its line: the return address is then the next line's). */
+  at: number
   bp: number
 }
 
 /**
- * The call stack from the BP chain (near calls: [BP] is the caller's BP,
- * [BP+2] the return address), innermost first, as far as the return
- * addresses stay in the program's own code.
+ * The call stack from the BP chain (near calls: [BP] is the caller's BP, [BP+2] the return address), innermost
+ * first, as far as the return addresses stay in the program's own code. On a function's first instruction
+ * (before `push bp; mov bp,sp`) or on its `ret` (after `pop bp`), BP is still or again the caller's: the return
+ * address is then on top of the stack, and the frame's own BP is where `mov bp,sp` puts or put it.
  */
 export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, max = 8): Promise<StackFrame[]> {
-  // ip < 0: stopped outside the program (the runtime, DOS); the chain from BP still leads back into it.
-  const frames: StackFrame[] = [{ fn: ip >= 0 ? frameAt(tds, ip).fn : null, ip: Math.max(0, ip), bp }]
   const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
+  const cs = parseInt(m.regs.segments.cs, 16) & 0xffff
+  const sp = parseInt(m.regs.general.esp, 16) & 0xffff
   // A return address inside a source line's code is the program's even outside any function (a Pascal main
   // block); the runtime before main has no lines.
   const ours = (addr: number, f: Frame) => f.fn !== null || tds.lines.some((l) => addr >= l.offset && addr - l.offset < 32)
+  const frames: StackFrame[] = []
+  // ip < 0: stopped outside the program (the runtime, DOS); the chain from BP still leads back into it.
+  if (ip >= 0) {
+    const f0 = frameAt(tds, ip)
+    let pushed: number | null = null // bytes above the return address: 0 before push bp, 2 after it
+    if (f0.fnOffset !== null && ip === f0.fnOffset) pushed = 0
+    else if (f0.fnOffset !== null && ip === f0.fnOffset + 1) pushed = 2
+    else {
+      try { const op = (await m.read(cs, ip, 1))[0]; if (op === 0xc3 || op === 0xc2 || op === 0xcb || op === 0xca) pushed = 0 } catch { /* unreadable */ }
+    }
+    if (pushed === null) frames.push({ fn: f0.fn, ip, at: ip, bp })
+    else {
+      frames.push({ fn: f0.fn, ip, at: ip, bp: (sp + pushed - 2) & 0xffff })
+      try {
+        const ret = u16(await m.read(ss, (sp + pushed) & 0xffff, 2))
+        const fc = frameAt(tds, ret - 1)
+        if (ours(ret, fc)) frames.push({ fn: fc.fn, ip: ret, at: ret - 1, bp })
+      } catch { /* unreadable: the chain from BP below still gives the rest */ }
+    }
+  } else frames.push({ fn: null, ip: 0, at: 0, bp })
   let sawOurs = ip >= 0
   let cur = bp
   for (let i = 0; i < max; i++) {
@@ -243,13 +312,46 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
     let link: Uint8Array
     try { link = await m.read(ss, cur, 4) } catch { break }
     const savedBp = u16(link), ret = u16(link, 2)
-    const f = frameAt(tds, ret)
+    const f = frameAt(tds, ret - 1)
     // Outside the program the first links may be the runtime's own frames: keep walking until ours.
-    if (!ours(ret, f)) { if (sawOurs) break } else { sawOurs = true; frames.push({ fn: f.fn, ip: ret, bp: savedBp }) }
+    if (!ours(ret, f)) { if (sawOurs) break } else { sawOurs = true; frames.push({ fn: f.fn, ip: ret, at: ret - 1, bp: savedBp }) }
     if (savedBp <= cur) break
     cur = savedBp
   }
   return frames
+}
+
+/**
+ * The registers as a caller frame had them: SI and DI (Turbo C's register variables) are saved by each callee
+ * on its own stack, in its prologue `push bp; mov bp,sp; [sub sp,N]; push si; [push di]`, so a caller's
+ * values are in the slots of the frames below it. Frame 0's registers are the current ones.
+ */
+export async function registersOf(tds: Tds, m: Machine, frames: StackFrame[], k: number): Promise<Registers> {
+  const general = { ...m.regs.general }
+  const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
+  const cs = parseInt(m.regs.segments.cs, 16) & 0xffff
+  for (let j = 0; j < k && j < frames.length; j++) {
+    const f = frameAt(tds, frames[j].at)
+    if (f.fnOffset === null) continue
+    let code: Uint8Array
+    try { code = await m.read(cs, f.fnOffset, 12) } catch { continue }
+    // The prologue: where the pushes land, and how far into it this frame has got.
+    let p = 0, n = 0
+    if (code[p] === 0x55) p++; else continue
+    if ((code[p] === 0x8b && code[p + 1] === 0xec) || (code[p] === 0x89 && code[p + 1] === 0xe5)) p += 2; else continue
+    if (code[p] === 0x83 && code[p + 1] === 0xec) { n = code[p + 2]; p += 3 } else if (code[p] === 0x81 && code[p + 1] === 0xec) { n = code[p + 2] | (code[p + 3] << 8); p += 4 }
+    const pushes: string[] = []
+    while (code[p] === 0x56 || code[p] === 0x57) { pushes.push(code[p] === 0x56 ? 'esi' : 'edi'); p++ }
+    // The innermost frame only counts once its pushes are done (stopped inside its prologue: not yet).
+    if (j === 0 && frames[0].ip < f.fnOffset + p) continue
+    for (let i = 0; i < pushes.length; i++) {
+      try {
+        const slot = await m.read(ss, (frames[j].bp - n - 2 * (i + 1)) & 0xffff, 2)
+        general[pushes[i]] = '0x' + u16(slot).toString(16).padStart(8, '0')
+      } catch { /* leave the later value */ }
+    }
+  }
+  return { ...m.regs, general }
 }
 
 /** Reads and prints a frame's locals and the globals; `previous` marks what changed since. */
@@ -266,6 +368,20 @@ export async function readValues(tds: Tds, symbols: TdsSymbol[], m: Machine, bp:
   const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
   let window: Uint8Array | null = null
   if (auto.length) { try { window = await m.read(ss, (bp + lo) & 0xffff, hi - lo) } catch { window = null } }
+  // And one read per data segment for the statics (the globals), when they lie close enough together: each
+  // read is a round trip to the box, a dozen globals one by one take seconds.
+  const blocks = new Map<number, { lo: number; hi: number; bytes?: Uint8Array }>()
+  for (const s of symbols) {
+    if (s.cls !== SymbolClass.Static) continue
+    const size = tds.types[s.type - 1]?.size ?? 2
+    const b = blocks.get(s.seg) ?? { lo: s.offset, hi: s.offset }
+    b.lo = Math.min(b.lo, s.offset); b.hi = Math.max(b.hi, s.offset + Math.min(size, 256))
+    blocks.set(s.seg, b)
+  }
+  for (const [seg, b] of blocks) {
+    if (b.hi - b.lo > 0x4000) continue
+    try { b.bytes = await m.read((m.entryCs + seg) & 0xffff, b.lo, b.hi - b.lo) } catch { /* read one by one below */ }
+  }
   for (const s of symbols) {
     const t = tds.types[s.type - 1]
     const size = t?.size ?? 2
@@ -288,7 +404,10 @@ export async function readValues(tds: Tds, symbols: TdsSymbol[], m: Machine, bp:
         where = `var → ${h4(pseg)}:${h4(poff)}`
       } else if (s.cls === SymbolClass.Static) {
         const seg = (m.entryCs + s.seg) & 0xffff
-        value = await format(tds, s.type, await m.read(seg, s.offset, size), m)
+        const b = blocks.get(s.seg)
+        const n = Math.min(size, 256)
+        const bytes = b?.bytes ? b.bytes.subarray(s.offset - b.lo, s.offset - b.lo + n) : await m.read(seg, s.offset, n)
+        value = await format(tds, s.type, bytes, m)
         where = `${h4(seg)}:${h4(s.offset)}`
       }
     } catch (err) {
