@@ -153,6 +153,13 @@ export async function readTextFile(id: string, path: string): Promise<string> {
   return new TextDecoder('latin1').decode(await response.arrayBuffer())
 }
 
+/** A file's bytes as they are (an EXE, a binary). */
+export async function readBinaryFile(id: string, path: string): Promise<Uint8Array> {
+  const response = await request(filePath(id, path))
+  if (!response.ok) throw new Error(`${path}: ${response.status}`)
+  return new Uint8Array(await response.arrayBuffer())
+}
+
 /** Writes a string read with readTextFile (characters above 0xFF become '?'). */
 export async function writeTextFile(id: string, path: string, text: string): Promise<void> {
   const bytes = Uint8Array.from(text, (c) => { const n = c.charCodeAt(0); return n > 0xff ? 0x3f : n })

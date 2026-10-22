@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, BorderNode, DockLocation, Layout, Model, TabNode, TabSetNode, type Action, type IJsonModel } from 'flexlayout-react'
 import 'flexlayout-react/style/light.css'
 import type { RPC } from '../screens/DebugPanel'
@@ -12,6 +12,9 @@ import { Machine } from './Machine'
 import { MemoryMapPanel } from './MemoryMapPanel'
 import type { Debugger } from './useDebugger'
 import type { HeatTick } from './heat'
+import type { Tds } from './tds'
+import type { VarValue } from './symbols'
+import { VariablesPanel } from './VariablesPanel'
 
 /**
  * The workbench as a dockable workspace (flexlayout): every panel is a tab
@@ -57,6 +60,7 @@ function loadModel(): Model {
     if (raw) {
       const m = Model.fromJson(JSON.parse(raw) as IJsonModel)
       if (m.getNodeById('machine')) m.doAction(Actions.deleteTab('machine')) // only while a program runs
+      if (m.getNodeById('vars')) m.doAction(Actions.deleteTab('vars'))
       if (m.getNodeById('editor') && m.getNodeById('files') && m.getNodeById('terminal')) return m
     }
   } catch { /* a stale or broken layout: start over */ }
@@ -86,6 +90,16 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0)
   const [intFocus, setIntFocus] = useState<{ int: number; ax: number } | null>(null)
+  // The program's debug symbols, from the editor's last debug build, for the Variables panel.
+  const [symbols, setSymbols] = useState<{ tds: Tds; source: string } | null>(null)
+  const onSymbols = useCallback((tds: Tds | null, source: string) => setSymbols(tds ? { tds, source } : null), [])
+  // The variable values on show, for the editor's hover.
+  const valuesRef = useRef<VarValue[]>([])
+  const onValues = useCallback((values: VarValue[]) => { valuesRef.current = values }, [])
+  const lookupValue = useCallback((name: string) => {
+    const v = valuesRef.current.find((x) => x.name === name) ?? valuesRef.current.find((x) => x.name.toLowerCase() === name.toLowerCase())
+    return v ? `${v.value}  ·  ${v.type}` : undefined
+  }, [])
   // Where a collapsed tab came from, to put it back.
   const homes = useRef(new Map<string, string>())
 
@@ -152,11 +166,22 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       model.doAction(Actions.deleteTab('machine'))
     }
   }, [active, model])
+  // The Variables tab follows a debug session of a program with symbols.
+  const vars = !!dbg.session && !!symbols
+  useEffect(() => {
+    const has = !!model.getNodeById('vars')
+    if (vars && !has) {
+      const target = model.getNodeById('side') ?? model.getNodeById('main')
+      if (target) model.doAction(Actions.addNode({ type: 'tab', id: 'vars', name: 'Variables', component: 'vars' }, target.getId(), DockLocation.CENTER, -1, true))
+    } else if (!vars && has) {
+      model.doAction(Actions.deleteTab('vars'))
+    }
+  }, [vars, model])
 
   const debug: EditorDebug = useMemo(() => ({
-    active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && !dbg.stopped, busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, breakpoints: dbg.breakpoints,
+    active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && !dbg.stopped, busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, entryCs: dbg.entryCs, breakpoints: dbg.breakpoints,
     toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: dbg.stop,
-  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, dbg.stop])
+  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, dbg.stop])
 
   const factory = (node: TabNode) => {
     switch (node.getComponent()) {
@@ -167,7 +192,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
             <Editor
               ref={editorRef} boxId={boxId} running={running} onRun={onRun} look="paper" program={program} debug={debug}
-              tree={false} onPathChange={setPath} onDirChange={setDir} onSaved={() => setTreeKey((k) => k + 1)}
+              tree={false} onPathChange={setPath} onDirChange={setDir} onSaved={() => setTreeKey((k) => k + 1)} onSymbols={onSymbols} lookupValue={lookupValue}
             />
           </Suspense>
         )
@@ -181,6 +206,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
         return <MemoryMapPanel regs={dbg.regs} />
       case 'machine':
         return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
+      case 'vars':
+        return symbols ? <VariablesPanel dbg={dbg} tds={symbols.tds} source={symbols.source} onValues={onValues} /> : <div className="muted">no symbols</div>
     }
     return <div className="muted">?</div>
   }
