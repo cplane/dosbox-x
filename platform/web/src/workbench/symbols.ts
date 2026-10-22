@@ -229,7 +229,8 @@ export interface StackFrame {
  * addresses stay in the program's own code.
  */
 export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, max = 8): Promise<StackFrame[]> {
-  const frames: StackFrame[] = [{ fn: frameAt(tds, ip).fn, ip, bp }]
+  // ip < 0: stopped outside the program (the runtime, DOS); the chain from BP still leads back into it.
+  const frames: StackFrame[] = [{ fn: ip >= 0 ? frameAt(tds, ip).fn : null, ip: Math.max(0, ip), bp }]
   const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
   let cur = bp
   for (let i = 0; i < max; i++) {
@@ -238,8 +239,9 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
     try { link = await m.read(ss, cur, 4) } catch { break }
     const savedBp = u16(link), ret = u16(link, 2)
     const f = frameAt(tds, ret)
-    if (!f.fn) break
-    frames.push({ fn: f.fn, ip: ret, bp: savedBp })
+    // Outside the program the first links may be the runtime's own frames: keep walking until ours.
+    if (!f.fn && frames.some((x) => x.fn !== null)) break
+    if (f.fn) frames.push({ fn: f.fn, ip: ret, bp: savedBp })
     if (savedBp <= cur) break
     cur = savedBp
   }

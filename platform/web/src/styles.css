@@ -506,3 +506,6 @@ html.paper body { overflow: hidden; }
 .vars-frame { border: 1px solid transparent; background: none; padding: 1px 6px; font-size: 12px; border-radius: 4px; color: var(--ink); }
 .vars-frame.on { border-color: var(--line); background: var(--panel); }
 .vars-frame:hover { border-color: var(--line); }
+/* The frame's line when IP itself has no line (paused in the runtime) or a caller was chosen: hollow. */
+.dbg-arrow.outer::after { content: '▷'; color: #3b63a8; }
+.dbg-line.outer { background: rgba(59, 99, 168, 0.08); }
