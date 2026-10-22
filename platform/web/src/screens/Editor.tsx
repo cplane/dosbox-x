@@ -1,10 +1,11 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
-import { getBox, readTextFile, runCommand, writeTextFile } from '../api/client'
+import { getBox, readBinaryFile, readTextFile, runCommand, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
 import { FileTree } from './FileTree'
-import { lineForOffset, parseListing, parseMap, type LineMap } from '../workbench/listing'
+import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
+import { lineMapFromTds, parseTds, type Tds } from '../workbench/tds'
 
 /** What the editor needs from the debugger (workbench): where it is, its breakpoints, and the controls. */
 export interface EditorDebug {
@@ -15,9 +16,10 @@ export interface EditorDebug {
   busy: boolean
   /** The last failed debugger call, if any. */
   error: string | null
-  /** IP and CS while stopped. */
+  /** IP and CS while stopped; CS at the entry (the load segment) that symbols are relative to. */
   ip: number | null
   cs: string
+  entryCs: number | null
   breakpoints: Set<number>
   toggleBreakpoint: (offset: number) => void | Promise<void>
   start: (command: string) => Promise<void>
@@ -62,6 +64,10 @@ interface Props {
   onPathChange?: (path: string | null) => void
   onDirChange?: (dir: string) => void
   onSaved?: () => void
+  /** The debug symbols of the last debug build (null when the EXE has none), with the source they describe. */
+  onSymbols?: (tds: Tds | null, source: string) => void
+  /** A variable's current value by name, for the hover while debugging. */
+  lookupValue?: (name: string) => string | undefined
 }
 
 /** What a Files tab (or anything else) can ask the editor to do. */
@@ -134,8 +140,10 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
   let build = buildCmd.includes('{}') ? buildCmd.replace('{}', name) : `${buildCmd.trim()} ${name}`
   // The debugger steps by source line through ML's listing (/Fl).
   if (opts.listing && /\bML\b/i.test(build) && !/\/Fl\b/i.test(build)) build = build.replace(/\bML\b/i, 'ML /Fl')
-  // Turbo C: line numbers in the object (-y) and a link map (-M) map lines to addresses. The TCC token is the one followed by a space.
-  if (opts.listing && /\bTCC(\.EXE)?(?=\s)/i.test(build) && !/\s-y\b/.test(build)) build = build.replace(/\bTCC(\.EXE)?(?=\s)/i, 'TCC -y -M')
+  // Turbo C (-v) and Turbo Pascal (-V) put Turbo Debugger symbols in the EXE: lines, functions, variables with types.
+  // The compiler token is the one followed by a space (not the directory of the same name).
+  if (opts.listing && /\bTCC(\.EXE)?(?=\s)/i.test(build) && !/\s-v\b/.test(build)) build = build.replace(/\bTCC(\.EXE)?(?=\s)/i, 'TCC -v')
+  if (opts.listing && /\bTPC(\.EXE)?(?=\s)/i.test(build) && !/\s[-/]V\b/.test(build)) build = build.replace(/\bTPC(\.EXE)?(?=\s)/i, 'TPC -V')
   switch (langOf(name)) {
     case 'asm': case 'c': case 'pas':
       lines.push(
@@ -164,9 +172,28 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
 /** The one step the console types for a build. */
 export const buildSteps: Step[] = [{ cmd: 'C:\\BUILD', check: true }]
 
+// The variable hover: one provider for all editors, asking whichever editor is current.
+const lookupRef: { current?: (name: string) => string | undefined } = {}
+let hoverRegistered = false
+function registerVariableHover() {
+  if (hoverRegistered) return
+  hoverRegistered = true
+  for (const language of ['c', 'cpp', 'pascal', 'masm', 'plaintext']) {
+    monaco.languages.registerHoverProvider(language, {
+      provideHover(model, position) {
+        const w = model.getWordAtPosition(position)
+        const value = w && lookupRef.current ? lookupRef.current(w.word) : undefined
+        if (!w || value === undefined) return null
+        return { range: new monaco.Range(position.lineNumber, w.startColumn, position.lineNumber, w.endColumn), contents: [{ value: `**${w.word}** = ${value}` }] }
+      },
+    })
+  }
+}
+
 interface Doc { text: string; saved: string }
 
-export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, running, onRun, look = 'dos', program, debug, tree = true, onPathChange, onDirChange, onSaved }: Props, ref) {
+export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, running, onRun, look = 'dos', program, debug, tree = true, onPathChange, onDirChange, onSaved, onSymbols, lookupValue }: Props, ref) {
+  lookupRef.current = lookupValue
   // A program other than the shell has the keyboard: typing C:\BUILD would go to it.
   const busyWith = program && program.toUpperCase() !== 'COMMAND' ? program : null
   // Source lines <-> code offsets of the last debug build (MASM listing).
@@ -324,6 +351,18 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
         return
       }
       setLineMap(null)
+      let tds: Tds | null = null
+      if (lang === 'c' || lang === 'pas') {
+        // Turbo Debugger symbols in the EXE: lines, functions and variables.
+        try {
+          tds = parseTds(await readBinaryFile(boxId, (dir ? `${dir}/` : '') + `${base}.EXE`))
+          if (tds) { const map = lineMapFromTds(tds); setLineMap(map); lineMapRef.current = map }
+          else setStatus('no debug symbols in the EXE; stepping by instruction')
+        } catch {
+          setStatus('could not read the EXE; stepping by instruction')
+        }
+      }
+      onSymbols?.(tds, text)
       if (lang === 'asm') {
         try {
           const lst = await readTextFile(boxId, (dir ? `${dir}/` : '') + `${base}.LST`)
@@ -333,16 +372,6 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           if (map.lineOf.size === 0) setStatus('no lines matched the listing; stepping by instruction')
         } catch {
           setStatus('no listing (.LST); stepping by instruction')
-        }
-      } else if (lang === 'c') {
-        try {
-          const mapText = await readTextFile(boxId, (dir ? `${dir}/` : '') + `${base}.MAP`)
-          const map = parseMap(mapText, name)
-          setLineMap(map)
-          lineMapRef.current = map
-          if (map.lineOf.size === 0) setStatus('no line numbers in the map; stepping by instruction')
-        } catch {
-          setStatus('no map (.MAP); stepping by instruction')
         }
       }
       // A bare name: the agent takes a DOS filename only, and BUILD.BAT left the shell in the file's directory.
@@ -369,27 +398,23 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   // A debugger error shows in the status line, where the build errors show.
   useEffect(() => { if (debug?.error) setStatus(`debugger: ${debug.error}`) }, [debug?.error])
 
-  // CS at the program's entry: the map's and the listing's offsets are relative to it; elsewhere (DOS, the BIOS) no line applies.
-  const entryCsRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!debug?.active) entryCsRef.current = null
-    else if (entryCsRef.current === null && debug.cs) entryCsRef.current = debug.cs
-  }, [debug?.active, debug?.cs])
+  // CS at the program's entry (the load segment): the symbols' and the listing's offsets are relative to it; elsewhere
+  // (DOS, the BIOS, a Pascal unit's segment) no line applies.
+  const atEntryCs = (cs: string) => debug?.entryCs !== null && debug?.entryCs !== undefined && (parseInt(cs, 16) & 0xffff) === debug.entryCs
 
   // A step by source line when lines map to code: instructions until the line changes, never into code without lines.
   const stepSource = (mode: 'into' | 'over') => {
     const d = debugRef.current, map = lineMapRef.current
     if (!d || !d.stopped) return
-    const entryCs = entryCsRef.current
-    const start = map && d.ip !== null && d.cs === entryCs ? lineForOffset(map, d.ip) : null
+    const start = map && d.ip !== null && atEntryCs(d.cs) ? lineForOffset(map, d.ip) : null
     if (!map || start === null) { d.step(mode); return }
     d.stepUntil((ip, cs, text) => {
-      const line = cs === entryCs ? lineForOffset(map, ip) : null
+      const line = atEntryCs(cs) ? lineForOffset(map, ip) : null
       if (line !== null && line !== start) return 'stop'
       if (line === null) return 'over'
-      // "call 00000291 ($-29)": a near call to a line of ours is the one thing stepped into.
-      const call = /^call\s+(?:[0-9a-f]{4}:)?([0-9a-f]{4,8})\b/i.exec(text.trim())
-      if (call && mode === 'into' && lineForOffset(map, parseInt(call[1], 16) & 0xffff) !== null) return 'into'
+      // "call 00000291 ($-29)" / "call 00D0:0012": a near call to a line of ours is the one thing stepped into.
+      const call = /^call\s+(?:([0-9a-f]{4}):)?([0-9a-f]{4,8})\b/i.exec(text.trim())
+      if (call && mode === 'into' && !call[1] && lineForOffset(map, parseInt(call[2], 16) & 0xffff) !== null) return 'into'
       return 'over'
     })
   }
@@ -407,7 +432,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       for (const [line, off] of map.offsetOf) {
         if (debug.breakpoints.has(off)) decos.push({ range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: 'dbg-bp', glyphMarginHoverMessage: { value: 'breakpoint' } } })
       }
-      const cur = debug.stopped && debug.ip !== null && debug.cs === entryCsRef.current ? lineForOffset(map, debug.ip) : null
+      const cur = debug.stopped && debug.ip !== null && atEntryCs(debug.cs) ? lineForOffset(map, debug.ip) : null
       if (cur) {
         decos.push({ range: new monaco.Range(cur, 1, cur, 1), options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-arrow' } })
         editor.revealLineInCenterIfOutsideViewport(cur)
@@ -419,10 +444,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       }
     }
     decoRef.current.set(decos)
-  }, [debug?.active, debug?.stopped, debug?.ip, debug?.cs, debug?.breakpoints, lineMap, pendingBps, path])
+  }, [debug?.active, debug?.stopped, debug?.ip, debug?.cs, debug?.entryCs, debug?.breakpoints, lineMap, pendingBps, path]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
+    registerVariableHover()
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { saveRef.current() })
     // Debugging from the keyboard, and breakpoints from the gutter.
     editor.addCommand(monaco.KeyCode.F7, () => stepSourceRef.current('into'))

@@ -492,3 +492,17 @@ html.paper body { overflow: hidden; }
 .media-btn:hover:not(:disabled) { background: rgba(70, 70, 65, 0.08); border-color: transparent; }
 .media-btn.stop { color: #b9553f; }
 .dbg-bp.pending::after { background: #c9705b; }
+
+/* Variables: the function at IP with its locals, then the globals; a changed value lights up. */
+.vars { padding: 6px 8px; font-size: 12px; overflow: auto; height: 100%; }
+.vars-head { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 4px; }
+.vars-table { border-collapse: collapse; width: 100%; }
+.vars-table td { padding: 2px 6px 2px 0; vertical-align: top; border-bottom: 1px solid rgba(70, 70, 65, 0.06); }
+.var-name { font-weight: 600; white-space: nowrap; }
+.var-type { color: var(--muted); white-space: nowrap; }
+.var-value { font-family: "JetBrains Mono", ui-monospace, monospace; word-break: break-all; }
+.vars-table tr.changed .var-value { background: #f3d9cf; border-radius: 3px; }
+.vars-calls { display: flex; flex-wrap: wrap; gap: 4px 2px; align-items: center; }
+.vars-frame { border: 1px solid transparent; background: none; padding: 1px 6px; font-size: 12px; border-radius: 4px; color: var(--ink); }
+.vars-frame.on { border-color: var(--line); background: var(--panel); }
+.vars-frame:hover { border-color: var(--line); }

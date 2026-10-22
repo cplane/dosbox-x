@@ -111,6 +111,10 @@ export interface Debugger {
   /** IP and CS while stopped. */
   ip: number | null
   cs: string
+  /** CS at the program's entry: the load segment, which symbols and line maps are relative to. */
+  entryCs: number | null
+  /** Bytes of memory while stopped (segment:offset, real mode). */
+  readMemory: (seg: number, offset: number, length: number) => Promise<Uint8Array>
   lines: DisLine[]
   /** Breakpoint offsets in the code segment. */
   breakpoints: Set<number>
@@ -151,6 +155,7 @@ export function useDebugger(rpc: RPC): Debugger {
   const [prevRegs, setPrevRegs] = useState<Registers | null>(null)
   const [lines, setLines] = useState<DisLine[]>([])
   const [cs, setCs] = useState('')
+  const [entryCs, setEntryCs] = useState<number | null>(null)
   const [bps, setBps] = useState<Map<number, string>>(new Map()) // offset -> breakpoint_id
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -282,7 +287,21 @@ export function useDebugger(rpc: RPC): Debugger {
     setBps(new Map())
     windowRef.current = null
     await refresh(s)
+    // The entry stop: CS is the load segment.
+    const r0 = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
+    setEntryCs(parseInt(r0.segments.cs, 16) & 0xffff)
   }), [guard, rpc, refresh])
+
+  const readMemory = useCallback(async (seg: number, offset: number, length: number): Promise<Uint8Array> => {
+    const s = sessionRef.current
+    if (!s) throw new Error('no session')
+    const r = (await rpc('memory.read', {
+      session_id: s.session_id,
+      address: { space: 'segmented', segment: '0x' + (seg & 0xffff).toString(16).toUpperCase().padStart(4, '0'), offset: off8(offset & 0xffff) },
+      length,
+    })) as { data_base64: string }
+    return Uint8Array.from(atob(r.data_base64), (c) => c.charCodeAt(0))
+  }, [rpc])
 
   const step = useCallback((mode: 'into' | 'over') => guard(async () => {
     const s = sessionRef.current
@@ -359,8 +378,10 @@ export function useDebugger(rpc: RPC): Debugger {
     const s = sessionRef.current
     if (!s) return
     if (s.state !== 'exited') {
-      const op = (await rpc('session.stop', { session_id: s.session_id })) as { operation_id: string }
-      await waitOp(s, op.operation_id)
+      try {
+        const op = (await rpc('session.stop', { session_id: s.session_id })) as { operation_id: string }
+        await waitOp(s, op.operation_id)
+      } catch { /* the session may already be gone (the program ended as it was stopped) */ }
     }
     playRef.current.on = false
     setPlaying(false)
@@ -373,6 +394,7 @@ export function useDebugger(rpc: RPC): Debugger {
     setStack(null)
     setAccesses(null)
     setRecording(null)
+    setEntryCs(null)
     windowRef.current = null
   }), [guard, rpc, waitOp])
 
@@ -434,7 +456,7 @@ export function useDebugger(rpc: RPC): Debugger {
   return {
     session, stopped, regs, prevRegs,
     ip: stopped && regs ? parseInt(regs.instruction_pointer, 16) : null,
-    cs, lines, breakpoints: new Set(bps.keys()), busy, error,
+    cs, entryCs, readMemory, lines, breakpoints: new Set(bps.keys()), busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
     start, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
