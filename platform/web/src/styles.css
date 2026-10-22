@@ -509,3 +509,16 @@ html.paper body { overflow: hidden; }
 /* The frame's line when IP itself has no line (paused in the runtime) or a caller was chosen: hollow. */
 .dbg-arrow.outer::after { content: '▷'; color: #3b63a8; }
 .dbg-line.outer { background: rgba(59, 99, 168, 0.08); }
+
+/* Call stack and watch panels (beside the variables). */
+.calls-list { display: flex; flex-direction: column; gap: 2px; }
+.calls-frame { display: flex; gap: 8px; align-items: baseline; text-align: left; border: 1px solid transparent; background: none; padding: 2px 6px; font-size: 12px; border-radius: 4px; color: var(--ink); }
+.calls-frame.on { border-color: var(--line); background: var(--panel); }
+.calls-frame:hover { border-color: var(--line); }
+.calls-depth { min-width: 1.2em; }
+.watch-add { display: flex; gap: 4px; margin: 2px 0 6px; }
+.watch-add input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); }
+.watch-add button { font-size: 12px; padding: 2px 8px; }
+.watch-x { width: 1.4em; text-align: right; }
+.watch-remove { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 13px; }
+.watch-remove:hover { color: var(--ink); }
