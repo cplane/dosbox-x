@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Actions, BorderNode, DockLocation, Layout, Model, TabNode, TabSetNode, type Action, type IJsonModel } from 'flexlayout-react'
+import { Actions, BorderNode, DockLocation, Layout, Model, RowNode, TabNode, TabSetNode, type Action, type IJsonModel } from 'flexlayout-react'
 import 'flexlayout-react/style/light.css'
 import type { RPC } from '../screens/DebugPanel'
 import type { EditorDebug, EditorHandle } from '../screens/Editor'
@@ -57,6 +57,69 @@ const defaultLayout: IJsonModel = {
   },
 }
 
+/**
+ * Where a collapsed tab comes back: next to the tab `with` (into its group for `center`, else in a new group on
+ * that side of it), or at an edge of the window; `weight` is the size its group had, `anchorWeight` the
+ * neighbour's then; `index` its place among the group's tabs.
+ */
+export interface Spot { with?: string; dock?: 'center' | 'top' | 'bottom' | 'left' | 'right'; edge?: 'start' | 'end'; weight?: number; anchorWeight?: number; index?: number }
+
+const DOCK = { center: DockLocation.CENTER, top: DockLocation.TOP, bottom: DockLocation.BOTTOM, left: DockLocation.LEFT, right: DockLocation.RIGHT }
+const OPPOSITE: Record<string, Spot['dock']> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left', center: 'center' }
+
+/**
+ * For a group about to go: the nearest neighbour (going up through the rows: a row left with nothing in it goes
+ * too) and the side the group was on, with the size of what goes (the group, or the row it was alone in).
+ */
+function neighbourOf(model: Model, group: TabSetNode): Spot {
+  const root = model.getRoot()
+  let node: TabSetNode | RowNode = group
+  for (let parent = node.getParent(); parent instanceof RowNode; node = parent, parent = parent.getParent()) {
+    const kids = parent.getChildren()
+    const i = kids.indexOf(node)
+    const next = kids[i + 1], prev = kids[i - 1]
+    const sibling = next ?? prev
+    if (!sibling) continue // alone in this row: look one level up
+    const across = parent.getOrientation() === DockLocation.LEFT.getOrientation()
+    const dock: Spot['dock'] = next ? (across ? 'left' : 'top') : (across ? 'right' : 'bottom')
+    if (sibling instanceof TabSetNode) {
+      const sel = sibling.getSelectedNode() ?? sibling.getChildren()[0]
+      if (sel) return { with: sel.getId(), dock, weight: node.getWeight(), anchorWeight: sibling.getWeight() }
+    }
+    // A row beside it: at the window's edge when it was at one, else against the nearest group in that row.
+    if (parent === root && (i === 0 || i === kids.length - 1)) return { edge: i === 0 ? 'start' : 'end', weight: node.getWeight() }
+    let leaf: TabSetNode | undefined
+    const walk = (n: RowNode | TabSetNode) => {
+      if (n instanceof TabSetNode) { if (!leaf || !next) leaf = n; return }
+      const cs = n.getChildren() as (RowNode | TabSetNode)[]
+      for (const c of next ? cs : [...cs]) { walk(c); if (leaf && next) return }
+    }
+    walk(sibling as RowNode)
+    const sel = leaf?.getSelectedNode() ?? leaf?.getChildren()[0]
+    if (sel) return { with: sel.getId(), dock, weight: node.getWeight(), anchorWeight: leaf?.getWeight() }
+  }
+  return {}
+}
+
+/** For a tab collapsed before spots were kept: its place in the default layout. */
+function defaultSpot(model: Model, id: string): Spot {
+  const isOpen = (x: string) => { const n = model.getNodeById(x); return n instanceof TabNode && n.getParent() instanceof TabSetNode }
+  const side = SIDE.find((x) => x !== id && isOpen(x))
+  if (id === 'editor' || id === 'terminal') {
+    const partner = id === 'editor' ? 'terminal' : 'editor'
+    if (isOpen(partner)) return id === 'editor' ? { with: partner, dock: 'top', weight: 70, anchorWeight: 30 } : { with: partner, dock: 'bottom', weight: 30, anchorWeight: 70 }
+    // The middle column: right of the files, else left of the side panels.
+    if (isOpen('files')) return { with: 'files', dock: 'right', weight: 57, anchorWeight: 18 }
+    if (side) return { with: side, dock: 'left', weight: 57, anchorWeight: 25 }
+    return {}
+  }
+  if (id === 'files') return { edge: 'start', weight: 18 }
+  // The side panels: with one of them that is out, else a group of their own at the right edge.
+  return side ? { with: side, dock: 'center' } : { edge: 'end', weight: 25 }
+}
+
+const SIDE = ['guide', 'ints', 'memmap', 'machine', 'vars', 'watch']
+
 function loadModel(): Model {
   try {
     const raw = localStorage.getItem(LAYOUT_KEY)
@@ -64,6 +127,10 @@ function loadModel(): Model {
       const m = Model.fromJson(JSON.parse(raw) as IJsonModel)
       if (m.getNodeById('machine')) m.doAction(Actions.deleteTab('machine')) // only while a program runs
       for (const id of ['vars', 'watch', 'calls']) if (m.getNodeById(id)) m.doAction(Actions.deleteTab(id)) // only while debugging
+      // Empty groups kept by an earlier version of collapsing: they only take space.
+      const empty: string[] = []
+      m.visitNodes((n) => { if (n instanceof TabSetNode && n.getChildren().length === 0) empty.push(n.getId()) })
+      for (const id of empty) m.doAction(Actions.deleteTabset(id))
       if (m.getNodeById('editor') && m.getNodeById('files') && m.getNodeById('terminal')) return m
     }
   } catch { /* a stale or broken layout: start over */ }
@@ -141,37 +208,72 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     return v ? `${v.value}  ·  ${v.type}` : undefined
   }, [])
   // Collapsing: the tab goes to the bottom bar and remembers, in its own config (saved with the layout, so a
-  // reload keeps it), the group it came from. A group the tab was alone in would be deleted when emptied, and
-  // the tab would have nowhere to go back to: such a group stays, squeezed to nothing, and gets its size back
-  // on restore.
-  type Home = { home?: string; homeWeight?: number }
+  // reload keeps it), where to come back: into a group that still has other tabs, or, when it was alone (its
+  // group is deleted once empty, freeing the space), beside a neighbour on a side, or at an edge of the window.
   const bottomBorder = () => model.getBorderSet().getBorders().find((b) => b.getLocation() === DockLocation.BOTTOM)
+  const spotOf = (tab: TabNode): Spot | undefined => (tab.getConfig() as { spot?: Spot } | undefined)?.spot
+  const setSpot = (tab: TabNode, spot: Spot | undefined) => {
+    const { spot: _old, home: _h, homeWeight: _w, ...rest } = (tab.getConfig() ?? {}) as Record<string, unknown>
+    model.doAction(Actions.updateNodeAttributes(tab.getId(), { config: spot ? { ...rest, spot } : rest }))
+  }
   const collapse = (tab: TabNode) => {
     const border = bottomBorder()
     const group = tab.getParent()
     if (!border || !(group instanceof TabSetNode)) return
-    const alone = group.getChildren().length === 1
-    const home: Home = { home: group.getId(), homeWeight: alone ? group.getWeight() : undefined }
-    model.doAction(Actions.updateNodeAttributes(tab.getId(), { config: { ...(tab.getConfig() ?? {}), ...home } }))
-    if (alone) model.doAction(Actions.updateNodeAttributes(group.getId(), { enableDeleteWhenEmpty: false, weight: 0.001 }))
+    const other = group.getChildren().find((c) => c !== tab)
+    // Alone in the window too (everything else collapsed): no neighbour to remember, its usual place then.
+    const near = other ? undefined : neighbourOf(model, group)
+    setSpot(tab, other ? { with: other.getId(), dock: 'center', index: group.getChildren().indexOf(tab) } : near && (near.with || near.edge) ? near : defaultSpot(model, tab.getId()))
     model.doAction(Actions.moveNode(tab.getId(), border.getId(), DockLocation.CENTER, -1, false))
   }
   const restore = (tab: TabNode) => {
-    const cfg = (tab.getConfig() ?? {}) as Home
-    const home = cfg.home ? model.getNodeById(cfg.home) : undefined
-    if (home instanceof TabSetNode) {
-      model.doAction(Actions.moveNode(tab.getId(), home.getId(), DockLocation.CENTER, -1, true))
-      if (cfg.homeWeight !== undefined) model.doAction(Actions.updateNodeAttributes(home.getId(), { enableDeleteWhenEmpty: true, weight: cfg.homeWeight }))
-    } else {
-      // No home on record (collapsed before this was kept): the editor's group, else any group there is.
-      let target = model.getNodeById(tab.getId() === 'editor' ? 'bottom' : 'main')
-      if (!(target instanceof TabSetNode)) {
-        model.visitNodes((n) => { if (!target && n instanceof TabSetNode) target = n })
-      }
-      if (target) model.doAction(Actions.moveNode(tab.getId(), target.getId(), tab.getId() === 'editor' ? DockLocation.TOP : DockLocation.CENTER, -1, true))
+    // Everything collapsed: the first one back simply fills the window; the others dock against what is open.
+    let open = 0
+    model.visitNodes((n) => { if (n instanceof TabSetNode) open += n.getChildren().length })
+    const own = spotOf(tab) ?? defaultSpot(model, tab.getId())
+    let spot: Spot = open === 0 ? { weight: own.weight } : own // its own size, so what comes back next sits in proportion
+    // The neighbour is collapsed too: take its place, and let it come back on our other side later.
+    for (let hops = 0; spot.with && hops < 6; hops++) {
+      const anchor = model.getNodeById(spot.with)
+      if (!(anchor instanceof TabNode) || !(anchor.getParent() instanceof BorderNode)) break
+      const recorded = spotOf(anchor)
+      // A neighbour collapsed with no record of its own (by an older version): our usual place among what is open.
+      if (!recorded) { spot = defaultSpot(model, tab.getId()); break }
+      const theirs = recorded
+      // It comes back on our other side (or into our group), so the two end up as they were.
+      setSpot(anchor, spot.dock && spot.dock !== 'center'
+        ? { with: tab.getId(), dock: OPPOSITE[spot.dock], weight: spot.anchorWeight, anchorWeight: spot.weight }
+        : { with: tab.getId(), dock: 'center', index: theirs.index })
+      spot = { ...theirs, weight: theirs.weight ?? spot.weight } // our size there is theirs
     }
-    const { home: _h, homeWeight: _w, ...rest } = cfg as Record<string, unknown>
-    model.doAction(Actions.updateNodeAttributes(tab.getId(), { config: rest }))
+    const anchor = spot.with ? model.getNodeById(spot.with) : undefined
+    const anchorGroup = anchor instanceof TabNode ? anchor.getParent() : undefined
+    if (anchorGroup instanceof TabSetNode) {
+      // Into a group: side panels by their usual order, other tabs at the place they had.
+      const kids = anchorGroup.getChildren().map((c) => c.getId())
+      const rank = SIDE.indexOf(tab.getId())
+      const at = spot.dock === 'center' || !spot.dock
+        ? (rank >= 0 && kids.every((k) => SIDE.includes(k)) ? kids.filter((k) => SIDE.indexOf(k) < rank).length : Math.min(spot.index ?? -1, kids.length))
+        : -1
+      model.doAction(Actions.moveNode(tab.getId(), anchorGroup.getId(), DOCK[spot.dock ?? 'center'], at, true))
+      if (spot.dock && spot.dock !== 'center' && spot.anchorWeight !== undefined) model.doAction(Actions.updateNodeAttributes(anchorGroup.getId(), { weight: spot.anchorWeight }))
+    } else if (spot.edge) {
+      model.doAction(Actions.moveNode(tab.getId(), model.getRoot().getId(), spot.edge === 'start' ? DockLocation.LEFT : DockLocation.RIGHT, -1, true))
+    } else {
+      // Nothing to dock against: any group there is.
+      let target: TabSetNode | undefined
+      model.visitNodes((n) => { if (!target && n instanceof TabSetNode) target = n })
+      if (target) model.doAction(Actions.moveNode(tab.getId(), target.getId(), DockLocation.CENTER, -1, true))
+      else model.doAction(Actions.moveNode(tab.getId(), model.getRoot().getId(), DockLocation.LEFT, -1, true))
+    }
+    const group = tab.getParent()
+    if (group instanceof TabSetNode && spot.weight !== undefined && spot.dock !== 'center') model.doAction(Actions.updateNodeAttributes(group.getId(), { weight: spot.weight }))
+    setSpot(tab, undefined)
+    // The empty group flexlayout keeps when every tab was collapsed: no longer needed once something is back.
+    const empty: string[] = []
+    let groups = 0
+    model.visitNodes((n) => { if (n instanceof TabSetNode) { groups++; if (n.getChildren().length === 0) empty.push(n.getId()) } })
+    if (groups > empty.length) for (const id of empty) model.doAction(Actions.deleteTabset(id))
   }
   // Brings a tab into view: back from the bottom bar if it was collapsed there, else selected where it is.
   const reveal = (id: string) => {
