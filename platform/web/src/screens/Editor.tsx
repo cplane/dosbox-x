@@ -82,6 +82,9 @@ interface Props {
 /** What a Files tab (or anything else) can ask the editor to do. */
 export interface EditorHandle {
   open: (path: string) => void
+  /** The open file's path (null when none) and a save of it (true when there was nothing to save or it saved). */
+  path: () => string | null
+  save: () => Promise<boolean>
   /** New file in the current folder (asks for the name). */
   create: () => void
   /** A new file with this content, in the current folder, unsaved (the guide's examples). */
@@ -236,6 +239,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   useEffect(() => { onDirChange?.(dir) }, [dir]) // eslint-disable-line react-hooks/exhaustive-deps
   useImperativeHandle(ref, () => ({
     open: (p: string) => { open(p) },
+    path: () => path,
+    save: () => (dirty ? save() : Promise.resolve(true)),
     create: () => { create() },
     createFile: (name: string, content: string) => {
       show(dir ? `${dir}/${name}` : name, content, '\0')

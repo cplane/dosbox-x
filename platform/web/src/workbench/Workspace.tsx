@@ -82,11 +82,32 @@ interface Props {
   /** Live heat ticks from the box (the sidecar's "H" messages), and the switch that asks for them. */
   subscribeHeat?: (fn: (tick: HeatTick) => void) => () => void
   setHeat?: (on: boolean) => void
+  /** The player's handle on the editor for the view handoff (set while the workspace is on). */
+  handoff?: React.MutableRefObject<WorkbenchHandoff | null>
 }
 
-export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey, subscribeHeat, setHeat }: Props) {
+export interface WorkbenchHandoff {
+  /** The editor's open file. */
+  path: () => string | null
+  save: () => Promise<boolean>
+  open: (path: string) => void
+  /** Whether the editor is mounted (open works). */
+  ready: () => boolean
+}
+
+export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey, subscribeHeat, setHeat, handoff }: Props) {
   const [model, setModel] = useState<Model>(loadModel)
   const editorRef = useRef<EditorHandle | null>(null)
+  useEffect(() => {
+    if (!handoff) return
+    handoff.current = {
+      path: () => editorRef.current?.path() ?? null,
+      save: () => editorRef.current?.save() ?? Promise.resolve(true),
+      open: (p) => editorRef.current?.open(p),
+      ready: () => !!editorRef.current,
+    }
+    return () => { handoff.current = null }
+  }, [handoff])
   const [path, setPath] = useState<string | null>(null)
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0)

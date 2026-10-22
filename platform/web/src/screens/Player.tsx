@@ -7,7 +7,8 @@ import { DebugPanel, type RPC } from './DebugPanel'
 import { Console, type ConsoleHandle, type Step } from './Console'
 import type { TerminalHandle } from './Terminal'
 import { useDebugger } from '../workbench/useDebugger'
-import { Workspace } from '../workbench/Workspace'
+import { Workspace, type WorkbenchHandoff } from '../workbench/Workspace'
+import { breakProgram, ideByProgram, ideFor, leaveIde, openInIde } from '../workbench/handoff'
 import type { HeatTick } from '../workbench/heat'
 
 /** Screen: the DOS screen with panels under it (as it was). Workbench: editor + terminal on paper, the screen put away. */
@@ -75,6 +76,14 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [view, setView] = useState<View>(loadView)
   const viewRef = useRef(view)
   viewRef.current = view
+  const metaRef = useRef<Meta | null>(null)
+  const handoffRef = useRef<WorkbenchHandoff | null>(null)
+  // A line in the bar about the last view handoff, for a few seconds.
+  const [notice, setNotice] = useState<string | null>(null)
+  const say = useCallback((m: string | null) => {
+    setNotice(m)
+    if (m) window.setTimeout(() => setNotice((n) => (n === m ? null : n)), 8000)
+  }, [])
   const terminalRef = useRef<TerminalHandle>(null)
   // The console stream (hello con) fans out to whoever listens (the terminal).
   const conSubs = useRef(new Set<(chunk: Uint8Array, lost: boolean) => void>())
@@ -441,6 +450,46 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
 
   const running = box?.state === 'running'
   const styled = textMode && !!textStyle.font
+  metaRef.current = meta
+
+  // Switching views hands the file over. To the screen: the editor's file opens in its IDE on the box (unless
+  // the box is busy with a session or a program). To the workbench: an IDE on the box is saved and quit and
+  // its file comes to the editor; another program gets Ctrl+Break, so the workbench's build and debug work.
+  const switchView = useCallback(async (v: View) => {
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    const program = metaRef.current?.program
+    const busy = !!dbg.session || (!!program && program !== 'COMMAND')
+    if (v === 'screen') {
+      const path = handoffRef.current?.path() ?? null
+      const saved = path && !busy ? await handoffRef.current?.save() : false
+      setView(v)
+      try { localStorage.setItem('dosbox.view', v) } catch { /* private mode */ }
+      if (!path || busy || !saved || !running) return
+      const err = await openInIde(boxId, path)
+      say(err ?? `${path.split('/').pop()} is open in ${ideFor(path)?.program}`)
+      return
+    }
+    setView(v)
+    try { localStorage.setItem('dosbox.view', v) } catch { /* private mode */ }
+    if (!running || dbg.session) return
+    const ide = ideByProgram(program)
+    if (ide) {
+      say(`leaving ${ide.program}…`)
+      try {
+        const file = await leaveIde(boxId, ide)
+        say(file ? `${file.split('/').pop()} came along from ${ide.program}` : null)
+        if (file) {
+          for (let i = 0; i < 30 && !handoffRef.current?.ready(); i++) await wait(100)
+          handoffRef.current?.open(file)
+        }
+      } catch (err) {
+        say(err instanceof Error ? err.message : String(err))
+      }
+    } else if (program && program !== 'COMMAND') {
+      say((await breakProgram(boxId)) ? null : `${program} keeps the keyboard: quit it in the Screen view`)
+    }
+  }, [boxId, running, dbg.session, say])
+
   // The workbench is the whole window on paper (html.paper recolours the app's tokens).
   const paper = view === 'workbench' && running
   useEffect(() => {
@@ -456,12 +505,13 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <span className={`dot ${connected ? 'on' : ''}`} />
         <span className="muted">{connected ? 'connected' : box ? box.state : 'loading'}</span>
         {meta?.program && <span className="muted">▶ {meta.program}</span>}
+        {notice && <span className="muted">· {notice}</span>}
         {meta && <span className="muted" title={textMode ? "Text mode: drawn by your browser from the screen data" : "Graphics: video from the box"}>{textMode ? "text" : `${meta.w}×${meta.h}`}</span>}
         {running && (
           <select
             className="view-select"
             value={view}
-            onChange={(e) => { const v = e.target.value as View; setView(v); try { localStorage.setItem('dosbox.view', v) } catch { /* private mode */ } }}
+            onChange={(e) => { switchView(e.target.value as View) }}
             title="Screen: the DOS screen with panels. Workbench: editor and terminal, the screen put away"
           >
             <option value="screen">Screen</option>
@@ -543,7 +593,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <Workspace
           boxId={boxId} running={running} program={meta?.program} rpc={rpc} dbg={dbg} available={agentAvailable}
           onRun={runSteps} terminalRef={terminalRef} subscribeCon={subscribeCon} onTermKey={onTermKey}
-          subscribeHeat={subscribeHeat} setHeat={setHeat}
+          subscribeHeat={subscribeHeat} setHeat={setHeat} handoff={handoffRef}
         />
       )}
       {view === 'screen' && showEditor && running && (
