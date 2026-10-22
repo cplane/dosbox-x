@@ -2202,10 +2202,8 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
             (once_value != NULL && !GetBool(parsed.params, "once", &once))) {
             response = InvalidParams(parsed.id, validation_error.empty() ?
                                      "breakpoints.create requires kind, address, and optional boolean once" : validation_error);
-        } else if (session->state == Impl::SessionState::Running) {
-            response = SessionError(parsed.id, kErrorTargetRunning,
-                                    "Target must be stopped before creating breakpoints", "TARGET_RUNNING", session);
-        } else if (session->state != Impl::SessionState::Stopped) {
+        } else if (session->state != Impl::SessionState::Stopped && session->state != Impl::SessionState::Running) {
+            // A running target takes breakpoints too: the change lands on the emulation thread between instructions.
             response = SessionError(parsed.id, kErrorCapabilityUnavailable,
                                     "Target must be stopped before creating breakpoints", "TARGET_NOT_STOPPED", session);
         } else {
@@ -2302,10 +2300,7 @@ std::string AgentServer::HandleJsonRpcImpl(const std::shared_ptr<Impl>& impl, co
         std::string breakpoint_id;
         if (!GetString(parsed.params, "breakpoint_id", &breakpoint_id)) {
             response = InvalidParams(parsed.id, "breakpoints.delete requires breakpoint_id");
-        } else if (session->state == Impl::SessionState::Running) {
-            response = SessionError(parsed.id, kErrorTargetRunning,
-                                    "Target must be stopped before deleting breakpoints", "TARGET_RUNNING", session);
-        } else if (session->state != Impl::SessionState::Stopped) {
+        } else if (session->state != Impl::SessionState::Stopped && session->state != Impl::SessionState::Running) {
             response = SessionError(parsed.id, kErrorCapabilityUnavailable,
                                     "Target must be stopped before deleting breakpoints", "TARGET_NOT_STOPPED", session);
         } else {

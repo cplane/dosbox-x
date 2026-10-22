@@ -1204,6 +1204,10 @@ bool DEBUG_AgentCreateExecutionBreakpoint(uint16_t seg, uint32_t off, bool once,
 		return false;
 	CBreakpoint* breakpoint = CBreakpoint::AddBreakpoint(seg,off,once);
 	*handle = reinterpret_cast<uintptr_t>(breakpoint);
+	// While the target runs, breakpoints are live as INT3s in memory (the debugger arms them all when it
+	// resumes a paused target); one added now must be armed by hand or it never fires.
+	if (breakpoint != nullptr && !DEBUG_AgentIsPaused())
+		breakpoint->Activate(true);
 	return breakpoint != nullptr;
 }
 
