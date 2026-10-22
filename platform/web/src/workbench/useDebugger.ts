@@ -599,7 +599,7 @@ export function useDebugger(rpc: RPC): Debugger {
   const toggleBreakpoint = useCallback((offset: number) => guard(async () => {
     // The live CS and breakpoints (refs): a caller may hold this function from before the session started.
     const s = sessionRef.current
-    if (!s || s.state !== 'stopped') return
+    if (!s || (s.state !== 'stopped' && s.state !== 'running')) return // a running target takes them too
     const id = bpsRef.current.get(offset)
     if (id) {
       await rpc('breakpoints.delete', { session_id: s.session_id, breakpoint_id: id })

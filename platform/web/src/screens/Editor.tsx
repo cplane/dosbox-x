@@ -541,7 +541,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       const off = lineMapRef.current?.offsetOf.get(line)
       if (d?.active && off !== undefined) {
         // In a session: the real breakpoint, and the pending one with it so it outlives the session.
-        if (d.stopped) { d.toggleBreakpoint(off); togglePending(p, line) }
+        if (d.stopped || d.running) { d.toggleBreakpoint(off); togglePending(p, line) }
         return
       }
       togglePending(p, line)
