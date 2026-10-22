@@ -31,8 +31,6 @@ export interface EditorDebug {
   stop: () => void
   /** Run to a code offset (a one-shot breakpoint). */
   runTo: (offset: number) => Promise<void>
-  /** Run to the end, past any breakpoints. */
-  runToEnd: () => Promise<void>
 }
 
 // The media-style debug buttons.
@@ -40,7 +38,6 @@ const Icon = {
   play: <svg viewBox="0 0 16 16" aria-hidden><path d="M4 2.5v11l9-5.5z" fill="currentColor" /></svg>,
   pause: <svg viewBox="0 0 16 16" aria-hidden><rect x="3.5" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" /><rect x="9.3" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" /></svg>,
   stop: <svg viewBox="0 0 16 16" aria-hidden><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor" /></svg>,
-  end: <svg viewBox="0 0 16 16" aria-hidden><path d="M2.5 2.5v11l7.5-5.5z" fill="currentColor" /><rect x="11.5" y="2.5" width="2.2" height="11" rx="0.6" fill="currentColor" /></svg>,
   over: <svg viewBox="0 0 16 16" aria-hidden><path d="M3 8.5a5 5 0 0 1 9.2-2.7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M12.5 2.5v3.6h-3.6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="12.6" r="1.7" fill="currentColor" /></svg>,
   into: <svg viewBox="0 0 16 16" aria-hidden><path d="M8 1.8v7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M5 6l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="13" r="1.7" fill="currentColor" /></svg>,
 }
@@ -542,7 +539,6 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
                     {debug.running
                       ? <button className="media-btn" onClick={debug.pause} title="Pause">{Icon.pause}</button>
                       : <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint (F9)">{Icon.play}</button>}
-                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.runToEnd} title="Run to the end, past breakpoints">{Icon.end}</button>
                     <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
                     <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
                     <button className="media-btn stop" onClick={debug.stop} title="Stop debugging (ends the program)">{Icon.stop}</button>
