@@ -38,6 +38,8 @@ const Icon = {
   play: <svg viewBox="0 0 16 16" aria-hidden><path d="M4 2.5v11l9-5.5z" fill="currentColor" /></svg>,
   pause: <svg viewBox="0 0 16 16" aria-hidden><rect x="3.5" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" /><rect x="9.3" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" /></svg>,
   stop: <svg viewBox="0 0 16 16" aria-hidden><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor" /></svg>,
+  // Play from the start: a bar, then the triangle.
+  start: <svg viewBox="0 0 16 16" aria-hidden><rect x="2" y="2.5" width="2.2" height="11" rx="0.6" fill="currentColor" /><path d="M6 2.5v11l8-5.5z" fill="currentColor" /></svg>,
   over: <svg viewBox="0 0 16 16" aria-hidden><path d="M3 8.5a5 5 0 0 1 9.2-2.7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M12.5 2.5v3.6h-3.6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="12.6" r="1.7" fill="currentColor" /></svg>,
   into: <svg viewBox="0 0 16 16" aria-hidden><path d="M8 1.8v7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><path d="M5 6l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="8" cy="13" r="1.7" fill="currentColor" /></svg>,
 }
@@ -338,7 +340,15 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   // entry; the current line and breakpoints then show in the gutter.
   async function debugRun() {
     if (!path || !running || !debug) return
-    if (busyWith) {
+    // Starting again: end the session first, then let DOS get its prompt back before the build.
+    const restarting = debug.active
+    if (restarting) {
+      setStatus('stopping…')
+      debug.stop()
+      for (let i = 0; i < 50 && debugRef.current?.active; i++) await new Promise((r) => setTimeout(r, 100))
+      await new Promise((r) => setTimeout(r, 900))
+    }
+    if (busyWith && !restarting) {
       setStatus(`${busyWith} has the keyboard: quit it first (the Screen view), then debug`)
       return
     }
@@ -540,16 +550,13 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           )}
           {debug && (lang === 'asm' || lang === 'c' || lang === 'pas') && (
             <span className="media" role="group" aria-label="debug">
-              {!debug.active
-                ? <button className="media-btn" disabled={!path || busy || !running || !!busyWith} onClick={debugRun} title="Debug: build, then start stopped at the entry">{Icon.play}</button>
-                : <>
-                    {debug.running
-                      ? <button className="media-btn" onClick={debug.pause} title="Pause">{Icon.pause}</button>
-                      : <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint (F9)">{Icon.play}</button>}
-                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
-                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
-                    <button className="media-btn stop" onClick={debug.stop} title="Stop debugging (ends the program)">{Icon.stop}</button>
-                  </>}
+              <button className="media-btn" disabled={!path || busy || !running || (!debug.active && !!busyWith)} onClick={debugRun} title={debug.active ? 'Start again from the beginning (build, then debug)' : 'Start: build, then debug'}>{Icon.start}</button>
+              {debug.running
+                ? <button className="media-btn" onClick={debug.pause} title="Pause">{Icon.pause}</button>
+                : <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint or the end (F9)">{Icon.play}</button>}
+              <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
+              <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
+              <button className="media-btn stop" disabled={!debug.active} onClick={debug.stop} title="Stop debugging (ends the program)">{Icon.stop}</button>
             </span>
           )}
           {busyWith && <span className="lag">{busyWith} has the keyboard</span>}
