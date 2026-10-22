@@ -337,7 +337,7 @@ html.paper body { overflow: hidden; }
 /* Monaco: the current line and breakpoints */
 .dbg-arrow { background: none; }
 .dbg-arrow::after { content: '▶'; color: #5f5a4e; font-size: 11px; position: absolute; left: 4px; }
-.dbg-bp::after { content: ''; position: absolute; left: 2px; top: 50%; width: 15px; height: 15px; margin-top: -7.5px; border-radius: 50%; background: #b9553f; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6) inset; }
+.dbg-bp::after { content: ''; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #b9553f; }
 .dbg-line { background: rgba(95, 90, 78, 0.12); }
 .editor .glyph-hint { color: var(--muted); font-size: 12px; }
 
@@ -491,4 +491,4 @@ html.paper body { overflow: hidden; }
 .media-btn svg { width: 14px; height: 14px; display: block; }
 .media-btn:hover:not(:disabled) { background: rgba(70, 70, 65, 0.08); border-color: transparent; }
 .media-btn.stop { color: #b9553f; }
-.dbg-bp.pending::after { opacity: .55; }
+.dbg-bp.pending::after { background: #c9705b; }
