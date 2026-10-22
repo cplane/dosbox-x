@@ -425,9 +425,12 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     if (!d || !d.stopped) return
     const start = map && d.ip !== null && atEntryCs(d.cs) ? lineForOffset(map, d.ip) : null
     if (!map || start === null) { d.step(mode); return }
+    let n = 0
     d.stepUntil((ip, cs, text) => {
       const line = atEntryCs(cs) ? lineForOffset(map, ip) : null
-      if (line !== null && line !== start) return 'stop'
+      // A new line, or the start of a line again (a loop whose increment belongs to the body line): a step is done.
+      if (line !== null && (line !== start || (n > 0 && map.lineOf.has(ip)))) return 'stop'
+      n++
       if (line === null) return 'over'
       // "call 00000291 ($-29)" / "call 00D0:0012": a near call to a line of ours is the one thing stepped into.
       const call = /^call\s+(?:([0-9a-f]{4}):)?([0-9a-f]{4,8})\b/i.exec(text.trim())

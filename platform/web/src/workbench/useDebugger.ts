@@ -340,11 +340,22 @@ export function useDebugger(rpc: RPC): Debugger {
     if (!s || s.state !== 'stopped' || !r0) return
     let next: Session = s
     let ip = parseInt(r0.instruction_pointer, 16), csNow = r0.segments.cs
-    for (let i = 0; i < max; i++) {
+    // Instruction texts by cs:offset, from the window on show and whatever gets disassembled along the way.
+    const known = new Map<string, string>()
+    const w = windowRef.current
+    if (w) for (const l of w.lines) known.set(`${w.seg}:${l.offset}`, l.text)
+    const textAt = async (seg: string, off: number): Promise<string> => {
+      const key = `${seg}:${off}`
+      const hit = known.get(key)
+      if (hit !== undefined) return hit
       const dis = (await rpc('code.disassemble', {
-        session_id: s.session_id, address: { space: 'segmented', segment: seg4(csNow), offset: off8(ip) }, count: 1,
-      })) as { lines: { text: string }[] }
-      const mode = decide(ip, csNow, dis.lines[0]?.text ?? '')
+        session_id: s.session_id, address: { space: 'segmented', segment: seg4(seg), offset: off8(off) }, count: 24,
+      })) as { lines: { offset: string; text: string }[] }
+      for (const l of dis.lines) known.set(`${seg}:${parseInt(l.offset, 16)}`, l.text)
+      return known.get(key) ?? ''
+    }
+    for (let i = 0; i < max; i++) {
+      const mode = decide(ip, csNow, await textAt(csNow, ip))
       if (mode === 'stop') break
       const r = (await rpc('execution.step', { session_id: s.session_id, mode })) as
         { session?: Session; state?: string; stop_reason?: Session['stop_reason']; registers?: Registers }
