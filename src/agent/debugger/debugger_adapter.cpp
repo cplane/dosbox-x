@@ -287,6 +287,8 @@ bool DebuggerAdapter::StartTargetAtEntry(const std::string& command,
         return false;
     }
     dos.psp(DOS_ShellGetPSP());
+    // A session starts from no breakpoints: the previous session's, and the debugger's own temporary ones, go.
+    DEBUG_AgentDeleteAllBreakpoints();
     if (workdir.empty() || workdir.find('"') != std::string::npos) {
         if (error != NULL)
             *error = "Configured workdir cannot be mounted safely";

@@ -136,6 +136,8 @@ export interface Debugger {
   pausePlay: () => void
   start: (command: string) => Promise<void>
   step: (mode: 'into' | 'over') => Promise<void>
+  /** Many instructions in one go, each decided before it runs; the view refreshes at the end. */
+  stepUntil: (decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max?: number) => Promise<void>
   cont: () => Promise<void>
   pause: () => Promise<void>
   stop: () => Promise<void>
@@ -154,6 +156,10 @@ export function useDebugger(rpc: RPC): Debugger {
   const [error, setError] = useState<string | null>(null)
   const sessionRef = useRef<Session | null>(null)
   sessionRef.current = session
+  const regsRef = useRef<Registers | null>(null)
+  regsRef.current = regs
+  const bpsRef = useRef<Map<number, string>>(new Map())
+  bpsRef.current = bps
   const windowRef = useRef<{ seg: string; start: number; end: number; lines: DisLine[] } | null>(null)
   const [mem, setMem] = useState<MemWindow | null>(null)
   const [stack, setStack] = useState<MemWindow | null>(null)
@@ -285,6 +291,31 @@ export function useDebugger(rpc: RPC): Debugger {
     await afterStop({ ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? s.state, stop_reason: r.session?.stop_reason ?? r.stop_reason ?? s.stop_reason })
   }), [guard, rpc, afterStop])
 
+  // Step instruction by instruction until `decide` says stop (or a breakpoint, the end, or `max`), refreshing
+  // the view only at the end: a source line in one go. `decide` sees each instruction before it runs.
+  const stepUntil = useCallback((decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max = 3000) => guard(async () => {
+    const s = sessionRef.current
+    const r0 = regsRef.current
+    if (!s || s.state !== 'stopped' || !r0) return
+    let next: Session = s
+    let ip = parseInt(r0.instruction_pointer, 16), csNow = r0.segments.cs
+    for (let i = 0; i < max; i++) {
+      const dis = (await rpc('code.disassemble', {
+        session_id: s.session_id, address: { space: 'segmented', segment: seg4(csNow), offset: off8(ip) }, count: 1,
+      })) as { lines: { text: string }[] }
+      const mode = decide(ip, csNow, dis.lines[0]?.text ?? '')
+      if (mode === 'stop') break
+      const r = (await rpc('execution.step', { session_id: s.session_id, mode })) as
+        { session?: Session; state?: string; stop_reason?: Session['stop_reason']; registers?: Registers }
+      next = { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? s.state, stop_reason: r.session?.stop_reason ?? r.stop_reason }
+      if (next.state !== 'stopped' || !r.registers) break
+      ip = parseInt(r.registers.instruction_pointer, 16); csNow = r.registers.segments.cs
+      // A step over a call stops on the agent's own breakpoint after it; only the user's count as a stop here.
+      if (bpsRef.current.has(ip) && csNow === cs) break
+    }
+    await afterStop(next)
+  }), [guard, rpc, afterStop])
+
   const cont = useCallback(() => guard(async () => {
     const s = sessionRef.current
     if (!s) return
@@ -406,6 +437,6 @@ export function useDebugger(rpc: RPC): Debugger {
     cs, lines, breakpoints: new Set(bps.keys()), busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
-    start, step, cont, pause, stop, toggleBreakpoint, runTo,
+    start, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
   }
 }

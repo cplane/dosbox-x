@@ -6656,6 +6656,11 @@ void DEBUG_AgentMemLogCopy(vector<DEBUG_AgentMemAccess>* accesses, uint32_t* dro
 	if (dropped != nullptr) *dropped = agent_memlog_dropped;
 }
 
+void DEBUG_AgentDeleteAllBreakpoints(void)
+{
+	CBreakpoint::DeleteAll();
+}
+
 bool DEBUG_AgentStartTrace(const uint32_t instruction_count)
 {
 	if (instruction_count == 0 || agent_trace_active)

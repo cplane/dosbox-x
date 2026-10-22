@@ -4,7 +4,7 @@ import { getBox, readTextFile, runCommand, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
 import { FileTree } from './FileTree'
-import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
+import { lineForOffset, parseListing, parseMap, type LineMap } from '../workbench/listing'
 
 /** What the editor needs from the debugger (workbench): where it is, its breakpoints, and the controls. */
 export interface EditorDebug {
@@ -13,12 +13,17 @@ export interface EditorDebug {
   /** The target runs (continue, play): pause is the thing to offer. */
   running: boolean
   busy: boolean
-  /** IP while stopped. */
+  /** The last failed debugger call, if any. */
+  error: string | null
+  /** IP and CS while stopped. */
   ip: number | null
+  cs: string
   breakpoints: Set<number>
   toggleBreakpoint: (offset: number) => void | Promise<void>
   start: (command: string) => Promise<void>
   step: (mode: 'into' | 'over') => void
+  /** Many instructions in one go, each decided before it runs. */
+  stepUntil: (decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max?: number) => void
   cont: () => void
   pause: () => void
   stop: () => void
@@ -129,12 +134,14 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
   let build = buildCmd.includes('{}') ? buildCmd.replace('{}', name) : `${buildCmd.trim()} ${name}`
   // The debugger steps by source line through ML's listing (/Fl).
   if (opts.listing && /\bML\b/i.test(build) && !/\/Fl\b/i.test(build)) build = build.replace(/\bML\b/i, 'ML /Fl')
+  // Turbo C: line numbers in the object (-y) and a link map (-M) map lines to addresses. The TCC token is the one followed by a space.
+  if (opts.listing && /\bTCC(\.EXE)?(?=\s)/i.test(build) && !/\s-y\b/.test(build)) build = build.replace(/\bTCC(\.EXE)?(?=\s)/i, 'TCC -y -M')
   switch (langOf(name)) {
     case 'asm': case 'c': case 'pas':
       lines.push(
         'CONFIG -set "cpu cycles=max"',
-        // ML finds LINK.EXE through the PATH; TCC and TPC find theirs next to themselves.
-        ...(langOf(name) === 'asm' ? ['PATH C:\\MASM611\\BIN;C:\\MASM611\\BINR;%PATH%'] : []),
+        // ML finds LINK.EXE through the PATH, and so does TCC its TLINK; TPC finds its own.
+        ...(langOf(name) === 'asm' ? ['PATH C:\\MASM611\\BIN;C:\\MASM611\\BINR;%PATH%'] : langOf(name) === 'c' ? ['PATH C:\\TCC;%PATH%'] : []),
         build,
         'IF ERRORLEVEL 1 GOTO FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
@@ -327,10 +334,24 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
         } catch {
           setStatus('no listing (.LST); stepping by instruction')
         }
+      } else if (lang === 'c') {
+        try {
+          const mapText = await readTextFile(boxId, (dir ? `${dir}/` : '') + `${base}.MAP`)
+          const map = parseMap(mapText, name)
+          setLineMap(map)
+          lineMapRef.current = map
+          if (map.lineOf.size === 0) setStatus('no line numbers in the map; stepping by instruction')
+        } catch {
+          setStatus('no map (.MAP); stepping by instruction')
+        }
       }
-      const exe = `${dosDir(dir)}${dir ? '\\' : ''}${base}.${lang === 'asm' ? 'COM' : 'EXE'}`
-      setStatus(`debugging ${base}`)
+      // A bare name: the agent takes a DOS filename only, and BUILD.BAT left the shell in the file's directory.
+      const exe = `${base}.${lang === 'asm' ? 'COM' : 'EXE'}`
+      const mapped = lineMapRef.current?.lineOf.size ?? 0
+      setStatus(mapped ? `debugging ${base} · ${mapped} lines mapped` : `debugging ${base} · no line map, stepping by instruction`)
       await debug.start(exe)
+      await new Promise((r) => setTimeout(r, 0)) // let the session state land
+      if (!debugRef.current?.active) { setStatus(debugRef.current?.error ? `debugger: ${debugRef.current.error}` : 'the debugger did not start'); return }
       // The breakpoints set in the gutter beforehand, now that lines map to code.
       const map = lineMapRef.current
       const lines = pendingRef.current[path]
@@ -345,6 +366,36 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     }
   }
 
+  // A debugger error shows in the status line, where the build errors show.
+  useEffect(() => { if (debug?.error) setStatus(`debugger: ${debug.error}`) }, [debug?.error])
+
+  // CS at the program's entry: the map's and the listing's offsets are relative to it; elsewhere (DOS, the BIOS) no line applies.
+  const entryCsRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!debug?.active) entryCsRef.current = null
+    else if (entryCsRef.current === null && debug.cs) entryCsRef.current = debug.cs
+  }, [debug?.active, debug?.cs])
+
+  // A step by source line when lines map to code: instructions until the line changes, never into code without lines.
+  const stepSource = (mode: 'into' | 'over') => {
+    const d = debugRef.current, map = lineMapRef.current
+    if (!d || !d.stopped) return
+    const entryCs = entryCsRef.current
+    const start = map && d.ip !== null && d.cs === entryCs ? lineForOffset(map, d.ip) : null
+    if (!map || start === null) { d.step(mode); return }
+    d.stepUntil((ip, cs, text) => {
+      const line = cs === entryCs ? lineForOffset(map, ip) : null
+      if (line !== null && line !== start) return 'stop'
+      if (line === null) return 'over'
+      // "call 00000291 ($-29)": a near call to a line of ours is the one thing stepped into.
+      const call = /^call\s+(?:[0-9a-f]{4}:)?([0-9a-f]{4,8})\b/i.exec(text.trim())
+      if (call && mode === 'into' && lineForOffset(map, parseInt(call[1], 16) & 0xffff) !== null) return 'into'
+      return 'over'
+    })
+  }
+  const stepSourceRef = useRef(stepSource)
+  stepSourceRef.current = stepSource
+
   // Monaco decorations: the current line (an arrow, a tint) and breakpoints.
   useEffect(() => {
     const editor = editorRef.current
@@ -356,7 +407,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       for (const [line, off] of map.offsetOf) {
         if (debug.breakpoints.has(off)) decos.push({ range: new monaco.Range(line, 1, line, 1), options: { glyphMarginClassName: 'dbg-bp', glyphMarginHoverMessage: { value: 'breakpoint' } } })
       }
-      const cur = debug.stopped && debug.ip !== null ? lineForOffset(map, debug.ip) : null
+      const cur = debug.stopped && debug.ip !== null && debug.cs === entryCsRef.current ? lineForOffset(map, debug.ip) : null
       if (cur) {
         decos.push({ range: new monaco.Range(cur, 1, cur, 1), options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-arrow' } })
         editor.revealLineInCenterIfOutsideViewport(cur)
@@ -368,14 +419,14 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       }
     }
     decoRef.current.set(decos)
-  }, [debug?.active, debug?.stopped, debug?.ip, debug?.breakpoints, lineMap, pendingBps, path])
+  }, [debug?.active, debug?.stopped, debug?.ip, debug?.cs, debug?.breakpoints, lineMap, pendingBps, path])
 
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { saveRef.current() })
     // Debugging from the keyboard, and breakpoints from the gutter.
-    editor.addCommand(monaco.KeyCode.F7, () => debugRef.current?.step('into'))
-    editor.addCommand(monaco.KeyCode.F8, () => debugRef.current?.step('over'))
+    editor.addCommand(monaco.KeyCode.F7, () => stepSourceRef.current('into'))
+    editor.addCommand(monaco.KeyCode.F8, () => stepSourceRef.current('over'))
     editor.addCommand(monaco.KeyCode.F9, () => debugRef.current?.cont())
     editor.onMouseDown((e) => {
       const t = e.target.type
@@ -445,8 +496,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
                     {debug.running
                       ? <button className="media-btn" disabled={debug.busy} onClick={debug.pause} title="Pause">{Icon.pause}</button>
                       : <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint (F9)">{Icon.play}</button>}
-                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => debug.step('over')} title="Step over (F8)">{Icon.over}</button>
-                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => debug.step('into')} title="Step into (F7)">{Icon.into}</button>
+                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
+                    <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
                     <button className="media-btn stop" disabled={debug.busy} onClick={debug.stop} title="Stop debugging">{Icon.stop}</button>
                   </>}
             </span>

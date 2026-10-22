@@ -7,6 +7,8 @@ import react from '@vitejs/plugin-react'
 const proxy = {
   '/api': { target: 'http://localhost:8081', ws: true, changeOrigin: true },
   '/auth': { target: 'http://localhost:8091', changeOrigin: true },
+  // A box's sidecar straight through (kubectl port-forward pod/dosbox-test 18099:8080), for the workspace harness.
+  '/pod': { target: 'http://localhost:18099', changeOrigin: true, rewrite: (p: string) => p.replace(/^\/pod/, '') },
 }
 
 export default defineConfig({

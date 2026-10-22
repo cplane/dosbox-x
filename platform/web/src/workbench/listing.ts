@@ -15,6 +15,10 @@ export interface LineMap {
   lineOf: Map<number, number>
   /** 1-based source line -> code offset (the first instruction on it) */
   offsetOf: Map<number, number>
+  /** How far past a line's start an address still belongs to it (a listing: one instruction; a map: until the next line). */
+  span?: number
+  /** Addresses from here on are not this source's (the runtime, the libraries). */
+  end?: number
 }
 
 // " 0100  B8 1234<tabs>text", " 0110  BA 011A R<tabs>text" (R: relocatable), " 011A 48 65 6C<tabs>text" (data).
@@ -49,7 +53,39 @@ export function parseListing(listing: string, source: string): LineMap {
 export function lineForOffset(map: LineMap, ip: number): number | null {
   const exact = map.lineOf.get(ip)
   if (exact) return exact
+  // The line whose code starts last before ip: within a few bytes for a listing (one
+  // instruction per line), anywhere before the next line's start for a link map.
+  const span = map.span ?? 6
+  if (map.end !== undefined && ip >= map.end) return null
   let best = -1
-  for (const off of map.lineOf.keys()) if (off < ip && off > best && ip - off <= 6) best = off
+  for (const off of map.lineOf.keys()) if (off < ip && off > best && ip - off <= span) best = off
   return best >= 0 ? map.lineOf.get(best) ?? null : null
+}
+
+/**
+ * The line numbers in a Turbo C / TLINK map (the compiler's -y, the linker's
+ * map), for the one source file: "Line numbers for x.obj(x.c) segment _TEXT"
+ * then "   13 0000:02B3" pairs. Segment 0000 is the load segment, which is
+ * CS at the program's entry, so the offsets are CS-relative as a listing's.
+ */
+export function parseMap(map: string, sourceName: string): LineMap {
+  const lineOf = new Map<number, number>()
+  const offsetOf = new Map<number, number>()
+  const want = sourceName.toLowerCase()
+  let inSection = false
+  let lastOff = 0
+  for (const raw of map.split(/\r?\n/)) {
+    const head = /^Line numbers for \S+\((.+?)\) segment (\S+)/.exec(raw)
+    if (head) { inSection = head[1].toLowerCase() === want && head[2] === '_TEXT'; continue }
+    if (/^(Program entry point|  Address|\s*$)/.test(raw)) { if (/^Program entry point/.test(raw)) inSection = false; if (!inSection) continue }
+    if (!inSection) continue
+    for (const m of raw.matchAll(/(\d+)\s+([0-9A-F]{4}):([0-9A-F]{4})/g)) {
+      if (m[2] !== '0000') continue
+      const line = Number(m[1]), off = parseInt(m[3], 16)
+      if (!lineOf.has(off)) lineOf.set(off, line)
+      if (!offsetOf.has(line)) offsetOf.set(line, off)
+      if (off > lastOff) lastOff = off
+    }
+  }
+  return { lineOf, offsetOf, span: 0x10000, end: lastOff + 32 }
 }
