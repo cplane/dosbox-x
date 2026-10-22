@@ -231,6 +231,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     return { ...all, [p]: s }
   })
   const decoRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null)
+  // The stop the editor last scrolled to ("path:line:cs:ip"): scrolling happens once per stop.
+  const revealedRef = useRef<string | null>(null)
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0) // bumped when the tree should re-list (a save)
   const [path, setPath] = useState<string | null>(null)
@@ -507,12 +509,16 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       const cur = debug.stopped && debug.ip !== null && atEntryCs(debug.cs) ? lineForOffset(map, debug.ip) : null
       if (cur) {
         decos.push({ range: new monaco.Range(cur, 1, cur, 1), options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-arrow' } })
-        editor.revealLineInCenterIfOutsideViewport(cur)
       }
+      // Scroll to the line only when the stop (or the chosen frame) moves, not on every redraw: in between the
+      // user scrolls freely to read the file and set breakpoints.
+      const at = debug.stopped && frameLine && frameLine !== cur ? frameLine : cur // a caller picked in the stack wins
+      const spot = at ? `${path}:${at}:${debug.cs}:${debug.ip}` : null
+      if (at && spot !== revealedRef.current) editor.revealLineInCenterIfOutsideViewport(at)
+      revealedRef.current = spot
       // The chosen frame's line (paused inside the runtime, or a caller picked in the stack): a hollow arrow.
       if (debug.stopped && frameLine && frameLine !== cur) {
         decos.push({ range: new monaco.Range(frameLine, 1, frameLine, 1), options: { isWholeLine: true, className: 'dbg-line outer', glyphMarginClassName: 'dbg-arrow outer' } })
-        if (!cur) editor.revealLineInCenterIfOutsideViewport(frameLine)
       }
     } else if (path) {
       // No session: the breakpoints waiting for the next debug run.

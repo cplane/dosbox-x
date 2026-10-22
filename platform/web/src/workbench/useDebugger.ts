@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import type { RPC } from '../screens/DebugPanel'
 
 /**
@@ -653,10 +653,12 @@ export function useDebugger(rpc: RPC): Debugger {
   }, [rpc, afterStop, pausePlay])
 
   const stopped = session?.state === 'stopped'
+  // One set per change of the breakpoints, so what depends on it does not redo its work on every render.
+  const bpSet = useMemo(() => new Set(bps.keys()), [bps])
   return {
     session, stopped, regs, prevRegs,
     ip: stopped && regs ? parseInt(regs.instruction_pointer, 16) : null,
-    cs, entryCs, inProgram, readMemory, lines, breakpoints: new Set(bps.keys()), busy, error,
+    cs, entryCs, inProgram, readMemory, lines, breakpoints: bpSet, busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
     start, endOrphan, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
