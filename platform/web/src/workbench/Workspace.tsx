@@ -140,25 +140,46 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     const v = all.find((x) => x.name === name) ?? all.find((x) => x.name.toLowerCase() === name.toLowerCase())
     return v ? `${v.value}  ·  ${v.type}` : undefined
   }, [])
-  // Where a collapsed tab came from, to put it back.
-  const homes = useRef(new Map<string, string>())
-
+  // Collapsing: the tab goes to the bottom bar and remembers, in its own config (saved with the layout, so a
+  // reload keeps it), the group it came from. A group the tab was alone in would be deleted when emptied, and
+  // the tab would have nowhere to go back to: such a group stays, squeezed to nothing, and gets its size back
+  // on restore.
+  type Home = { home?: string; homeWeight?: number }
   const bottomBorder = () => model.getBorderSet().getBorders().find((b) => b.getLocation() === DockLocation.BOTTOM)
   const collapse = (tab: TabNode) => {
     const border = bottomBorder()
-    if (!border) return
-    homes.current.set(tab.getId(), tab.getParent()?.getId() ?? 'main')
+    const group = tab.getParent()
+    if (!border || !(group instanceof TabSetNode)) return
+    const alone = group.getChildren().length === 1
+    const home: Home = { home: group.getId(), homeWeight: alone ? group.getWeight() : undefined }
+    model.doAction(Actions.updateNodeAttributes(tab.getId(), { config: { ...(tab.getConfig() ?? {}), ...home } }))
+    if (alone) model.doAction(Actions.updateNodeAttributes(group.getId(), { enableDeleteWhenEmpty: false, weight: 0.001 }))
     model.doAction(Actions.moveNode(tab.getId(), border.getId(), DockLocation.CENTER, -1, false))
   }
   const restore = (tab: TabNode) => {
-    const home = homes.current.get(tab.getId())
-    const target = home ? model.getNodeById(home) : undefined
-    if (target) model.doAction(Actions.moveNode(tab.getId(), target.getId(), DockLocation.CENTER, -1, true))
-    else {
-      // Its group went away with it (it was the last tab): a new split under the editor.
-      const main = model.getNodeById('main')
-      if (main) model.doAction(Actions.moveNode(tab.getId(), main.getId(), DockLocation.BOTTOM, -1, true))
+    const cfg = (tab.getConfig() ?? {}) as Home
+    const home = cfg.home ? model.getNodeById(cfg.home) : undefined
+    if (home instanceof TabSetNode) {
+      model.doAction(Actions.moveNode(tab.getId(), home.getId(), DockLocation.CENTER, -1, true))
+      if (cfg.homeWeight !== undefined) model.doAction(Actions.updateNodeAttributes(home.getId(), { enableDeleteWhenEmpty: true, weight: cfg.homeWeight }))
+    } else {
+      // No home on record (collapsed before this was kept): the editor's group, else any group there is.
+      let target = model.getNodeById(tab.getId() === 'editor' ? 'bottom' : 'main')
+      if (!(target instanceof TabSetNode)) {
+        model.visitNodes((n) => { if (!target && n instanceof TabSetNode) target = n })
+      }
+      if (target) model.doAction(Actions.moveNode(tab.getId(), target.getId(), tab.getId() === 'editor' ? DockLocation.TOP : DockLocation.CENTER, -1, true))
     }
+    const { home: _h, homeWeight: _w, ...rest } = cfg as Record<string, unknown>
+    model.doAction(Actions.updateNodeAttributes(tab.getId(), { config: rest }))
+  }
+  // Brings a tab into view: back from the bottom bar if it was collapsed there, else selected where it is.
+  const reveal = (id: string) => {
+    const node = model.getNodeById(id)
+    if (!(node instanceof TabNode)) return false
+    if (node.getParent() instanceof BorderNode) restore(node)
+    else model.doAction(Actions.selectTab(id))
+    return true
   }
   // A tabset header gets –: the selected tab collapses to the bottom bar. A click on a bar tab puts it back where it was.
   const onRenderTabSet = (node: TabSetNode | BorderNode, values: { buttons: React.ReactNode[] }) => {
@@ -179,17 +200,21 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
 
   // Show a tab (adding it back if it was closed) and select it.
   const show = (id: string, name: string, component: string) => {
-    if (!model.getNodeById(id)) {
-      const target = model.getNodeById('side') ?? model.getNodeById('main')
-      if (target) model.doAction(Actions.addNode({ type: 'tab', id, name, component }, target.getId(), DockLocation.CENTER, -1, true))
-    } else {
-      model.doAction(Actions.selectTab(id))
-    }
+    if (reveal(id)) return
+    const target = model.getNodeById('side') ?? model.getNodeById('main')
+    if (target) model.doAction(Actions.addNode({ type: 'tab', id, name, component }, target.getId(), DockLocation.CENTER, -1, true))
   }
-  const openInEditor = (file: string, code: string) => {
+  // The editor in view (back from the bottom bar if collapsed there), then `then` once it is mounted.
+  const withEditor = (then: (editor: EditorHandle) => void) => {
     show('editor', 'Editor', 'editor')
-    window.setTimeout(() => editorRef.current?.createFile(file, code), 50)
+    let tries = 0
+    const go = () => {
+      if (editorRef.current) then(editorRef.current)
+      else if (tries++ < 40) window.setTimeout(go, 50)
+    }
+    window.setTimeout(go, 0)
   }
+  const openInEditor = (file: string, code: string) => withEditor((e) => e.createFile(file, code))
   const showInterrupt = (int: number, ax: number) => {
     setIntFocus({ int, ax })
     show('ints', 'Interrupts', 'ints')
@@ -239,7 +264,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const factory = (node: TabNode) => {
     switch (node.getComponent()) {
       case 'files':
-        return <FilesTab boxId={boxId} editorRef={editorRef} selected={path} dir={dir} refreshKey={treeKey} onDir={setDir} />
+        return <FilesTab boxId={boxId} withEditor={withEditor} selected={path} dir={dir} refreshKey={treeKey} onDir={setDir} />
       case 'editor':
         return (
           <Suspense fallback={<p className="muted">Loading the editor…</p>}>
