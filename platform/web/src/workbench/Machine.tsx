@@ -435,7 +435,8 @@ export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program 
           {[1, 2, 5, 10, 20].map((n) => <option key={n} value={n}>{n}/s</option>)}
         </select>
         <button onClick={dbg.cont} disabled={liveOff} title="Run to the next breakpoint (F9)">▶▶</button>
-        <button className="danger" onClick={dbg.stop} disabled={dbg.busy} title="Stop the program">■</button>
+        {dbg.session && !stopped && !dbg.playing && <button onClick={dbg.pause} title="Pause the running program">‖</button>}
+        <button className="danger" onClick={dbg.stop} disabled={!dbg.session} title="Stop the program">■</button>
         <span className="machine-record">
           <button onClick={() => dbg.record(recordN)} disabled={liveOff} title="Run this many instructions recording each with what it touched, then replay them here">⏺ record</button>
           <select value={recordN} onChange={(e) => setRecordN(Number(e.target.value))} title="instructions to record">
