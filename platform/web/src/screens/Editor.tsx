@@ -540,12 +540,12 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
                 ? <button className="media-btn" disabled={!path || busy || !running || !!busyWith} onClick={debugRun} title="Debug: build, then start stopped at the entry">{Icon.play}</button>
                 : <>
                     {debug.running
-                      ? <button className="media-btn" disabled={debug.busy} onClick={debug.pause} title="Pause">{Icon.pause}</button>
+                      ? <button className="media-btn" onClick={debug.pause} title="Pause">{Icon.pause}</button>
                       : <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint (F9)">{Icon.play}</button>}
                     <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={debug.runToEnd} title="Run to the end, past breakpoints">{Icon.end}</button>
                     <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
                     <button className="media-btn" disabled={debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
-                    <button className="media-btn stop" disabled={debug.busy} onClick={debug.stop} title="Stop debugging">{Icon.stop}</button>
+                    <button className="media-btn stop" onClick={debug.stop} title="Stop debugging (ends the program)">{Icon.stop}</button>
                   </>}
             </span>
           )}
