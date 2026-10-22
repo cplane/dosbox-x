@@ -143,6 +143,8 @@ export interface Debugger {
   /** Many instructions in one go, each decided before it runs; the view refreshes at the end. */
   stepUntil: (decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max?: number) => Promise<void>
   cont: () => Promise<void>
+  /** Continue past every breakpoint until the program ends. */
+  runToEnd: () => Promise<void>
   pause: () => Promise<void>
   stop: () => Promise<void>
   toggleBreakpoint: (offset: number) => Promise<void>
@@ -363,6 +365,20 @@ export function useDebugger(rpc: RPC): Debugger {
     await afterStop(await waitOp(s, op.operation_id))
   }), [guard, rpc, waitOp, afterStop])
 
+  // Run to the end: continue past every breakpoint until the program exits (or something else stops it).
+  const runToEnd = useCallback(() => guard(async () => {
+    for (let i = 0; i < 500; i++) {
+      const s = sessionRef.current
+      if (!s || s.state !== 'stopped') return
+      const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
+      setSession({ ...s, state: 'running' })
+      const next = await waitOp(s, op.operation_id)
+      await afterStop(next)
+      if (next.state !== 'stopped' || next.stop_reason?.kind !== 'breakpoint') return
+      sessionRef.current = next
+    }
+  }), [guard, rpc, waitOp, afterStop])
+
   const pause = useCallback(() => guard(async () => {
     const s = sessionRef.current
     if (!s) return
@@ -469,6 +485,6 @@ export function useDebugger(rpc: RPC): Debugger {
     cs, entryCs, readMemory, lines, breakpoints: new Set(bps.keys()), busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
-    start, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
+    start, step, stepUntil, cont, runToEnd, pause, stop, toggleBreakpoint, runTo,
   }
 }

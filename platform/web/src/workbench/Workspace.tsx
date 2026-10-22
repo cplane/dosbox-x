@@ -180,8 +180,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
 
   const debug: EditorDebug = useMemo(() => ({
     active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && !dbg.stopped, busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, entryCs: dbg.entryCs, breakpoints: dbg.breakpoints,
-    toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: dbg.stop, runTo: dbg.runTo,
-  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, dbg.stop, dbg.runTo])
+    toggleBreakpoint: dbg.toggleBreakpoint, start: dbg.start, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: dbg.stop, runTo: dbg.runTo, runToEnd: dbg.runToEnd,
+  }), [dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, dbg.start, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, dbg.stop, dbg.runTo, dbg.runToEnd])
 
   // When a session ends, the program's output sits on the prompt line: an Enter gives DOS a fresh prompt,
   // so the next build (and the sidecar's prompt check) finds it.
