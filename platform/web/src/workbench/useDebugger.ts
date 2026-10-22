@@ -143,8 +143,6 @@ export interface Debugger {
   /** Many instructions in one go, each decided before it runs; the view refreshes at the end. */
   stepUntil: (decide: (ip: number, cs: string, text: string) => 'into' | 'over' | 'stop', max?: number) => Promise<void>
   cont: () => Promise<void>
-  /** Continue past every breakpoint until the program ends. */
-  runToEnd: () => Promise<void>
   pause: () => Promise<void>
   stop: () => Promise<void>
   toggleBreakpoint: (offset: number) => Promise<void>
@@ -169,6 +167,7 @@ export function useDebugger(rpc: RPC): Debugger {
   bpsRef.current = bps
   const csRef = useRef('')
   csRef.current = cs
+  const cancelRef = useRef(false) // pause pressed during a line step
   const windowRef = useRef<{ seg: string; start: number; end: number; lines: DisLine[] } | null>(null)
   const [mem, setMem] = useState<MemWindow | null>(null)
   const [stack, setStack] = useState<MemWindow | null>(null)
@@ -354,7 +353,9 @@ export function useDebugger(rpc: RPC): Debugger {
       for (const l of dis.lines) known.set(`${seg}:${parseInt(l.offset, 16)}`, l.text)
       return known.get(key) ?? ''
     }
+    cancelRef.current = false
     for (let i = 0; i < max; i++) {
+      if (cancelRef.current) break
       const mode = decide(ip, csNow, await textAt(csNow, ip))
       if (mode === 'stop') break
       const r = (await rpc('execution.step', { session_id: s.session_id, mode })) as
@@ -376,23 +377,11 @@ export function useDebugger(rpc: RPC): Debugger {
     await afterStop(await waitOp(s, op.operation_id))
   }), [guard, rpc, waitOp, afterStop])
 
-  // Run to the end: continue past every breakpoint until the program exits (or something else stops it).
-  const runToEnd = useCallback(() => guard(async () => {
-    for (let i = 0; i < 500; i++) {
-      const s = sessionRef.current
-      if (!s || s.state !== 'stopped') return
-      const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
-      setSession({ ...s, state: 'running' })
-      const next = await waitOp(s, op.operation_id)
-      await afterStop(next)
-      if (next.state !== 'stopped' || next.stop_reason?.kind !== 'breakpoint') return
-      sessionRef.current = next
-    }
-  }), [guard, rpc, waitOp, afterStop])
-
+  // Pause: halt a running program where it is; a line step in progress (many short runs) stops at its next instruction.
   const pause = useCallback(() => guard(async () => {
+    cancelRef.current = true
     const s = sessionRef.current
-    if (!s) return
+    if (!s || s.state !== 'running') return
     const op = (await rpc('execution.pause', { session_id: s.session_id })) as { operation_id: string }
     await afterStop(await waitOp(s, op.operation_id))
   }), [guard, rpc, waitOp, afterStop])
@@ -496,6 +485,6 @@ export function useDebugger(rpc: RPC): Debugger {
     cs, entryCs, readMemory, lines, breakpoints: new Set(bps.keys()), busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
-    start, step, stepUntil, cont, runToEnd, pause, stop, toggleBreakpoint, runTo,
+    start, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo,
   }
 }
