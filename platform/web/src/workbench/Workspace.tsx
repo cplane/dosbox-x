@@ -435,9 +435,9 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
 
   const debug: EditorDebug = useMemo(() => ({
     // "running" covers a step in progress too (a line step is many short runs), so pause stays put and can halt it.
-    active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && (!dbg.stopped || dbg.busy), busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, entryCs: dbg.entryCs, breakpoints: dbg.breakpoints,
+    active: !!dbg.session, stopped: dbg.stopped, running: !!dbg.session && (!dbg.stopped || dbg.busy), busy: dbg.busy, error: dbg.error, ip: dbg.ip, cs: dbg.cs, entryCs: dbg.entryCs, ended: dbg.ended, breakpoints: dbg.breakpoints,
     toggleBreakpoint: dbg.toggleBreakpoint, start: startProgram, endOrphan, step: dbg.step, stepUntil: dbg.stepUntil, cont: dbg.cont, pause: dbg.pause, stop: stopProgram, runTo: dbg.runTo, stepOut, starting: debugStarting,
-  }), [stepOut, debugStarting, dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.breakpoints, dbg.toggleBreakpoint, startProgram, endOrphan, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, stopProgram, dbg.runTo])
+  }), [stepOut, debugStarting, dbg.session, dbg.stopped, dbg.busy, dbg.error, dbg.ip, dbg.cs, dbg.entryCs, dbg.ended, dbg.breakpoints, dbg.toggleBreakpoint, startProgram, endOrphan, dbg.step, dbg.stepUntil, dbg.cont, dbg.pause, stopProgram, dbg.runTo])
 
   // When a session ends, the program's output sits on the prompt line: an Enter gives DOS a fresh prompt,
   // so the next build (and the sidecar's prompt check) finds it.
