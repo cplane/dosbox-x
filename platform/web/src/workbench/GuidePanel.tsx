@@ -5,7 +5,8 @@ import { ARTICLES, GROUPS } from './articles'
 /**
  * The 8086 guide's index: every instruction (aliases with it: JE / JZ) and the topics around them (addressing,
  * registers, directives), grouped as the 8086 manuals group them, each a click away from its article in the tab
- * beside the editor; the ready programs on top; a filter box that searches names, aliases and descriptions.
+ * beside the editor; the ready programs in an appendix at the end; a filter box that searches names, aliases and
+ * descriptions.
  */
 interface Props {
   /** Put a ready program in the editor as a new file. */
@@ -29,23 +30,6 @@ export function GuidePanel({ onOpen, onArticle, current }: Props) {
     <div className="guide">
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="find: mov, loop, stack, string, jz…" spellCheck={false} />
       <div className="guide-body">
-        {programs.length > 0 && (
-          <section>
-            <h4>Programs</h4>
-            <p className="guide-note">Complete programs to open, build and step through.</p>
-            {programs.map((p) => (
-              <div key={p.file} className="guide-entry">
-                <div className="guide-head">
-                  <b>{p.name}</b>
-                  {onOpen
-                    ? <button className="ghost guide-file" title="Open in the editor" onClick={() => onOpen(p.file, p.code)}>{p.file}</button>
-                    : <code>{p.file}</code>}
-                </div>
-                <div className="guide-desc">{p.what}</div>
-              </div>
-            ))}
-          </section>
-        )}
         {groups.map((g) => (
           <section key={g.title}>
             <h4>{g.title}</h4>
@@ -62,6 +46,23 @@ export function GuidePanel({ onOpen, onArticle, current }: Props) {
             ))}
           </section>
         ))}
+        {programs.length > 0 && (
+          <section>
+            <h4>Appendix · Programs</h4>
+            <p className="guide-note">Complete programs to open, build and step through.</p>
+            {programs.map((p) => (
+              <div key={p.file} className="guide-entry">
+                <div className="guide-head">
+                  <b>{p.name}</b>
+                  {onOpen
+                    ? <button className="ghost guide-file" title="Open in the editor" onClick={() => onOpen(p.file, p.code)}>{p.file}</button>
+                    : <code>{p.file}</code>}
+                </div>
+                <div className="guide-desc">{p.what}</div>
+              </div>
+            ))}
+          </section>
+        )}
         {groups.length === 0 && programs.length === 0 && <p className="guide-note">nothing matches</p>}
       </div>
     </div>
