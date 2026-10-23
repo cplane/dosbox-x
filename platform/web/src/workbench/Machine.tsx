@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { touches } from './operands'
 import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
+import { withOps } from './asmref'
 import { REGIONS } from './MemoryMapPanel'
 import { Icon } from './icons'
 import { DebugButtons, type DebugControls } from './DebugButtons'
@@ -28,6 +29,8 @@ interface Props {
   controls: DebugControls
   /** The current instruction is an INT: show its service's article in the guide. */
   onShowInterrupt?: (int: number, ax: number) => void
+  /** A mnemonic clicked in the instructions: its article in the guide. */
+  onArticle?: (key: string) => void
   /** What the box runs (COMMAND when nothing does). */
   program?: string
 }
@@ -75,7 +78,7 @@ function bump(heat: Map<number, Heat>, accesses: MemAccess[]) {
   }
 }
 
-export function Machine({ dbg, controls, onShowInterrupt, program }: Props) {
+export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: Props) {
   const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses, recording } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
   const stackRef = useRef<HTMLCanvasElement>(null)
@@ -504,7 +507,7 @@ export function Machine({ dbg, controls, onShowInterrupt, program }: Props) {
               onClick={() => live && l.state === 'next' && dbg.runTo(l.offset)}
             >
               <span className="tape-addr">{l.offset.toString(16).toUpperCase().padStart(4, '0')}</span>
-              <span className="tape-text">{l.text}</span>
+              <span className="tape-text">{withOps(l.text, onArticle && ((key) => (key === 'INT' && l.state === 'now' && intCall && onShowInterrupt ? onShowInterrupt(intCall.int, intCall.ax) : onArticle(key))))}</span>
               <span className="tape-bytes">{l.bytes.replace(/(..)/g, '$1 ').trim()}</span>
               {live
                 ? <span className="tape-bp" onClick={(e) => { e.stopPropagation(); dbg.toggleBreakpoint(l.offset) }}>{dbg.breakpoints.has(l.offset) ? '●' : '○'}</span>

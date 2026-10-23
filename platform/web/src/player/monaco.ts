@@ -167,41 +167,75 @@ monaco.editor.defineTheme('paper', {
   },
 })
 
-// Hovering an INT line names the function: AH (or AX) is taken from the
-// nearest MOV AH/AX/AL above it in the same block.
+// The 8086 guide in the editor, as in the Machine view and the guide's snippets: hovering a mnemonic shows the
+// instruction and its short description with a link to its article; Ctrl+click opens the article. An INT line names
+// the function too: AH (or AX) is taken from the nearest MOV AH/AX/AL above it in the same block.
 import { INTERRUPTS, h2 as inth2, lookupInt } from '../workbench/interrupts'
+import { findInterrupt } from '../workbench/articles'
+import { opsIn, openArticleRef, refFor } from '../workbench/asmref'
+
+monaco.editor.registerCommand('dosbox.article', (_accessor, key: string) => openArticleRef(key))
+const articleLink = (key: string, text: string) => `[${text}](command:dosbox.article?${encodeURIComponent(JSON.stringify([key]))} "Open in the guide")`
+
+/** The INT on a line and the function the lines above load into AH / AX (null when they don't say). */
+function intAt(model: monaco.editor.ITextModel, lineNumber: number): { int: number; value: number | null } | null {
+  const m = /^\s*(?:[A-Za-z_@$?][\w@$?]*:)?\s*INT\s+([0-9A-Fa-f]+)h?\b/i.exec(model.getLineContent(lineNumber))
+  if (!m) return null
+  let ah: number | null = null, al = 0, ax: number | null = null
+  for (let l = lineNumber - 1; l >= Math.max(1, lineNumber - 25); l--) {
+    const t = model.getLineContent(l)
+    if (/^\s*(RET|JMP|END\b)/i.test(t) || /^[A-Za-z_@$?][\w@$?]*:\s*$/.test(t.trim())) break
+    let r: RegExpExecArray | null
+    if (ax === null && ah === null && (r = /^\s*MOV\s+AX\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) { ax = parseInt(r[1], 16); break }
+    if (ah === null && (r = /^\s*MOV\s+AH\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) ah = parseInt(r[1], 16)
+    if (al === 0 && (r = /^\s*MOV\s+AL\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) al = parseInt(r[1], 16)
+  }
+  return { int: parseInt(m[1], 16), value: ax !== null ? ax : ah !== null ? (ah << 8) | al : null }
+}
+
+/** The guide article for what is at a position: the mnemonic's; for INT, the service's (or the vector's). */
+export function articleAt(model: monaco.editor.ITextModel, position: monaco.IPosition): string | null {
+  const op = opsIn(model.getLineContent(position.lineNumber)).find((o) => position.column - 1 >= o.start && position.column - 1 <= o.end)
+  if (!op) return null
+  if (/^INT$/i.test(op.word)) {
+    const call = intAt(model, position.lineNumber)
+    const a = call && findInterrupt(call.int, call.value ?? 0)
+    if (a && (call.value !== null || !a.fns?.length)) return a.key
+  }
+  return refFor(op.word)?.key ?? null
+}
 
 monaco.languages.registerHoverProvider('masm', {
   provideHover(model, position) {
-    const line = model.getLineContent(position.lineNumber)
-    const m = /^\s*(?:[A-Za-z_@$?][\w@$?]*:)?\s*INT\s+([0-9A-Fa-f]+)h?\b/i.exec(line)
-    if (!m) return null
-    const int = parseInt(m[1], 16)
-    let ah: number | null = null, al = 0, ax: number | null = null
-    for (let l = position.lineNumber - 1; l >= Math.max(1, position.lineNumber - 25); l--) {
-      const t = model.getLineContent(l)
-      if (/^\s*(RET|JMP|END\b)/i.test(t) || /^[A-Za-z_@$?][\w@$?]*:\s*$/.test(t.trim())) break
-      let r: RegExpExecArray | null
-      if (ax === null && ah === null && (r = /^\s*MOV\s+AX\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) { ax = parseInt(r[1], 16); break }
-      if (ah === null && (r = /^\s*MOV\s+AH\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) ah = parseInt(r[1], 16)
-      if (al === 0 && (r = /^\s*MOV\s+AL\s*,\s*([0-9A-Fa-f]+)h?\b/i.exec(t))) al = parseInt(r[1], 16)
+    const lines: string[] = []
+    const op = opsIn(model.getLineContent(position.lineNumber)).find((o) => position.column - 1 >= o.start && position.column - 1 <= o.end)
+    const a = op && refFor(op.word)
+    if (a) lines.push(`**${a.title}** · ${a.tagline}`, a.short)
+    const call = intAt(model, position.lineNumber)
+    if (call) {
+      const { int, value } = call
+      const vec = INTERRUPTS.find((v) => v.int === int)
+      lines.push(`**INT ${inth2(int)}**${vec ? ` · ${vec.title}` : ''}`)
+      if (vec && value !== null) {
+        const hit = lookupInt(int, value)
+        if (hit?.fn) {
+          const f = hit.fn
+          lines.push(`${f.ax ? 'AX' : 'AH'}=${(f.ax ? value : value >> 8).toString(16).toUpperCase().padStart(f.ax ? 4 : 2, '0')}h — **${f.name}**`)
+          if (f.in) lines.push(`in: ${f.in}`)
+          if (f.out) lines.push(`out: ${f.out}`)
+          if (f.note) lines.push(`_${f.note}_`)
+        } else lines.push(`AH=${(value >> 8).toString(16).toUpperCase().padStart(2, '0')}h — not in the reference`)
+      } else if (vec) {
+        lines.push(vec.note ?? '', ...vec.fns.slice(0, 12).map((f) => `${f.ax ? 'AX' : 'AH'}=${f.fn.toString(16).toUpperCase().padStart(f.ax ? 4 : 2, '0')}h ${f.name}`))
+        if (vec.fns.length > 12) lines.push(`… ${vec.fns.length - 12} more in the guide's Interrupts chapter`)
+      }
     }
-    const value = ax !== null ? ax : ah !== null ? (ah << 8) | al : null
-    const vec = INTERRUPTS.find((v) => v.int === int)
-    const lines: string[] = [`**INT ${inth2(int)}**${vec ? ` · ${vec.title}` : ''}`]
-    if (vec && value !== null) {
-      const hit = lookupInt(int, value)
-      if (hit?.fn) {
-        const f = hit.fn
-        lines.push(`${f.ax ? 'AX' : 'AH'}=${(f.ax ? value : value >> 8).toString(16).toUpperCase().padStart(f.ax ? 4 : 2, '0')}h — **${f.name}**`)
-        if (f.in) lines.push(`in: ${f.in}`)
-        if (f.out) lines.push(`out: ${f.out}`)
-        if (f.note) lines.push(`_${f.note}_`)
-      } else lines.push(`AH=${(value >> 8).toString(16).toUpperCase().padStart(2, '0')}h — not in the reference`)
-    } else if (vec) {
-      lines.push(vec.note ?? '', ...vec.fns.slice(0, 12).map((f) => `${f.ax ? 'AX' : 'AH'}=${f.fn.toString(16).toUpperCase().padStart(f.ax ? 4 : 2, '0')}h ${f.name}`))
-      if (vec.fns.length > 12) lines.push(`… ${vec.fns.length - 12} more in the Interrupts tab`)
+    if (!lines.length) return null
+    const key = articleAt(model, position) ?? (call ? findInterrupt(call.int, call.value ?? 0)?.key ?? null : a?.key ?? null)
+    if (key) lines.push(`${articleLink(key, 'Open the article')} · Ctrl+click the ${call && !a ? 'INT' : 'mnemonic'}`)
+    return {
+      range: op ? new monaco.Range(position.lineNumber, op.start + 1, position.lineNumber, op.end + 1) : undefined,
+      contents: lines.filter(Boolean).map((value) => ({ value, isTrusted: { enabledCommands: ['dosbox.article'] } })),
     }
-    return { contents: lines.filter(Boolean).map((value) => ({ value })) }
   },
 })

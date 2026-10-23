@@ -613,3 +613,13 @@ html.paper body { overflow: hidden; }
 /* The guide index's chapters: the instructions, the interrupts. */
 .guide-chapter { margin: 14px 0 2px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
 .guide-body > .guide-chapter:first-child { margin-top: 2px; }
+/* A mnemonic that knows its guide article (editor hover, Machine instructions, guide snippets): hover for the card,
+   click for the article. */
+.asm-op { cursor: pointer; border-radius: 2px; }
+.asm-op:hover { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; background: rgba(224, 168, 90, 0.16); }
+.asm-op-link { text-decoration: underline; text-underline-offset: 2px; cursor: pointer !important; }
+.ref-card { position: fixed; z-index: 1000; max-width: 360px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); box-shadow: 0 4px 14px rgba(40, 38, 30, 0.14); font-size: 12.5px; line-height: 1.4; pointer-events: none; }
+.ref-card-head b { font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--accent); }
+.ref-card-head span { color: var(--muted); }
+.ref-card-short { margin-top: 4px; }
+.ref-card-foot { margin-top: 6px; color: var(--muted); font-size: 11px; }

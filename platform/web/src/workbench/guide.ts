@@ -13,7 +13,9 @@ export interface Program {
 /** The .COM skeleton an example is dropped into; `END` marks where. */
 export function wrapExample(mnemonic: string, ex: string[], data: string[] = []): string {
   const body = ex.map((l) => (l.endsWith(':') || /^[A-Z_][A-Z0-9_]*:/i.test(l) ? l : '        ' + l))
-  const dat = data.map((l) => (/^[A-Z_][A-Z0-9_]*\s/i.test(l) ? l : '        ' + l))
+  // A name that a directive defines (MSG DB ..., PRINT PROC) starts the line; everything else (a helper's
+  // instructions, its labels) is indented like the code.
+  const dat = data.map((l) => (/^[A-Z_][A-Z0-9_]*\s+(DB|DW|DD|DQ|DT|PROC|ENDP|EQU|LABEL|STRUC|ENDS|=)(\s|$)/i.test(l) ? l : '        ' + l))
   return [
     `; ${mnemonic} — from the 8086 guide. Build & Run, or Debug and step with F7.`,
     '        .MODEL  TINY',

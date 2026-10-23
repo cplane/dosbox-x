@@ -2,6 +2,7 @@ import { Fragment, useState, type ReactNode } from 'react'
 import { findArticle, findInterruptText, type Block } from './articles'
 import { exampleFile, wrapExample } from './guide'
 import { Icon } from './icons'
+import { AsmOp } from './asmref'
 
 /**
  * One article of the 8086 guide, in a tab beside the editor: the name and a few words, the short description,
@@ -18,9 +19,9 @@ interface Props {
   onOpen?: (file: string, code: string) => void
 }
 
-// A little colour for assembly: comments, strings, numbers, registers, the mnemonic.
+// A little colour for assembly: comments, strings, numbers, registers, the mnemonic (with its card and article).
 const REGS = /^(AX|BX|CX|DX|AL|AH|BL|BH|CL|CH|DL|DH|SI|DI|BP|SP|CS|DS|ES|SS|IP)$/i
-function highlight(line: string): ReactNode[] {
+function highlight(line: string, onNavigate?: (key: string) => void): ReactNode[] {
   const out: ReactNode[] = []
   // Split off the comment (a ; outside quotes).
   let code = line, comment = ''
@@ -43,7 +44,7 @@ function highlight(line: string): ReactNode[] {
     else if (word) {
       if (wantOp && (/^:/.test(rest) || /^\s+(DB|DW|DD|DQ|DT|PROC|ENDP|EQU|LABEL|STRUC|ENDS|SEGMENT)\b/i.test(rest))) out.push(<span key={k++} className="hl-label">{t}</span>)
       else if (REGS.test(word)) out.push(<span key={k++} className="hl-reg">{t}</span>)
-      else if (wantOp) { out.push(<span key={k++} className="hl-op">{t}</span>); wantOp = false }
+      else if (wantOp) { out.push(<AsmOp key={k++} word={t} className="hl-op" onOpen={onNavigate} />); wantOp = /^(REP|REPE|REPZ|REPNE|REPNZ|LOCK)$/i.test(t) }
       else out.push(<Fragment key={k++}>{t}</Fragment>)
     } else out.push(<Fragment key={k++}>{t}</Fragment>)
   }
@@ -87,7 +88,7 @@ function alignComments(lines: string[]): string[] {
   })
 }
 
-function Snippet({ block, title, articleKey, onOpen }: { block: Extract<Block, { code: string[] }>; title: string; articleKey: string; onOpen?: Props['onOpen'] }) {
+function Snippet({ block, title, articleKey, onOpen, onNavigate }: { block: Extract<Block, { code: string[] }>; title: string; articleKey: string; onOpen?: Props['onOpen']; onNavigate: Props['onNavigate'] }) {
   const [copied, setCopied] = useState(false)
   const text = alignComments([...block.code, ...(block.run && block.data?.length ? ['', ...block.data] : [])]).join('\n')
   const copy = async () => {
@@ -104,7 +105,7 @@ function Snippet({ block, title, articleKey, onOpen }: { block: Extract<Block, {
         )}
         <button className={`icon-btn ${copied ? 'done' : ''}`} aria-label="Copy" onClick={copy} title={copied ? 'Copied' : 'Copy the snippet'}>{copied ? Icon.check : Icon.copy}</button>
       </div>
-      <pre>{text.split('\n').map((l, i) => <div key={i}>{l ? highlight(l) : ' '}</div>)}</pre>
+      <pre>{text.split('\n').map((l, i) => <div key={i}>{l ? highlight(l, onNavigate) : ' '}</div>)}</pre>
     </div>
   )
 }
@@ -142,7 +143,7 @@ export function ArticleView({ articleKey, onNavigate, onBack, onOpen }: Props) {
               </table>
             )
           }
-          return <Snippet key={i} block={b} title={a.title} articleKey={a.key} onOpen={onOpen} />
+          return <Snippet key={i} block={b} title={a.title} articleKey={a.key} onOpen={onOpen} onNavigate={onNavigate} />
         })}
       </div>
       {a.see && a.see.length > 0 && (
