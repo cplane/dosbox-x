@@ -606,3 +606,7 @@ html.paper body { overflow: hidden; }
 .article-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
 .article-see { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; }
 .article-see button { padding: 1px 8px; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+/* The snippet bar's icon buttons: copy (a tick once copied), open in the editor. */
+.article-code-bar .icon-btn { padding: 2px 4px; }
+.article-code-bar .icon-btn svg { width: 15px; height: 15px; display: block; }
+.article-code-bar .icon-btn.done { color: #2e7d5b; }
