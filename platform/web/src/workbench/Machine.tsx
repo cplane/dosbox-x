@@ -3,6 +3,7 @@ import { touches } from './operands'
 import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
 import { REGIONS } from './MemoryMapPanel'
+import { Icon } from './icons'
 import { hex, type Debugger, type MemAccess, type MemWindow, type Registers } from './useDebugger'
 
 /**
@@ -396,43 +397,6 @@ export function Machine({ dbg, onShowInterrupt, program }: Props) {
           >{hoverText}</div>
         </>
       )}
-      <div className="machine-tools">
-        <button onClick={() => dbg.step('into')} disabled={liveOff} title="Step (F7)">↓</button>
-        <button onClick={() => dbg.step('over')} disabled={liveOff} title="Step over a call (F8)">↷</button>
-        {dbg.playing
-          ? <button onClick={dbg.pausePlay} title="Pause">‖</button>
-          : <button onClick={() => dbg.play(speed)} disabled={!stopped || !!frames} title="Play: step on its own">▶</button>}
-        <select value={speed} onChange={(e) => { setSpeed(Number(e.target.value)); if (dbg.playing) dbg.play(Number(e.target.value)) }} title="steps per second">
-          {[1, 2, 5, 10, 20].map((n) => <option key={n} value={n}>{n}/s</option>)}
-        </select>
-        <button onClick={dbg.cont} disabled={liveOff} title="Run to the next breakpoint (F9)">▶▶</button>
-        {dbg.session && !stopped && !dbg.playing && <button onClick={dbg.pause} title="Pause the running program">‖</button>}
-        <button className="danger" onClick={() => dbg.stop()} disabled={!dbg.session} title="Stop the program">■</button>
-        <span className="machine-record">
-          <button onClick={() => dbg.record(recordN)} disabled={liveOff} title="Run this many instructions recording each with what it touched, then replay them here">⏺ record</button>
-          <select value={recordN} onChange={(e) => setRecordN(Number(e.target.value))} title="instructions to record">
-            {[500, 2000, 5000, 10000].map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-        </span>
-        <span className="muted small">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : program && program.toUpperCase() !== 'COMMAND' ? `${program} running` : ''}</span>
-      </div>
-      {frames && (
-        <div className="machine-replay">
-          <button onClick={() => { setReplaying(false); setFrame(0) }} title="First instruction">⏮</button>
-          <button onClick={() => { setReplaying(false); setFrame((f) => Math.max(0, f - 1)) }} title="Back one">◀</button>
-          {replaying
-            ? <button onClick={() => setReplaying(false)} title="Pause">‖</button>
-            : <button onClick={() => { if (at >= frames.length - 1) setFrame(0); setReplaying(true) }} title="Play the recording">▶</button>}
-          <button onClick={() => { setReplaying(false); setFrame((f) => Math.min(frames.length - 1, f + 1)) }} title="Forward one">▶|</button>
-          <input type="range" min={0} max={Math.max(0, frames.length - 1)} value={at} onChange={(e) => { setReplaying(false); setFrame(Number(e.target.value)) }} title="scrub" />
-          <span className="muted">{at + 1} / {frames.length}</span>
-          <select value={fps} onChange={(e) => setFps(Number(e.target.value))} title="instructions per second">
-            {[2, 5, 10, 20, 30, 60].map((n) => <option key={n} value={n}>{n}/s</option>)}
-          </select>
-          <button className="ghost" onClick={() => { setReplaying(false); dbg.clearRecording() }} title="Back to the live machine">✕ replay</button>
-        </div>
-      )}
-
       <div className="machine-mem">
         <div className="machine-label">
           <span>memory · DS:{mem ? mem.base.toString(16).toUpperCase().padStart(4, '0') : '----'}</span>
@@ -475,6 +439,53 @@ export function Machine({ dbg, onShowInterrupt, program }: Props) {
             <div key={name} className={`cpu-flag ${flags & bit ? 'on' : ''} ${(flags & bit) !== (prevFlags & bit) ? 'changed' : ''}`} title={name}>{name}</div>
           ))}
         </div>
+      </div>
+
+      <div className="machine-controls">
+        <div className="machine-tools">
+          <span className="media" role="group" aria-label="run">
+            {dbg.session && !stopped && !dbg.playing
+              ? <button className="media-btn" onClick={dbg.pause} title="Pause the running program">{Icon.pause}</button>
+              : <button className="media-btn" onClick={dbg.cont} disabled={liveOff} title="Continue to the next breakpoint or the end (F9)">{Icon.play}</button>}
+            <button className="media-btn" onClick={() => dbg.step('over')} disabled={liveOff} title="Step over a call (F8)">{Icon.over}</button>
+            <button className="media-btn" onClick={() => dbg.step('into')} disabled={liveOff} title="Step into (F7)">{Icon.into}</button>
+            {dbg.playing
+              ? <button className="media-btn" onClick={dbg.pausePlay} title="Pause stepping">{Icon.pause}</button>
+              : <button className="media-btn" onClick={() => dbg.play(speed)} disabled={!stopped || !!frames} title="Step on its own, at the speed beside">{Icon.steps}</button>}
+            <select value={speed} onChange={(e) => { setSpeed(Number(e.target.value)); if (dbg.playing) dbg.play(Number(e.target.value)) }} title="steps per second">
+              {[1, 2, 5, 10, 20].map((n) => <option key={n} value={n}>{n}/s</option>)}
+            </select>
+            <button className="media-btn stop" onClick={() => dbg.stop()} disabled={!dbg.session} title="Stop debugging (ends the program)">{Icon.stop}</button>
+          </span>
+          <span className="media" role="group" aria-label="record">
+            <button className="media-btn stop" onClick={() => dbg.record(recordN)} disabled={liveOff} title="Record: run this many instructions, each with what it touched, then replay them here">{Icon.record}</button>
+            <select value={recordN} onChange={(e) => setRecordN(Number(e.target.value))} title="instructions to record">
+              {[500, 2000, 5000, 10000].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </span>
+          <span className="muted small">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : program && program.toUpperCase() !== 'COMMAND' ? `${program} running` : ''}</span>
+        </div>
+        {frames && (
+          <div className="machine-replay">
+            <span className="media" role="group" aria-label="replay">
+              <button className="media-btn" onClick={() => { setReplaying(false); setFrame(0) }} title="First instruction">{Icon.first}</button>
+              <button className="media-btn" onClick={() => { setReplaying(false); setFrame((f) => Math.max(0, f - 1)) }} title="Back one">{Icon.back}</button>
+              {replaying
+                ? <button className="media-btn" onClick={() => setReplaying(false)} title="Pause">{Icon.pause}</button>
+                : <button className="media-btn" onClick={() => { if (at >= frames.length - 1) setFrame(0); setReplaying(true) }} title="Play the recording">{Icon.start}</button>}
+              <button className="media-btn" onClick={() => { setReplaying(false); setFrame((f) => Math.min(frames.length - 1, f + 1)) }} title="Forward one">{Icon.forward}</button>
+            </span>
+            <input type="range" min={0} max={Math.max(0, frames.length - 1)} value={at} onChange={(e) => { setReplaying(false); setFrame(Number(e.target.value)) }} title="scrub" />
+            <span className="muted">{at + 1} / {frames.length}</span>
+            <select value={fps} onChange={(e) => setFps(Number(e.target.value))} title="instructions per second">
+              {[2, 5, 10, 20, 30, 60].map((n) => <option key={n} value={n}>{n}/s</option>)}
+            </select>
+            <button className="ghost" onClick={() => { setReplaying(false); dbg.clearRecording() }} title="Back to the live machine">✕ replay</button>
+          </div>
+        )}
+      </div>
+
+      <div className="machine-instr">
         <div className="machine-label"><span>instructions</span></div>
         {intCall && (
           <div className="machine-int">

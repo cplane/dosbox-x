@@ -345,7 +345,6 @@ html.paper body { overflow: hidden; }
 .dbg { grid-template-rows: auto 1fr; }
 .machine { display: grid; gap: 10px; }
 .machine-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.machine-tools button { padding: 3px 9px; }
 .machine-tools select, .machine-label select { font-size: 11px; padding: 2px 4px; }
 .machine-label { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 4px 0 2px; }
 .machine-label .muted { text-transform: none; letter-spacing: 0; margin-left: auto; font-size: 11px; }
@@ -479,7 +478,7 @@ html.paper body { overflow: hidden; }
 /* Replay of a recorded run. */
 .machine-replay { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: rgba(70, 70, 65, 0.04); }
 .machine-replay input[type=range] { flex: 1; min-width: 100px; accent-color: #3b63a8; }
-.machine-replay button { padding: 2px 7px; }
+.machine-replay .ghost { padding: 2px 7px; }
 .machine-replay select { font-size: 11px; padding: 2px 4px; }
 .machine-record { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
 
@@ -561,3 +560,9 @@ html.paper body { overflow: hidden; }
 .atlas-mini { position: absolute; right: 8px; bottom: 8px; width: 128px; height: 128px; border: 1px solid var(--line); border-radius: 4px; background: #f7f5f0; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); cursor: pointer; image-rendering: auto; }
 .atlas-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); }
 .atlas-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; border: 1px solid #0001; }
+
+/* The Machine view's controls: between the CPU and the instructions they run, the editor's media buttons (the
+   same icons), sticky to the panel's bottom when that spot is scrolled out of view. */
+.machine-controls { position: sticky; bottom: 0; z-index: 4; display: grid; gap: 6px; padding: 6px 0; background: var(--panel); box-shadow: 0 -1px 0 var(--line); }
+.machine-tools .media select, .machine-replay .media select { font-size: 11px; padding: 1px 2px; border: 0; background: none; color: var(--text); }
+.machine-tools .media + .media { margin-left: 2px; }
