@@ -63,9 +63,32 @@ function inline(text: string, onNavigate: (key: string) => void, self = ''): Rea
   })
 }
 
+// Where a line's comment starts (a ; outside quotes), or -1.
+function commentAt(line: string): number {
+  let quote = ''
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (quote) { if (c === quote) quote = '' } else if (c === '\'' || c === '"') quote = c
+    else if (c === ';') return i
+  }
+  return -1
+}
+
+// A snippet's comments in one column: just past its longest commented line of code (at most column 36; a longer
+// line keeps two spaces before its comment). Lines put together from shared helpers had their own columns.
+function alignComments(lines: string[]): string[] {
+  const parts = lines.map((l) => { const at = commentAt(l); return at > 0 && l.slice(0, at).trim() ? { code: l.slice(0, at).trimEnd(), comment: l.slice(at) } : null })
+  const widest = Math.max(0, ...parts.map((p) => (p && p.code.length <= 36 ? p.code.length : 0)))
+  const col = Math.min(36, widest + 2)
+  return lines.map((l, i) => {
+    const p = parts[i]
+    return p ? `${p.code.padEnd(Math.max(col, p.code.length + 2))}${p.comment}` : l
+  })
+}
+
 function Snippet({ block, title, articleKey, onOpen }: { block: Extract<Block, { code: string[] }>; title: string; articleKey: string; onOpen?: Props['onOpen'] }) {
   const [copied, setCopied] = useState(false)
-  const text = [...block.code, ...(block.run && block.data?.length ? ['', ...block.data] : [])].join('\n')
+  const text = alignComments([...block.code, ...(block.run && block.data?.length ? ['', ...block.data] : [])]).join('\n')
   const copy = async () => {
     try { await navigator.clipboard.writeText(text.replace(/\n/g, '\r\n')) } catch { /* no clipboard: nothing to say */ }
     setCopied(true)
@@ -76,7 +99,7 @@ function Snippet({ block, title, articleKey, onOpen }: { block: Extract<Block, {
       <div className="article-code-bar">
         {block.note && <span className="muted">{block.note}</span>}
         {onOpen && block.run && (
-          <button className="ghost" onClick={() => onOpen(exampleFile(articleKey), wrapExample(title, block.code, block.data))} title="Open as a complete program in the editor, ready to Build & Run or debug">open in editor</button>
+          <button className="ghost" onClick={() => onOpen(exampleFile(articleKey), alignComments(wrapExample(title, block.code, block.data).split('\r\n')).join('\r\n'))} title="Open as a complete program in the editor, ready to Build & Run or debug">open in editor</button>
         )}
         <button className="ghost" onClick={copy} title="Copy the snippet">{copied ? 'copied' : 'copy'}</button>
       </div>
