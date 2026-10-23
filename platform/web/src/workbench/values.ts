@@ -69,7 +69,9 @@ export function useDebugValues(dbg: Debugger, symbols: { tds: Tds; source: strin
   const shownFrame = useRef('') // the frame (function:BP) whose variables are on show
   const contextCache = useRef<{ key: string; value: Promise<{ outer: { fn: string; locals: TdsSymbol[]; bp: number }[]; regs: Registers }> } | null>(null)
   const globalSyms = useMemo(() => (tds && symbols ? globalsOf(tds, symbols.source) : []), [tds, symbols])
-  const inProgram = !!regs && entryCs !== null && dbg.inProgram(parseInt(cs, 16) & 0xffff, regs)
+  // Stopped in the code the symbols describe (its segment): elsewhere, even inside the EXE (BASIC's runtime, a
+  // Pascal unit), an IP means nothing to them and the frames come from the BP chain.
+  const inProgram = !!regs && entryCs !== null && (parseInt(cs, 16) & 0xffff) === entryCs
 
   // A new stop: the stack from here (walked from BP even inside the runtime or DOS, since their frames link back
   // into the program's), the innermost frame of ours chosen.
@@ -84,7 +86,7 @@ export function useDebugValues(dbg: Debugger, symbols: { tds: Tds; source: strin
       setFrames(stack)
       const first = stack.findIndex((f) => f.fn !== null)
       setChosen(first < 0 ? 0 : first)
-      setNote(inProgram ? '' : 'paused outside the program (the runtime, DOS or the BIOS): the nearest frame of yours is shown')
+      setNote(inProgram ? '' : 'paused outside your code (the runtime, DOS or the BIOS): the nearest frame of yours is shown')
       setStopSeq((n) => n + 1)
     })()
     return () => { cancelled = true }

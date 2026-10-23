@@ -122,6 +122,7 @@ export function languageFor(name: string): string {
     case 'asm': case 'inc': return 'masm'
     case 'c': case 'h': case 'cpp': case 'hpp': return 'cpp'
     case 'pas': return 'pascal'
+    case 'bas': case 'bi': return 'vb' // Monaco's Visual Basic: close enough to QuickBASIC's keywords
     case 'bat': return 'bat'
     case 'mak': return 'makefile'
     case 'ini': case 'cfg': return 'ini'

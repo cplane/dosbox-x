@@ -998,6 +998,29 @@ void DOS_SetConKey(uint16_t src, uint16_t dst) {
 	}
 }
 
+/* TTY: the console, without saying so. A program whose standard output is the console may write on the
+ * screen itself (Microsoft BASIC's PRINT puts characters into video memory); one whose output is a plain
+ * character device writes through DOS. Output sent here ("PROG > TTY") goes on to CON, so it shows on the
+ * screen as before and reaches the console stream (the web terminal) too. Reads come from CON. */
+class device_TTY : public DOS_Device {
+public:
+	device_TTY() { SetName("TTY"); }
+	bool Read(uint8_t * data,uint16_t * size) override {
+		if (DOS_CON == NULL) { *size = 0; return true; }
+		return DOS_CON->Read(data,size);
+	}
+	bool Write(const uint8_t * data,uint16_t * size) override {
+		if (DOS_CON == NULL) return true;
+		return DOS_CON->Write(data,size);
+	}
+	bool Seek(uint32_t * pos,uint32_t type) override { (void)type; *pos = 0; return true; }
+	bool Close() override { return true; }
+	/* A character device, but neither the standard input nor the standard output (CON's StdIn/StdOut bits). */
+	uint16_t GetInformation(void) override { return DeviceInfoFlags::Device; }
+	bool ReadFromControlChannel(PhysPt bufptr,uint16_t size,uint16_t * retcode) override { (void)bufptr; (void)size; (void)retcode; return false; }
+	bool WriteToControlChannel(PhysPt bufptr,uint16_t size,uint16_t * retcode) override { (void)bufptr; (void)size; (void)retcode; return false; }
+};
+
 void DOS_SetupDevices(void) {
 	DOS_Device * newdev;
 	DOS_CON=new device_CON(); newdev=DOS_CON;
@@ -1005,6 +1028,7 @@ void DOS_SetupDevices(void) {
 	DOS_Device * newdev2;
 	newdev2=new device_NUL();
 	DOS_AddDevice(newdev2);
+	DOS_AddDevice(new device_TTY());
 #if !defined(OSFREE)
 	DOS_Device * newdev3;
 	newdev3=new device_PRN();

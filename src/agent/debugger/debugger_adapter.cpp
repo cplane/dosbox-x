@@ -310,7 +310,21 @@ bool DebuggerAdapter::StartTargetAtEntry(const std::string& command,
             *error = "target.command must be a DOS filename without shell metacharacters";
         return false;
     }
-    for (std::vector<std::string>::const_iterator it = arguments.begin(); it != arguments.end(); ++it) {
+    // A trailing ">" and a device name send the target's standard output to that DOS device, as the shell's
+    // "> DEV" does (the workbench runs BASIC programs "> TTY", so their PRINT goes through DOS). A device only,
+    // never a file.
+    std::vector<std::string> args = arguments;
+    std::string redirect;
+    if (args.size() >= 2 && args[args.size() - 2] == ">") {
+        redirect = args.back();
+        args.resize(args.size() - 2);
+        if (!is_dos_token(redirect) || DOS_FindDevice(redirect.c_str()) == DOS_DEVICES) {
+            if (error != NULL)
+                *error = "target output can only be redirected to a DOS device";
+            return false;
+        }
+    }
+    for (std::vector<std::string>::const_iterator it = args.begin(); it != args.end(); ++it) {
         if (!is_dos_token(*it)) {
             if (error != NULL)
                 *error = "target.arguments must contain only DOS-safe tokens";
@@ -337,10 +351,27 @@ bool DebuggerAdapter::StartTargetAtEntry(const std::string& command,
     }
 
     std::string debugbox_command = "DEBUGBOX " + command;
-    for (std::vector<std::string>::const_iterator it = arguments.begin(); it != arguments.end(); ++it)
+    for (std::vector<std::string>::const_iterator it = args.begin(); it != args.end(); ++it)
         debugbox_command += " " + *it;
+    // Redirected as the shell does it: handle 1 closed, the device opened in its place (the lowest free handle),
+    // and the console back once the command is over.
+    uint16_t handle = 0;
+    const bool redirected = !redirect.empty() && DOS_CloseFile(1) && DOS_OpenFile(redirect.c_str(), OPEN_READWRITE, &handle);
+    if (!redirect.empty() && (!redirected || handle != 1)) {
+        if (redirected) DOS_CloseFile(handle);
+        DOS_OpenFile("con", OPEN_READWRITE, &handle);
+        if (error != NULL)
+            *error = "could not redirect the target's output to " + redirect;
+        return false;
+    }
     dos.errorcode = 0;
     first_shell->DoCommand(&debugbox_command[0]);
+    if (redirected) {
+        const uint16_t errorcode = dos.errorcode;
+        DOS_CloseFile(1);
+        DOS_OpenFile("con", OPEN_READWRITE, &handle);
+        dos.errorcode = errorcode;
+    }
     if (dos.errorcode != 0) {
         if (error != NULL)
             *error = "DOS target launch failed with error " + std::to_string(dos.errorcode);

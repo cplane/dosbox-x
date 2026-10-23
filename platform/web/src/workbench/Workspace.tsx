@@ -245,7 +245,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   // A program waiting for a key gets Enter, then Escape, then a space, so it comes back to its own code to be ended.
   const nudge = useCallback((attempt: number) => pressKeys(boxId, ['enter', 'esc', 'space'][attempt] ?? 'enter'), [boxId])
   const stopProgram = useCallback(() => dbg.stop(frameIp.current ?? undefined, nudge), [dbg.stop, nudge])
-  const startProgram = useCallback((command: string) => dbg.start(command, nudge), [dbg.start, nudge])
+  const startProgram = useCallback((command: string, entryParagraph?: number) => dbg.start(command, nudge, entryParagraph), [dbg.start, nudge])
   const debugStarting = useCallback((on: boolean) => setStartingDebug(on), [])
   // The shell's input line was interrupted by the program: an Enter brings the prompt back, as after any session.
   const endOrphan = useCallback(async () => {
@@ -257,9 +257,12 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   valuesRef.current = values
   const lookupValue = useCallback((name: string) => {
     const all = [...valuesRef.current.locals, ...valuesRef.current.enclosing.flatMap((e) => e.values), ...valuesRef.current.globals]
+    // BASIC: the word under the mouse has no type suffix (nm for nm$), the variable may have one.
+    const bare = (n: string) => n.replace(/[%&!#$@]$/, '').toLowerCase()
     const v = all.find((x) => x.name === name) ?? all.find((x) => x.name.toLowerCase() === name.toLowerCase())
+      ?? (symbols?.tds.language === 'basic' ? all.find((x) => bare(x.name) === bare(name)) : undefined)
     return v ? `${v.value}  ·  ${v.type}` : undefined
-  }, [])
+  }, [symbols])
   // Collapsing: the tab goes to the bottom bar and remembers, in its own config (saved with the layout, so a
   // reload keeps it), where to come back: into a group that still has other tabs, or, when it was alone (its
   // group is deleted once empty, freeing the space), beside a neighbour on a side, or at an edge of the window.
