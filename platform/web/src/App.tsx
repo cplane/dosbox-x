@@ -40,7 +40,7 @@ export function App() {
 
   switch (route.screen) {
     case 'player':
-      return <Player key={route.id} boxId={route.id} onBack={() => go('#/')} onFiles={() => go(`#/box/${route.id}/files`)} onSignedOut={signedOut} />
+      return <Player key={route.id} boxId={route.id} onBack={() => go('#/')} onSignedOut={signedOut} />
     case 'files':
       return <Files key={route.id} boxId={route.id} onBack={() => go('#/')} onOpen={() => go(`#/box/${route.id}`)} onSignedOut={signedOut} />
     case 'catalog':

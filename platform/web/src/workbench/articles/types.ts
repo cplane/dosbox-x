@@ -3,6 +3,10 @@
  * directives), shown in the workbench's article tab. A header (the name and a few words), the short description
  * the guide's index has always shown, then the article itself: paragraphs, small headings and code snippets in
  * whatever order explains the instruction best.
+ *
+ * The interrupts chapter uses the same shape: an article per service (a vector and its function number, a few
+ * close relatives together) or per vector (what it is for, how its services are called), with what goes in and
+ * what comes back in place of the flags.
  */
 
 /** One piece of an article's body. */
@@ -18,7 +22,8 @@ export type Block =
   | { table: string[][] }
 
 export interface Article {
-  /** Stable key, the main mnemonic or the topic: "MOV", "JE", "ADDRESSING". */
+  /** Stable key, the main mnemonic or the topic: "MOV", "JE", "ADDRESSING"; for an interrupt "int21-09" (vector, then
+   *  the function in AH as two hex digits, in AX as four for INT 33h), "int21" for a vector's own article. */
   key: string
   /** As the header shows it: "MOV", "JE / JZ", "Addressing modes". */
   title: string
@@ -31,7 +36,14 @@ export interface Article {
   /** Syntax forms, one per line: "MOV reg, reg/mem", "MOV mem, imm"... */
   syntax: string[]
   /** Flags affected, as the guide writes them: "OF SF ZF AF PF CF", "none". */
-  flags: string
+  flags?: string
+  /** An interrupt service: its vector and the function numbers it covers (AH, or AX for INT 33h); none for a
+   *  vector's own article. */
+  int?: number
+  fns?: number[]
+  /** An interrupt service: what goes in (registers, memory) and what comes back. */
+  in?: string
+  out?: string
   /** The short description: one or two sentences (the guide's index line). */
   short: string
   /** The article. */

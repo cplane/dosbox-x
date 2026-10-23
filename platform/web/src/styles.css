@@ -610,3 +610,6 @@ html.paper body { overflow: hidden; }
 .article-code-bar .icon-btn { padding: 2px 4px; }
 .article-code-bar .icon-btn svg { width: 15px; height: 15px; display: block; }
 .article-code-bar .icon-btn.done { color: #2e7d5b; }
+/* The guide index's chapters: the instructions, the interrupts. */
+.guide-chapter { margin: 14px 0 2px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.guide-body > .guide-chapter:first-child { margin-top: 2px; }

@@ -26,7 +26,7 @@ interface Props {
   dbg: Debugger
   /** The workspace's controls, the same the editor's bar has (continue, pause, step out, stop). */
   controls: DebugControls
-  /** The current instruction is an INT: show its function in the reference. */
+  /** The current instruction is an INT: show its service's article in the guide. */
   onShowInterrupt?: (int: number, ax: number) => void
   /** What the box runs (COMMAND when nothing does). */
   program?: string

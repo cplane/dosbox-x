@@ -9,8 +9,7 @@ import { pressKeys, typeText } from '../api/client'
 import { FilesTab } from './FilesTab'
 import { GuidePanel } from './GuidePanel'
 import { ArticleView } from './ArticleView'
-import { findArticle } from './articles'
-import { InterruptsPanel } from './InterruptsPanel'
+import { findArticle, findInterrupt } from './articles'
 import { Machine } from './Machine'
 import { MemoryMapPanel } from './MemoryMapPanel'
 import { MemoryAtlas } from './MemoryAtlas'
@@ -35,7 +34,9 @@ const Editor = lazy(() => import('../screens/Editor').then((m) => ({ default: m.
 // Two layouts, each kept as the user leaves it: one for writing code, one for debugging it (the workspace
 // switches when a debug session starts and when it ends).
 type Mode = 'edit' | 'debug'
-const LAYOUT_KEYS: Record<Mode, string> = { edit: 'dosbox.layout.edit.v5', debug: 'dosbox.layout.debug.v5' }
+const LAYOUT_KEYS: Record<Mode, string> = { edit: 'dosbox.layout.edit.v6', debug: 'dosbox.layout.debug.v6' }
+// The layouts before the guide moved in with the files (and the interrupts became its chapter): v6 starts from them.
+const V5_KEYS: Record<Mode, string> = { edit: 'dosbox.layout.edit.v5', debug: 'dosbox.layout.debug.v5' }
 const OLD_LAYOUT_KEY = 'dosbox.layout.v4' // the single layout before the split: the edit layout starts from it
 
 const defaultLayout: IJsonModel = {
@@ -45,7 +46,13 @@ const defaultLayout: IJsonModel = {
   layout: {
     type: 'row',
     children: [
-      { type: 'tabset', id: 'left', weight: 18, children: [{ type: 'tab', id: 'files', name: 'Files', component: 'files', enableClose: false }] },
+      {
+        type: 'tabset', id: 'left', weight: 18, selected: 0,
+        children: [
+          { type: 'tab', id: 'files', name: 'Files', component: 'files', enableClose: false },
+          { type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' },
+        ],
+      },
       {
         type: 'row', weight: 57,
         children: [
@@ -56,8 +63,6 @@ const defaultLayout: IJsonModel = {
       {
         type: 'tabset', id: 'side', weight: 25,
         children: [
-          { type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' },
-          { type: 'tab', id: 'ints', name: 'Interrupts', component: 'ints' },
           { type: 'tab', id: 'memmap', name: 'Memory map', component: 'memmap' },
         ],
       },
@@ -73,7 +78,13 @@ const debugLayout: IJsonModel = {
   layout: {
     type: 'row',
     children: [
-      { type: 'tabset', id: 'left', weight: 14, children: [{ type: 'tab', id: 'files', name: 'Files', component: 'files', enableClose: false }] },
+      {
+        type: 'tabset', id: 'left', weight: 14, selected: 0,
+        children: [
+          { type: 'tab', id: 'files', name: 'Files', component: 'files', enableClose: false },
+          { type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' },
+        ],
+      },
       {
         type: 'row', weight: 52,
         children: [
@@ -91,8 +102,6 @@ const debugLayout: IJsonModel = {
               { type: 'tab', id: 'watch', name: 'Watch', component: 'watch' },
               { type: 'tab', id: 'machine', name: 'Machine', component: 'machine' },
               { type: 'tab', id: 'memmap', name: 'Memory map', component: 'memmap' },
-              { type: 'tab', id: 'ints', name: 'Interrupts', component: 'ints' },
-              { type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' },
             ],
           },
           { type: 'tabset', id: 'stack', weight: 38, children: [{ type: 'tab', id: 'calls', name: 'Call stack', component: 'calls' }] },
@@ -160,17 +169,30 @@ function defaultSpot(model: Model, id: string): Spot {
     return {}
   }
   if (id === 'files') return { edge: 'start', weight: 18 }
+  if (id === 'guide') return isOpen('files') ? { with: 'files', dock: 'center' } : { edge: 'start', weight: 18 }
   // The side panels: with one of them that is out, else a group of their own at the right edge.
   return side ? { with: side, dock: 'center' } : { edge: 'end', weight: 25 }
 }
 
-const SIDE = ['guide', 'ints', 'memmap', 'machine', 'vars', 'watch']
+const SIDE = ['memmap', 'machine', 'vars', 'watch']
 
 function loadModel(mode: Mode): Model {
   try {
-    const raw = localStorage.getItem(LAYOUT_KEYS[mode]) ?? (mode === 'edit' ? localStorage.getItem(OLD_LAYOUT_KEY) : null)
+    const now = localStorage.getItem(LAYOUT_KEYS[mode])
+    const raw = now ?? localStorage.getItem(V5_KEYS[mode]) ?? (mode === 'edit' ? localStorage.getItem(OLD_LAYOUT_KEY) : null)
     if (raw) {
       const m = Model.fromJson(JSON.parse(raw) as IJsonModel)
+      if (!now) {
+        // From an older layout: the Interrupts tab is gone (a chapter of the guide now), the guide goes behind the files.
+        if (m.getNodeById('ints')) m.doAction(Actions.deleteTab('ints'))
+        const files = m.getNodeById('files')
+        const group = files?.getParent()
+        if (group instanceof TabSetNode) {
+          if (m.getNodeById('guide')) m.doAction(Actions.moveNode('guide', group.getId(), DockLocation.CENTER, 1, false))
+          else m.doAction(Actions.addNode({ type: 'tab', id: 'guide', name: '8086 guide', component: 'guide' }, group.getId(), DockLocation.CENTER, 1, false))
+          m.doAction(Actions.selectTab('files'))
+        }
+      }
       if (mode === 'edit') {
         if (m.getNodeById('machine')) m.doAction(Actions.deleteTab('machine')) // only while a program runs
         for (const id of ['vars', 'watch', 'calls']) if (m.getNodeById(id)) m.doAction(Actions.deleteTab(id)) // only while debugging
@@ -247,7 +269,6 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const [path, setPath] = useState<string | null>(null)
   const [dir, setDir] = useState('')
   const [treeKey, setTreeKey] = useState(0)
-  const [intFocus, setIntFocus] = useState<{ int: number; ax: number } | null>(null)
   // The program's debug symbols, from the editor's last debug build, for the Variables panel.
   const [symbols, setSymbols] = useState<{ tds: Tds; source: string } | null>(null)
   const onSymbols = useCallback((tds: Tds | null, source: string) => setSymbols(tds ? { tds, source } : null), [])
@@ -428,9 +449,10 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     const prev = articleHistory.current.pop()
     if (prev) openArticle(prev, false)
   }
+  // The Machine view's INT: the service's article in the guide's interrupts chapter.
   const showInterrupt = (int: number, ax: number) => {
-    setIntFocus({ int, ax })
-    show('ints', 'Interrupts', 'ints')
+    const a = findInterrupt(int, ax)
+    if (a) openArticle(a.key)
   }
 
   // The Machine tab appears on execution: a debug session, or any program running on the box (live heat).
@@ -519,8 +541,6 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           </div>
         )
       }
-      case 'ints':
-        return <InterruptsPanel focus={intFocus} />
       case 'memmap':
         return (
           <MemoryMapPanel regs={dbg.regs}>
