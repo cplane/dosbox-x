@@ -8,6 +8,8 @@ import { Terminal, type TerminalHandle } from '../screens/Terminal'
 import { pressKeys, typeText } from '../api/client'
 import { FilesTab } from './FilesTab'
 import { GuidePanel } from './GuidePanel'
+import { ArticleView } from './ArticleView'
+import { findArticle } from './articles'
 import { InterruptsPanel } from './InterruptsPanel'
 import { Machine } from './Machine'
 import { MemoryMapPanel } from './MemoryMapPanel'
@@ -370,6 +372,8 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     // meant for the overflow menu) is always one click away. In the bar itself, × does nothing.
     if (action.type === Actions.DELETE_TAB) {
       const node = model.getNodeById((action.data as { node: string }).node)
+      // The guide's article tab is a page, not a panel: × closes it (the index opens it again).
+      if (node instanceof TabNode && node.getId() === 'article') { articleHistory.current = []; return action }
       if (node instanceof TabNode && node.getParent() instanceof TabSetNode) { collapse(node); return undefined }
       if (node instanceof TabNode && node.getParent() instanceof BorderNode) return undefined
     }
@@ -394,6 +398,36 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     window.setTimeout(go, 0)
   }
   const openInEditor = (file: string, code: string) => withEditor((e) => e.createFile(file, code))
+  // The 8086 guide's article tab: beside the editor, one article at a time, with a way back. Its key is kept in
+  // the tab's config (so the layout remembers it); the articles shown before it, for "back".
+  const articleHistory = useRef<string[]>([])
+  const [, setArticleShown] = useState<string | null>(null) // re-renders the index's mark
+  const articleNode = model.getNodeById('article')
+  const currentArticle = articleNode instanceof TabNode ? ((articleNode.getConfig() as { key?: string } | undefined)?.key ?? null) : null
+  const openArticle = (key: string, remember = true) => {
+    const a = findArticle(key)
+    if (!a) return
+    const node = model.getNodeById('article')
+    const name = `8086 · ${a.title}`
+    if (node instanceof TabNode) {
+      const was = (node.getConfig() as { key?: string } | undefined)?.key
+      if (remember && was && was !== a.key) articleHistory.current.push(was)
+      model.doAction(Actions.updateNodeAttributes('article', { name, config: { key: a.key } }))
+      reveal('article')
+    } else {
+      // Into the editor's group (or, with the editor collapsed, the main one).
+      const editor = model.getNodeById('editor')
+      const group = editor instanceof TabNode && editor.getParent() instanceof TabSetNode ? editor.getParent()! : model.getNodeById('main')
+      let target = group
+      if (!target) model.visitNodes((n) => { if (!target && n instanceof TabSetNode) target = n })
+      if (target) model.doAction(Actions.addNode({ type: 'tab', id: 'article', name, component: 'article', config: { key: a.key } }, target.getId(), DockLocation.CENTER, -1, true))
+    }
+    setArticleShown(a.key)
+  }
+  const articleBack = () => {
+    const prev = articleHistory.current.pop()
+    if (prev) openArticle(prev, false)
+  }
   const showInterrupt = (int: number, ax: number) => {
     setIntFocus({ int, ax })
     show('ints', 'Interrupts', 'ints')
@@ -476,7 +510,15 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'terminal':
         return <Terminal ref={terminalRef} boxId={boxId} running={running} subscribe={subscribeCon} onKey={onTermKey} />
       case 'guide':
-        return <GuidePanel onOpen={openInEditor} />
+        return <GuidePanel onOpen={openInEditor} onArticle={(k) => openArticle(k)} current={currentArticle} />
+      case 'article': {
+        const key = (node.getConfig() as { key?: string } | undefined)?.key ?? 'MOV'
+        return (
+          <div className="dbg-body">
+            <ArticleView articleKey={key} onNavigate={(k) => openArticle(k)} onBack={articleHistory.current.length ? articleBack : undefined} onOpen={openInEditor} />
+          </div>
+        )
+      }
       case 'ints':
         return <InterruptsPanel focus={intFocus} />
       case 'memmap':
