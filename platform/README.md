@@ -363,7 +363,7 @@ Helm release `dosbox` in namespace `dosbox` (`helm/dosbox`), deployed with
 everything to `web`, whose nginx serves the app and routes `/auth/` and
 `/api/` on the same origin (host-only, httpOnly, SameSite=Lax cookies; no
 CORS). TLS: the load balancer's `*.pocket-maze.app` certificate; DNS: an A
-record `dosbox` -> 167.99.18.243.
+record `dosbox` pointing at the ingress load balancer.
 
 ```
 browser ──https/wss──> ingress-nginx ──> dosbox-web (nginx + React app, 2 replicas)
