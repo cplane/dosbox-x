@@ -4,6 +4,7 @@ import { flows, type Anchor } from './flows'
 import { h2, lookupInt } from './interrupts'
 import { REGIONS } from './MemoryMapPanel'
 import { Icon } from './icons'
+import { DebugButtons, type DebugControls } from './DebugButtons'
 import { hex, type Debugger, type MemAccess, type MemWindow, type Registers } from './useDebugger'
 
 /**
@@ -23,6 +24,8 @@ import { hex, type Debugger, type MemAccess, type MemWindow, type Registers } fr
 
 interface Props {
   dbg: Debugger
+  /** The workspace's controls, the same the editor's bar has (continue, pause, step out, stop). */
+  controls: DebugControls
   /** The current instruction is an INT: show its function in the reference. */
   onShowInterrupt?: (int: number, ax: number) => void
   /** What the box runs (COMMAND when nothing does). */
@@ -72,7 +75,7 @@ function bump(heat: Map<number, Heat>, accesses: MemAccess[]) {
   }
 }
 
-export function Machine({ dbg, onShowInterrupt, program }: Props) {
+export function Machine({ dbg, controls, onShowInterrupt, program }: Props) {
   const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses, recording } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
   const stackRef = useRef<HTMLCanvasElement>(null)
@@ -207,7 +210,9 @@ export function Machine({ dbg, onShowInterrupt, program }: Props) {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     const cell = Math.max(3, Math.floor(canvas.clientWidth / COLS))
-    const rows = stack ? Math.ceil(stack.bytes.length / COLS) : 4
+    // Always 4 rows (the 256 bytes of a full window): near the top of the segment the window is shorter, and a
+    // strip that changed height with SP moved everything below it from one step to the next.
+    const rows = 4
     if (canvas.width !== cell * COLS || canvas.height !== cell * rows) { canvas.width = cell * COLS; canvas.height = cell * rows }
     ctx.fillStyle = paper.empty
     ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -410,17 +415,16 @@ export function Machine({ dbg, onShowInterrupt, program }: Props) {
         <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>
         <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, 'stack')} onMouseLeave={() => setHover(null)} />
         <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses || cur ? 'read' : 'about to be read'} · heat fades with each instruction <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
-        {elsewhere.length > 0 && (
-          <div className="machine-elsewhere">
-            <span className="muted">also touched:</span>
-            {elsewhere.map((g) => (
-              <span key={g.name} title={`${g.lo.toString(16).toUpperCase().padStart(5, '0')}–${g.hi.toString(16).toUpperCase().padStart(5, '0')}`}>
-                {g.name}{g.reads ? <em className="r"> r{g.reads}</em> : null}{g.writes ? <em className="w"> w{g.writes}</em> : null}
-              </span>
-            ))}
-            {live && dbg.accessesDropped > 0 && <span className="muted">+{dbg.accessesDropped} more</span>}
-          </div>
-        )}
+        {/* Always there, one line high, so the controls below do not move from one step to the next. */}
+        <div className="machine-elsewhere" title={elsewhere.map((g) => g.name).join(', ')}>
+          {elsewhere.length > 0 && <span className="muted">also touched:</span>}
+          {elsewhere.map((g) => (
+            <span key={g.name} title={`${g.lo.toString(16).toUpperCase().padStart(5, '0')}–${g.hi.toString(16).toUpperCase().padStart(5, '0')}`}>
+              {g.name}{g.reads ? <em className="r"> r{g.reads}</em> : null}{g.writes ? <em className="w"> w{g.writes}</em> : null}
+            </span>
+          ))}
+          {live && elsewhere.length > 0 && dbg.accessesDropped > 0 && <span className="muted">+{dbg.accessesDropped} more</span>}
+        </div>
       </div>
 
       <div className="machine-cpu">
@@ -443,27 +447,21 @@ export function Machine({ dbg, onShowInterrupt, program }: Props) {
 
       <div className="machine-controls">
         <div className="machine-tools">
-          <span className="media" role="group" aria-label="run">
-            {dbg.session && !stopped && !dbg.playing
-              ? <button className="media-btn" onClick={dbg.pause} title="Pause the running program">{Icon.pause}</button>
-              : <button className="media-btn" onClick={dbg.cont} disabled={liveOff} title="Continue to the next breakpoint or the end (F9)">{Icon.play}</button>}
-            <button className="media-btn" onClick={() => dbg.step('over')} disabled={liveOff} title="Step over a call (F8)">{Icon.over}</button>
-            <button className="media-btn" onClick={() => dbg.step('into')} disabled={liveOff} title="Step into (F7)">{Icon.into}</button>
+          <DebugButtons c={controls} unit="instruction" onStep={(mode) => dbg.step(mode)} hold={!!frames || dbg.playing}>
             {dbg.playing
               ? <button className="media-btn" onClick={dbg.pausePlay} title="Pause stepping">{Icon.pause}</button>
-              : <button className="media-btn" onClick={() => dbg.play(speed)} disabled={!stopped || !!frames} title="Step on its own, at the speed beside">{Icon.steps}</button>}
+              : <button className="media-btn" onClick={() => dbg.play(speed)} disabled={!stopped || !!frames} title="Step on its own, one instruction at a time at the speed beside">{Icon.steps}</button>}
             <select value={speed} onChange={(e) => { setSpeed(Number(e.target.value)); if (dbg.playing) dbg.play(Number(e.target.value)) }} title="steps per second">
               {[1, 2, 5, 10, 20].map((n) => <option key={n} value={n}>{n}/s</option>)}
             </select>
-            <button className="media-btn stop" onClick={() => dbg.stop()} disabled={!dbg.session} title="Stop debugging (ends the program)">{Icon.stop}</button>
-          </span>
+          </DebugButtons>
           <span className="media" role="group" aria-label="record">
             <button className="media-btn stop" onClick={() => dbg.record(recordN)} disabled={liveOff} title="Record: run this many instructions, each with what it touched, then replay them here">{Icon.record}</button>
             <select value={recordN} onChange={(e) => setRecordN(Number(e.target.value))} title="instructions to record">
               {[500, 2000, 5000, 10000].map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </span>
-          <span className="muted small">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : program && program.toUpperCase() !== 'COMMAND' ? `${program} running` : ''}</span>
+          <span className="muted small machine-state">{frames ? `replay · ${recording!.end}` : dbg.session ? `${dbg.session.state}${dbg.session.stop_reason ? ` · ${dbg.session.stop_reason.kind}` : ''}` : program && program.toUpperCase() !== 'COMMAND' ? `${program} running` : ''}</span>
         </div>
         {frames && (
           <div className="machine-replay">

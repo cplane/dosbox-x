@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
-import { getBox, pressKeys, readBinaryFile, readTextFile, runCommand, writeTextFile } from '../api/client'
+import { getBox, pressKeys, readBinaryFile, readTextFile, runCommand, typeText, writeTextFile } from '../api/client'
 import { languageFor, monaco } from '../player/monaco'
 import type { Step } from './Console'
 import { FileTree } from './FileTree'
@@ -8,6 +8,7 @@ import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
 import { lineMapFromTds, parseTds, type Tds } from '../workbench/tds'
 import { parseCodeView } from '../workbench/cv'
 import { Icon } from '../workbench/icons'
+import { DebugButtons } from '../workbench/DebugButtons'
 
 /** What the editor needs from the debugger (workbench): where it is, its breakpoints, and the controls. */
 export interface EditorDebug {
@@ -416,13 +417,13 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       await wait(900)
       return true
     }
-    if (busyWith && debugRef.current?.endOrphan) {
-      // A debug session this page lost (a reload): the agent still has it, so end it through the agent.
-      setStatus(`${busyWith} is running: ending it…`)
+    if (debugRef.current?.endOrphan) {
+      // A debug session this page lost (a reload): the agent still has it, so end it through the agent. Asked
+      // every time (one quick call): the box may name the program or still say COMMAND while it sits paused.
       try {
-        if (await debugRef.current.endOrphan()) { await wait(900); return true }
+        if (await debugRef.current.endOrphan()) { setStatus('ended the program left in the debugger'); await wait(900); return true }
       } catch (err) {
-        setStatus(`could not end ${busyWith}: ${err instanceof Error ? err.message : String(err)}`)
+        setStatus(`could not end the program left in the debugger: ${err instanceof Error ? err.message : String(err)}`)
         return false
       }
     }
@@ -458,7 +459,17 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     try {
       await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles, { run: false, listing: true }))
       await writeTextFile(boxId, '$FAIL.COM', FAIL_COM)
-      const r = await runCommand(boxId, 'C:\\BUILD', 180000)
+      let r: Awaited<ReturnType<typeof runCommand>>
+      try {
+        r = await runCommand(boxId, 'C:\\BUILD', 180000)
+      } catch (err) {
+        // A debug session that just ended can leave DOS without a fresh prompt (the shell still waits on the line
+        // the program printed after): an Enter gives it one, and the build goes again.
+        if (!/not at a prompt/i.test(err instanceof Error ? err.message : String(err))) throw err
+        await typeText(boxId, '\n')
+        await new Promise((f) => setTimeout(f, 700))
+        r = await runCommand(boxId, 'C:\\BUILD', 180000)
+      }
       if (r.timed_out || (r.errorlevel ?? 0) !== 0) {
         setStatus('build failed (see the terminal)')
         return
@@ -676,19 +687,13 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
             </button>
           )}
           {debug && BUILT.includes(lang) && (
-            <span className="media" role="group" aria-label="debug">
-              <button className="media-btn" disabled={!path || busy || !running} onClick={debugRun} title={debug.active ? 'Start again from the beginning (build, then debug)' : 'Start: build, then debug'}>{Icon.start}</button>
-              {debug.running
-                ? <button className="media-btn" onClick={debug.pause} title="Pause">{Icon.pause}</button>
-                : <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={debug.cont} title="Continue to the next breakpoint or the end (F9)">{Icon.play}</button>}
-              <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={() => stepSource('over')} title="Step over (F8)">{Icon.over}</button>
-              <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped} onClick={() => stepSource('into')} title="Step into (F7)">{Icon.into}</button>
-              <button className="media-btn" disabled={!debug.active || debug.busy || !debug.stopped || !debug.stepOut} onClick={() => debug.stepOut?.()} title="Step out: run until this function returns (Alt+F8)">{Icon.out}</button>
-              <button className="media-btn stop" disabled={!debug.active} onClick={debug.stop} title="Stop debugging (ends the program)">{Icon.stop}</button>
-            </span>
+            <DebugButtons
+              c={debug} unit="line" onStep={stepSource}
+              lead={<button className="media-btn" disabled={!path || busy || !running} onClick={debugRun} title={debug.active ? 'Start again from the beginning (build, then debug)' : 'Start: build, then debug'}>{Icon.start}</button>}
+            />
           )}
           {busyWith && <span className="lag">{busyWith} has the keyboard</span>}
-          <span className="muted">{status}</span>
+          <span className="muted editor-status" title={status}>{status}</span>
         </div>
           <div className="editor-tabs" role="tablist">
             {order.map((p) => {

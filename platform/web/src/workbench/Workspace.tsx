@@ -5,7 +5,7 @@ import type { RPC } from '../screens/DebugPanel'
 import type { EditorDebug, EditorHandle } from '../screens/Editor'
 import type { Step } from '../screens/Console'
 import { Terminal, type TerminalHandle } from '../screens/Terminal'
-import { pressKeys } from '../api/client'
+import { pressKeys, typeText } from '../api/client'
 import { FilesTab } from './FilesTab'
 import { GuidePanel } from './GuidePanel'
 import { InterruptsPanel } from './InterruptsPanel'
@@ -457,7 +457,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
   const hadSession = useRef(false)
   useEffect(() => {
     if (dbg.session) hadSession.current = true
-    else if (hadSession.current) { hadSession.current = false; window.setTimeout(() => { terminalRef.current?.run('') }, 300) }
+    else if (hadSession.current) { hadSession.current = false; window.setTimeout(() => { void typeText(boxId, '\n').catch(() => undefined) }, 300) }
   }, [dbg.session, terminalRef])
 
   const factory = (node: TabNode) => {
@@ -486,7 +486,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           </MemoryMapPanel>
         )
       case 'machine':
-        return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} program={program} /></div>
+        return <div className="dbg-body"><Machine dbg={dbg} controls={debug} onShowInterrupt={showInterrupt} program={program} /></div>
       case 'vars':
         return symbols ? <VariablesPanel values={values} stopped={dbg.stopped} /> : <div className="muted">no symbols</div>
       case 'calls':
