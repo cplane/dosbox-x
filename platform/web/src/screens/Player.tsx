@@ -1,10 +1,10 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { getBox, NeedsSignIn, screenText, snapshotURL, startBox, stopBox, typeText, wsURL, type Box } from '../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { getBox, NeedsSignIn, startBox, stopBox, wsURL, type Box } from '../api/client'
 import { scancodeFor, SHIFT } from '../player/keys'
 import { TextScreen } from '../player/textmode'
-import { fontReady, loadTextStyle, saveTextStyle, TEXT_STYLES, type TextStyle } from '../player/textstyle'
+import { fontReady, loadTextStyle, type TextStyle } from '../player/textstyle'
 import { DebugPanel, type RPC } from './DebugPanel'
-import { Console, type ConsoleHandle, type Step } from './Console'
+import type { Step } from './Console'
 import type { TerminalHandle } from './Terminal'
 import { useDebugger } from '../workbench/useDebugger'
 import { Workspace, type WorkbenchHandoff } from '../workbench/Workspace'
@@ -16,13 +16,9 @@ import { decodeMem, type MemUpdate } from '../workbench/memfeed'
 type View = 'screen' | 'workbench'
 const loadView = (): View => { try { return localStorage.getItem('dosbox.view') === 'workbench' ? 'workbench' : 'screen' } catch { return 'screen' } }
 
-// Monaco is big; it loads the first time the editor opens.
-const Editor = lazy(() => import('./Editor').then((m) => ({ default: m.Editor })))
-
 interface Props {
   boxId: string
   onBack: () => void
-  onFiles: () => void
   onSignedOut: () => void
 }
 
@@ -34,12 +30,6 @@ interface Meta {
   program: string
 }
 
-interface Latency {
-  rtt: number // ms, ping -> pong over the same socket as the frames
-  encodeMs: number // server JPEG encode time
-  serverFps: number
-}
-
 /**
  * The box's screen: JPEG frames from the box's stream sidecar over the
  * gateway's WebSocket, keyboard (physical keys via KeyboardEvent.code) and
@@ -47,13 +37,12 @@ interface Latency {
  *
  * Mouse: by default the browser's own arrow is the cursor and its position
  * goes to DOS as an absolute point (the DOS cursor is placed exactly there),
- * so pointing and clicking don't wait for frames. "Capture mouse" switches to
- * pointer-locked relative motion for programs that need it.
+ * so pointing and clicking don't wait for frames.
  *
  * Frames are acked once drawn (or skipped), which lets the sidecar keep only
  * a few in flight: a slow link shows the newest frame late, not a backlog.
  */
-export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
+export function Player({ boxId, onBack, onSignedOut }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const sendRef = useRef<(msg: object) => void>(() => undefined)
@@ -62,18 +51,13 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const [meta, setMeta] = useState<Meta | null>(null)
-  const [fps, setFps] = useState(0)
-  const [latency, setLatency] = useState<Latency | null>(null)
   const [textMode, setTextMode] = useState(false)
-  const [textStyle, setTextStyle] = useState<TextStyle>(() => loadTextStyle())
+  const [textStyle] = useState<TextStyle>(() => loadTextStyle())
   const [textSize, setTextSize] = useState({ w: 720, h: 400 }) // the styled canvas, for the aspect ratio
   const textRef = useRef<TextScreen | null>(null)
   const textStyleRef = useRef(textStyle)
   textStyleRef.current = textStyle
   const [showDebug, setShowDebug] = useState(false)
-  const [showConsole, setShowConsole] = useState(false)
-  const [showEditor, setShowEditor] = useState(false)
-  const consoleRef = useRef<ConsoleHandle>(null)
   const [view, setView] = useState<View>(loadView)
   const viewRef = useRef(view)
   viewRef.current = view
@@ -121,16 +105,13 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       for (const s of steps) await terminalRef.current?.run(s.cmd)
       return true
     }
-    setShowConsole(true)
-    for (let i = 0; i < 20 && !consoleRef.current; i++) await new Promise((r) => setTimeout(r, 50))
-    return consoleRef.current?.run(steps) ?? false
+    return false
   }, [])
   const [agentAvailable, setAgentAvailable] = useState<boolean | null>(null)
   // JSON-RPC calls to the debugger agent ride the player socket: id -> settler.
   const rpcWaiters = useRef(new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>())
   // Request ids start at a random point: the agent remembers ids with their payloads, so a reload must not reuse old ones.
   const rpcSeq = useRef(Math.floor(Math.random() * 0x40000000))
-  const [captured, setCaptured] = useState(false)
   const [focused, setFocused] = useState(false)
   const [generation, setGeneration] = useState(0) // bump to restart polling/connecting
 
@@ -140,7 +121,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     let ws: WebSocket | null = null
     let timer: number | undefined
     let backoff = 500
-    let frames = 0
     let decoding = false
     const queue: ArrayBuffer[] = []
     const down = new Set<number>()
@@ -208,7 +188,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       while (queue.length) {
         try {
           await drawUpdate(queue.shift()!)
-          frames++
         } catch { /* a bad update */ }
         send({ ack: 1 })
       }
@@ -250,8 +229,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
               if (resp.error) w.reject(Object.assign(new Error(resp.error.message ?? 'rpc error'), { data: resp.error.data }))
               else w.resolve(resp.result)
             }
-          } else if (m.type === 'pong') {
-            setLatency({ rtt: performance.now() - m.t, encodeMs: m.encodeMs ?? 0, serverFps: m.fps ?? 0 })
           }
         } else if (new Uint8Array(ev.data, 0, 1)[0] === 0x43) { // "C": console stream chunk
           const lost = new Uint8Array(ev.data, 2, 1)[0] === 1
@@ -286,8 +263,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     }
 
     const fpsTimer = window.setInterval(() => {
-      setFps(frames)
-      frames = 0
       send({ ping: performance.now() })
     }, 1000)
     // Text mode blinks locally (cursor, blink attribute): no traffic for it.
@@ -349,7 +324,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
       }
     }
     const onLock = () => {
-      setCaptured(locked())
       if (locked()) wrap.focus(); else send({ b: 0 })
     }
     const onMove = (e: MouseEvent) => {
@@ -419,15 +393,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     setGeneration((g) => g + 1) // the stopped box ended the poll loop; start it again
   })
   const stop = act(async () => setBox(await stopBox(boxId)))
-  const typePrompt = act(async () => {
-    const text = window.prompt('Text to type into the box (\\n in the text = Enter):')
-    if (text) await typeText(boxId, text.replace(/\\n/g, '\n'))
-    wrapRef.current?.focus()
-  })
-  const copyText = act(async () => {
-    await navigator.clipboard.writeText(await screenText(boxId))
-    wrapRef.current?.focus()
-  })
   // One JSON-RPC call to the debugger agent over the player socket.
   const rpc: RPC = useCallback((method, params = {}) => new Promise((resolve, reject) => {
     const id = ++rpcSeq.current
@@ -441,13 +406,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     if (!(showDebug || view === 'workbench') || !connected) return
     rpc('agent.capabilities').then(() => setAgentAvailable(true)).catch((e: Error) => setAgentAvailable(!/no debugger agent/.test(e.message)))
   }, [showDebug, view, connected, rpc])
-
-  const ctrlAltDel = () => {
-    const send = sendRef.current
-    for (const sc of [0x1d, 0x38, 0xd3]) send({ k: sc, d: true })
-    window.setTimeout(() => { for (const sc of [0xd3, 0x38, 0x1d]) send({ k: sc, d: false }) }, 100)
-    wrapRef.current?.focus()
-  }
 
   // The style applies to the live screen at once (and when its font arrives).
   useEffect(() => {
@@ -517,13 +475,9 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
   return (
     <div className={`player ${paper ? 'wb' : ''}`}>
       <div className="bar">
-        <button onClick={onBack}>← Boxes</button>
-        <strong>{box?.name ?? '…'}</strong>
-        <span className={`dot ${connected ? 'on' : ''}`} />
-        <span className="muted">{connected ? 'connected' : box ? box.state : 'loading'}</span>
-        {meta?.program && <span className="muted">▶ {meta.program}</span>}
-        {notice && <span className="muted">· {notice}</span>}
-        {meta && <span className="muted" title={textMode ? "Text mode: drawn by your browser from the screen data" : "Graphics: video from the box"}>{textMode ? "text" : `${meta.w}×${meta.h}`}</span>}
+        <button className="ghost" onClick={onBack} title="Back to the boxes">←</button>
+        {notice && <span className="muted">{notice}</span>}
+        <span className="spacer" />
         {running && (
           <select
             className="view-select"
@@ -535,45 +489,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
             <option value="workbench">Workbench</option>
           </select>
         )}
-        {textMode && view === 'screen' && (
-          <select
-            className="style"
-            value={textStyle.id}
-            onChange={(e) => { const s = TEXT_STYLES.find((x) => x.id === e.target.value); if (s) { setTextStyle(s); saveTextStyle(s) } }}
-            title="How the text screen is drawn: the VGA font pixel for pixel, or a web font with a colour theme"
-          >
-            {TEXT_STYLES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </select>
-        )}
-        {connected && (
-          <span
-            className={`muted ${latency && latency.rtt > 150 ? 'lag' : ''}`}
-            title={latency
-              ? `Round trip ${latency.rtt.toFixed(0)} ms · server encodes a frame in ${latency.encodeMs.toFixed(1)} ms and sent ${latency.serverFps} fps · you drew ${fps} fps`
-              : 'measuring…'}
-          >
-            {fps} fps{latency ? ` · ${latency.rtt.toFixed(0)} ms` : ''}
-          </span>
-        )}
-        <span className="spacer" />
-        {running && (
-          <>
-            <button
-              onClick={() => canvasRef.current?.requestPointerLock()}
-              title="Relative mouse for programs that need it; normally your own arrow is the DOS cursor"
-            >
-              {captured ? 'Mouse captured (Esc)' : 'Capture mouse'}
-            </button>
-            <button onClick={typePrompt}>Type text…</button>
-            <button onClick={ctrlAltDel}>Ctrl+Alt+Del</button>
-            <button onClick={() => { releaseRef.current(); wrapRef.current?.focus() }}>Release keys</button>
-            {textMode && <button onClick={copyText} title="Copy the screen's text to the clipboard">Copy text</button>}
-            <a className="button" href={snapshotURL(boxId)} target="_blank" rel="noreferrer">Snapshot</a>
-          </>
-        )}
-        <button onClick={onFiles}>Files</button>
-        {running && view === 'screen' && <button className={showEditor ? 'on' : ''} onClick={() => setShowEditor(!showEditor)}>Editor</button>}
-        {running && view === 'screen' && <button className={showConsole ? 'on' : ''} onClick={() => setShowConsole(!showConsole)}>Console</button>}
         {running && <button className={showDebug ? 'on' : ''} onClick={() => setShowDebug(!showDebug)}>Debug</button>}
         {running || box?.state === 'starting'
           ? <button className="danger" onClick={stop}>Stop</button>
@@ -603,7 +518,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           </div>
         )}
         {running && !focused && (
-          <div className="hint">Click the screen to type · your arrow is the DOS mouse · Capture mouse for relative motion (Esc releases)</div>
+          <div className="hint">Click the screen to type · your arrow is the DOS mouse</div>
         )}
       </div>
       {view === 'workbench' && running && (
@@ -613,12 +528,6 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           subscribeHeat={subscribeHeat} setHeat={setHeat} subscribeMem={subscribeMem} setMemTiles={setMemTiles} handoff={handoffRef}
         />
       )}
-      {view === 'screen' && showEditor && running && (
-        <Suspense fallback={<p className="muted">Loading the editor…</p>}>
-          <Editor boxId={boxId} running={running} onRun={runSteps} program={meta?.program} />
-        </Suspense>
-      )}
-      {view === 'screen' && showConsole && running && <Console ref={consoleRef} boxId={boxId} running={running} />}
       {showDebug && running && <DebugPanel rpc={rpc} available={agentAvailable} />}
     </div>
   )

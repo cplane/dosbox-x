@@ -1,6 +1,6 @@
 /**
  * The 8086 guide's ready programs and the .COM skeleton its examples run in. The instructions themselves are
- * articles (articles/), listed in the guide's index; the interrupt functions have their own reference (interrupts.ts).
+ * articles (articles/), listed in the guide's index; the interrupts are a chapter of articles too (interrupts.ts keeps the editor's short reference).
  */
 
 export interface Program {
@@ -31,6 +31,8 @@ export function wrapExample(mnemonic: string, ex: string[], data: string[] = [])
 
 /** A file name for an example: 8.3, from the mnemonic. */
 export function exampleFile(mnemonic: string): string {
+  const int = /^int([0-9a-f]{2})(?:-([0-9a-f]{2,4}))?$/i.exec(mnemonic)
+  if (int) return `I${int[1]}${int[2] ? '_' + int[2] : ''}.ASM`.toUpperCase()
   const base = mnemonic.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6)
   return `EX_${base || 'ASM'}.ASM`
 }

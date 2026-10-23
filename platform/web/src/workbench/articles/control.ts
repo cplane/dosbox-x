@@ -556,7 +556,7 @@ export const CONTROL: Article[] = [
     group: CF,
     syntax: ['INT n (n = 0..255)', 'INT 3 (one-byte breakpoint)'],
     flags: 'IF TF cleared (the old flags are saved on the stack)',
-    short: 'Call interrupt handler n: DOS (21h), BIOS video (10h), keyboard (16h). The function number goes in AH — see the Interrupts tab.',
+    short: 'Call interrupt handler n: DOS (21h), BIOS video (10h), keyboard (16h). The function number goes in AH: the Interrupts chapter of the guide has an article for each service (`INT 21h`, `INT 10h`).',
     body: [
       { p: '`INT n` is a far call through a table. The first 1024 bytes of memory, 0000:0000 to 0000:03FF, hold 256 vectors of four bytes each: an offset, then a segment. Vector n lives at address n × 4. The CPU does this:' },
       { table: [

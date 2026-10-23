@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode } from 'react'
-import { findArticle, type Block } from './articles'
+import { findArticle, findInterruptText, type Block } from './articles'
 import { exampleFile, wrapExample } from './guide'
 import { Icon } from './icons'
 
@@ -56,7 +56,7 @@ function inline(text: string, onNavigate: (key: string) => void, self = ''): Rea
   return text.split(/(`[^`]+`)/).map((part, i) => {
     if (!part.startsWith('`')) return <Fragment key={i}>{part}</Fragment>
     const code = part.slice(1, -1)
-    const found = /^[A-Z]{2,7}$/.test(code) ? findArticle(code) : undefined
+    const found = /^[A-Z]{2,7}$/.test(code) ? findArticle(code) : /^INT\s/i.test(code) ? findInterruptText(code) : undefined
     const target = found && found.key !== self ? found : undefined
     return target
       ? <code key={i} className="article-link" onClick={() => onNavigate(target.key)} title={`${target.title}: ${target.tagline}`}>{code}</code>
@@ -116,7 +116,7 @@ export function ArticleView({ articleKey, onNavigate, onBack, onOpen }: Props) {
     <div className="article">
       <div className="article-top">
         {onBack && <button className="ghost" onClick={onBack} title="The article before">← back</button>}
-        <span className="muted small">8086 guide · {a.group}</span>
+        <span className="muted small">8086 guide · {a.int !== undefined ? 'Interrupts · ' : ''}{a.group}</span>
       </div>
       <header className="article-head">
         <h2>{a.title}</h2>
@@ -124,7 +124,9 @@ export function ArticleView({ articleKey, onNavigate, onBack, onOpen }: Props) {
       </header>
       <div className="article-facts">
         <div className="article-syntax">{a.syntax.map((s) => <code key={s}>{s}</code>)}</div>
-        <div className="small"><span className="muted">flags:</span> {a.flags}</div>
+        {a.in && <div className="small"><span className="muted">in:</span> {inline(a.in, onNavigate, a.key)}</div>}
+        {a.out && <div className="small"><span className="muted">out:</span> {inline(a.out, onNavigate, a.key)}</div>}
+        {a.flags && <div className="small"><span className="muted">flags:</span> {a.flags}</div>}
       </div>
       <p className="article-short">{inline(a.short, onNavigate, a.key)}</p>
       <div className="article-body">
