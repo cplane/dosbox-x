@@ -88,7 +88,9 @@ export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program 
   const heat = useRef(new Map<number, Heat>())   // linear address -> heat
   const executed = useRef(new Set<number>())     // linear addresses IP has been at
   const execUpTo = useRef(0)                      // replay: frames whose IP is in `executed`
-  const [hover, setHover] = useState<string>('')
+  // The cell under the mouse: which canvas, which cell, its box on screen and where the mouse is (root-relative).
+  type Hover = { kind: 'field' | 'stack' | 'overview'; c: number; box: { left: number; top: number; width: number; height: number }; mx: number; my: number }
+  const [hover, setHover] = useState<Hover | null>(null)
   const [tick, setTick] = useState(0)
   const [speed, setSpeed] = useState(5)
   const [recordN, setRecordN] = useState(2000)
@@ -369,19 +371,44 @@ export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program 
     return [...groups.values()]
   }, [justDone, mem, stack])
 
-  const onHover = (e: React.MouseEvent<HTMLCanvasElement>, w: MemWindow | null, label: string) => {
-    if (!w) return
-    const r = e.currentTarget.getBoundingClientRect()
-    const cell = Math.max(3, Math.floor(e.currentTarget.clientWidth / COLS))
-    const bytesPerCell = label === 'DS' ? Math.max(1, Math.floor(w.bytes.length / (COLS * COLS))) : 1
-    const c = Math.floor((e.clientX - r.left) / cell) + Math.floor((e.clientY - r.top) / cell) * COLS
-    const i = c * bytesPerCell
-    if (i < 0 || i >= w.bytes.length) { setHover(''); return }
-    const v = w.bytes[i]
-    const off = w.base + i
-    const h = heat.current.get(linear(w.seg, off))
-    setHover(`${label}:${off.toString(16).toUpperCase().padStart(4, '0')}${bytesPerCell > 1 ? `..${(off + bytesPerCell - 1).toString(16).toUpperCase().padStart(4, '0')}` : ''} = ${v.toString(16).toUpperCase().padStart(2, '0')}${v >= 32 && v < 127 ? ` '${String.fromCharCode(v)}'` : ''}${h ? ` · heat r${h.r.toFixed(1)} w${h.w.toFixed(1)}` : ''}`)
+  // The cell under the mouse on a 64-column canvas. The drawing is stretched to the panel's width, so a cell on
+  // screen is the canvas's on-screen width / 64 (not the drawing's cell size, which drifted a cell or more by the
+  // right edge and wrapped onto the next row).
+  const onHover = (e: React.MouseEvent<HTMLCanvasElement>, kind: Hover['kind']) => {
+    const canvas = e.currentTarget
+    const root = rootRef.current?.getBoundingClientRect()
+    if (!root || !canvas.width) return
+    const r = canvas.getBoundingClientRect()
+    const rows = Math.max(1, Math.round(canvas.height / (canvas.width / COLS)))
+    const cw = r.width / COLS, ch = r.height / rows
+    const col = Math.floor((e.clientX - r.left) / cw), row = Math.floor((e.clientY - r.top) / ch)
+    if (col < 0 || col >= COLS || row < 0 || row >= rows) { setHover(null); return }
+    setHover({ kind, c: row * COLS + col, box: { left: r.left - root.left + col * cw, top: r.top - root.top + row * ch, width: cw, height: ch }, mx: e.clientX - root.left, my: e.clientY - root.top })
   }
+  const h4 = (n: number) => n.toString(16).toUpperCase().padStart(4, '0')
+  // What the hovered cell holds, from the data on show now (it follows steps and replay while the mouse rests).
+  const hoverText = (() => {
+    if (!hover) return ''
+    if (hover.kind === 'overview') {
+      const addr = hover.c * OVERVIEW_CELL
+      const region = REGIONS.find((r) => addr >= r.from && addr <= r.to)
+      const lh = liveHeat.current.over(addr >> 4, (addr + OVERVIEW_CELL) >> 4)
+      return `${addr.toString(16).toUpperCase().padStart(5, '0')}–${(addr + OVERVIEW_CELL - 1).toString(16).toUpperCase().padStart(5, '0')}${region ? ` · ${region.name}` : ''}${lh ? ` · r${lh.r.toFixed(0)} w${lh.w.toFixed(0)}` : ''}`
+    }
+    const w = hover.kind === 'field' ? mem : stack
+    if (!w) return ''
+    const bytesPerCell = hover.kind === 'field' ? Math.max(1, Math.floor(w.bytes.length / (COLS * COLS))) : 1
+    const i = hover.c * bytesPerCell
+    if (i >= w.bytes.length) return ''
+    const off = w.base + i
+    const shown = [...w.bytes.subarray(i, Math.min(i + Math.min(bytesPerCell, 4), w.bytes.length))]
+    const v = shown[0]
+    const h = heat.current.get(linear(w.seg, off))
+    const label = hover.kind === 'field' ? 'DS' : 'SS'
+    const sp = hover.kind === 'stack' && vRegs && off === (parseInt(vRegs.general.esp, 16) & 0xffff) ? ' · SP' : ''
+    const ipHere = hover.kind === 'field' && vIp !== null && linear(w.seg, off) <= linear(vCs, vIp) && linear(vCs, vIp) < linear(w.seg, off) + bytesPerCell ? ' · IP' : ''
+    return `${label}:${h4(off)}${bytesPerCell > 1 ? `..${h4(off + bytesPerCell - 1)}` : ''} = ${shown.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}${bytesPerCell > 4 ? ' …' : ''}${bytesPerCell === 1 && v >= 32 && v < 127 ? ` '${String.fromCharCode(v)}'` : ''}${sp}${ipHere}${h ? ` · heat r${h.r.toFixed(1)} w${h.w.toFixed(1)}` : ''}`
+  })()
 
   const changed = (k: string, v: string) => vPrev && vRegs && vPrev !== vRegs && ((vPrev.general[k] ?? vPrev.segments[k]) !== v) ? 'changed' : ''
   const flagBits: [number, string][] = [[0x800, 'OF'], [0x400, 'DF'], [0x200, 'IF'], [0x100, 'TF'], [0x80, 'SF'], [0x40, 'ZF'], [0x10, 'AF'], [0x4, 'PF'], [0x1, 'CF']]
@@ -425,6 +452,15 @@ export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program 
         </defs>
         {arrows.map((a, i) => <path key={i} d={a.d} className={`flow ${a.warm ? 'warm' : 'cool'}`} markerEnd={`url(#arrow-${a.warm ? 'warm' : 'cool'})`} />)}
       </svg>
+      {hover && hoverText && (
+        <>
+          <div className="machine-cellhover" style={hover.box} />
+          <div
+            className="machine-celltip"
+            style={{ left: hover.mx + (hover.mx > size.w * 0.6 ? -12 : 12), top: hover.my + 14, transform: hover.mx > size.w * 0.6 ? 'translateX(-100%)' : undefined }}
+          >{hoverText}</div>
+        </>
+      )}
       <div className="machine-tools">
         <button onClick={() => dbg.step('into')} disabled={liveOff} title="Step (F7)">↓</button>
         <button onClick={() => dbg.step('over')} disabled={liveOff} title="Step over a call (F8)">↷</button>
@@ -453,7 +489,7 @@ export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program 
       {liveOn && (
         <div className="machine-overview">
           <div className="machine-label"><span>all memory · 1 MB · 256 bytes per cell · live</span></div>
-          <canvas ref={overviewRef} className="machine-field" />
+          <canvas ref={overviewRef} className="machine-field" onMouseMove={(e) => onHover(e, 'overview')} onMouseLeave={() => setHover(null)} />
           <div className="machine-hot">
             {hotRegions.length ? hotRegions.map((r) => <span key={r.name}>{r.name}</span>) : <span className="muted">waiting for the box…</span>}
           </div>
@@ -484,11 +520,10 @@ export function Machine({ dbg, onShowInterrupt, subscribeHeat, setHeat, program 
             <option value={16384}>16 KB · 4 bytes per cell</option>
             <option value={65536}>64 KB · 16 bytes per cell</option>
           </select>
-          <span className="muted">{hover}</span>
         </div>
-        <canvas ref={fieldRef} className="machine-field" onMouseMove={(e) => onHover(e, mem, 'DS')} onMouseLeave={() => setHover('')} />
+        <canvas ref={fieldRef} className="machine-field" onMouseMove={(e) => onHover(e, 'field')} onMouseLeave={() => setHover(null)} />
         <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>
-        <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, stack, 'SS')} onMouseLeave={() => setHover('')} />
+        <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, 'stack')} onMouseLeave={() => setHover(null)} />
         <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses || cur ? 'read' : 'about to be read'} · heat fades with each instruction <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
         {elsewhere.length > 0 && (
           <div className="machine-elsewhere">
