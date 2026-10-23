@@ -483,12 +483,10 @@ html.paper body { overflow: hidden; }
 .machine-replay select { font-size: 11px; padding: 2px 4px; }
 .machine-record { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
 
-/* Live heat while a program runs: the switch, the all-memory view, the hottest regions. */
-.machine-live { margin-left: 6px; }
-.machine-live.on { border-color: #e0785a; color: #b9553f; }
-.machine-overview { display: grid; gap: 2px; }
-.machine-hot { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; }
-.machine-hot span { padding: 1px 6px; border-radius: 4px; background: rgba(224, 120, 90, 0.12); }
+/* The memory map's hottest regions while live heat is on: each a button to its hottest spot. */
+.atlas-hot { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11px; }
+.atlas-hot button { padding: 1px 7px; font-size: 11px; border-radius: 4px; border: 0; background: rgba(224, 120, 90, 0.14); cursor: pointer; }
+.atlas-hot button:hover { background: rgba(224, 120, 90, 0.28); }
 
 /* The editor's debug controls, as media buttons: play / pause, step over, step into, stop. */
 .media { display: inline-flex; gap: 2px; align-items: center; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
