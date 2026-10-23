@@ -124,6 +124,8 @@ export interface Debugger {
   cs: string
   /** CS at the program's entry: the load segment, which symbols and line maps are relative to. */
   entryCs: number | null
+  /** How the last session ended: the program exited (ran to its end, or a step ended it), or Stop ended it. */
+  ended: 'exit' | 'stop' | null
   /** Whether a code segment lies in the program's own memory block (else: DOS, the BIOS). */
   inProgram: (cs: number, regs?: Registers) => boolean
   /** Bytes of memory while stopped (segment:offset, real mode). */
@@ -177,6 +179,7 @@ export function useDebugger(rpc: RPC): Debugger {
   const [lines, setLines] = useState<DisLine[]>([])
   const [cs, setCs] = useState('')
   const [entryCs, setEntryCs] = useState<number | null>(null)
+  const [ended, setEnded] = useState<'exit' | 'stop' | null>(null)
   const entryCsRef = useRef<number | null>(null)
   entryCsRef.current = entryCs
   // The program's code segment (its lines' offsets are in it): breakpoints and run-to targets go there, wherever
@@ -322,7 +325,7 @@ export function useDebugger(rpc: RPC): Debugger {
   }, [])
 
   const afterStop = useCallback(async (next: Session) => {
-    if (next.state === 'exited') { clear(); return } // the program ended: nothing is left to look at
+    if (next.state === 'exited') { setEnded('exit'); clear(); return } // the program ended: nothing is left to look at
     setSession(next)
     if (next.state === 'stopped') await refresh(next)
   }, [refresh, clear])
@@ -352,6 +355,9 @@ export function useDebugger(rpc: RPC): Debugger {
         { session?: Session; state?: string; stop_reason?: Session['stop_reason']; registers?: Registers }
       return { session: { ...s, ...(r.session ?? {}), state: r.session?.state ?? r.state ?? s.state, stop_reason: r.session?.stop_reason ?? r.stop_reason }, registers: r.registers }
     } catch (err) {
+      // The instruction ended the program (INT 21h AH=4Ch, INT 20h, a .COM's final RET into its PSP): the step is
+      // over and so is the program. The agent says so as an error ("did not stop") with the session's state.
+      if ((err as { data?: { state?: string } }).data?.state === 'exited') return { session: { ...s, state: 'exited' } }
       const msg = err instanceof Error ? err.message : String(err)
       if (!/execution\.step to complete|still executing/i.test(msg)) throw err
       setSession({ ...s, state: 'running' })
@@ -562,6 +568,7 @@ export function useDebugger(rpc: RPC): Debugger {
       try { const r = (await rpc('session.status', { session_id: s.session_id })) as { state: string }; setSession({ ...s, state: r.state }) } catch { /* keep */ }
       throw err
     }
+    setEnded('stop')
     clear()
   }), [guard, rpc, endSession, clear])
 
@@ -594,6 +601,7 @@ export function useDebugger(rpc: RPC): Debugger {
       s = (await rpc('session.start', params)) as Session
     }
     setSession(s)
+    setEnded(null)
     setPrevRegs(null)
     setBps(new Map())
     windowRef.current = null
@@ -695,7 +703,7 @@ export function useDebugger(rpc: RPC): Debugger {
   return {
     session, stopped, regs, prevRegs,
     ip: stopped && regs ? parseInt(regs.instruction_pointer, 16) : null,
-    cs, entryCs, inProgram, readMemory, lines, breakpoints: bpSet, busy, error,
+    cs, entryCs, ended, inProgram, readMemory, lines, breakpoints: bpSet, busy, error,
     mem, stack, accesses, accessesDropped, recording, record, clearRecording, memBase, memSize, setMemWindow,
     playing, play, pausePlay,
     start, endOrphan, step, stepUntil, cont, pause, stop, toggleBreakpoint, runTo, stepOut,

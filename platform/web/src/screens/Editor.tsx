@@ -21,6 +21,8 @@ export interface EditorDebug {
   ip: number | null
   cs: string
   entryCs: number | null
+  /** How the last session ended: the program exited, or Stop ended it. */
+  ended?: 'exit' | 'stop' | null
   breakpoints: Set<number>
   toggleBreakpoint: (offset: number) => void | Promise<void>
   /** `entryParagraph`: the entry CS's distance from the code segment the symbols are relative to (BASIC's runtime). */
@@ -515,7 +517,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
         }
       }
       // Let the session state land (a few renders may be needed before the live debugger shows it stopped).
-      for (let i = 0; i < 30 && !(debugRef.current?.active && debugRef.current.stopped && debugRef.current.ip !== null); i++) await new Promise((r) => setTimeout(r, 100))
+      // (the code segment too: whether the entry stop is on a line of ours depends on it)
+      for (let i = 0; i < 30 && !(debugRef.current?.active && debugRef.current.stopped && debugRef.current.ip !== null && debugRef.current.entryCs !== null); i++) await new Promise((r) => setTimeout(r, 100))
       if (!debugRef.current?.active) { setStatus(debugRef.current?.error ? `debugger: ${debugRef.current.error}` : 'the debugger did not start'); return }
       // The breakpoints set in the gutter beforehand, now that lines map to code (through the live debugger, not
       // the one captured when this started).
@@ -531,7 +534,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       // Stopped in the runtime before any line of ours (C's startup code): on to main, as Turbo Debugger does
       // (a breakpoint on the way stops it first); without a main, to the first breakpoint or the end.
       const d = debugRef.current
-      if (map && d?.stopped && d.ip !== null && (lineForOffset(map, d.ip) === null || (parseInt(d.cs, 16) & 0xffff) !== d.entryCs)) {
+      if (map && d?.stopped && d.ip !== null && (lineForOffset(map, d.ip) === null || (d.entryCs !== null && (parseInt(d.cs, 16) & 0xffff) !== d.entryCs))) {
         const main = tds?.symbols.find((s) => (s.name === '_main' || s.name === 'main') && s.seg === 0)
         // BASIC: the module's code comes first in its segment, its procedures after it.
         const first = main ? [...map.offsetOf.values()].filter((o) => o >= main.offset).sort((a, b) => a - b)[0]
@@ -550,7 +553,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
   const wasActive = useRef(false)
   useEffect(() => {
     if (debug?.active) wasActive.current = true
-    else if (wasActive.current) { wasActive.current = false; setStatus('debugging ended') }
+    else if (wasActive.current) { wasActive.current = false; setStatus(debug?.ended === 'exit' ? 'the program ended · debugging ended' : 'debugging ended') }
   }, [debug?.active])
 
   // CS at the program's entry (the load segment): the symbols' and the listing's offsets are relative to it; elsewhere
