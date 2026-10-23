@@ -10,6 +10,7 @@ import { useDebugger } from '../workbench/useDebugger'
 import { Workspace, type WorkbenchHandoff } from '../workbench/Workspace'
 import { breakProgram, ideByProgram, ideFor, leaveIde, openInIde } from '../workbench/handoff'
 import type { HeatTick } from '../workbench/heat'
+import { decodeMem, type MemUpdate } from '../workbench/memfeed'
 
 /** Screen: the DOS screen with panels under it (as it was). Workbench: editor + terminal on paper, the screen put away. */
 type View = 'screen' | 'workbench'
@@ -98,6 +99,16 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     return () => { heatSubs.current.delete(fn) }
   }, [])
   const setHeat = useCallback((on: boolean) => { sendRef.current({ heat: on ? 1 : 0 }) }, [])
+  // Live memory ("M": the 4 KB tiles the memory map shows, each again when it changes), in the order they came
+  // (each is inflated asynchronously); the tiles asked for are asked again after a reconnect.
+  const memSubs = useRef(new Set<(u: MemUpdate) => void>())
+  const memChain = useRef<Promise<void>>(Promise.resolve())
+  const memTiles = useRef<number[]>([])
+  const subscribeMem = useCallback((fn: (u: MemUpdate) => void) => {
+    memSubs.current.add(fn)
+    return () => { memSubs.current.delete(fn) }
+  }, [])
+  const setMemTiles = useCallback((tiles: number[]) => { memTiles.current = tiles; sendRef.current({ mem: tiles }) }, [])
   // The screen's key path, for the terminal to send keys the same way.
   const keyRef = useRef<(e: KeyboardEvent, down: boolean) => void>(() => undefined)
   const onTermKey = useCallback((e: KeyboardEvent, down: boolean) => keyRef.current(e, down), [])
@@ -223,7 +234,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
     function connect() {
       ws = new WebSocket(wsURL(boxId))
       ws.binaryType = 'arraybuffer'
-      ws.onopen = () => { backoff = 500; setConnected(true); send({ hello: { text: 1, con: 1 } }) }
+      ws.onopen = () => { backoff = 500; setConnected(true); send({ hello: { text: 1, con: 1 } }); if (memTiles.current.length) send({ mem: memTiles.current }) }
       ws.onmessage = (ev) => {
         if (typeof ev.data === 'string') {
           const m = JSON.parse(ev.data)
@@ -251,6 +262,12 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
           const n = new DataView(ev.data).getUint32(3, true)
           const tick: HeatTick = { fresh, entries: new Uint16Array(ev.data.slice(7, 7 + n * 6)) }
           for (const fn of heatSubs.current) fn(tick)
+        } else if (new Uint8Array(ev.data, 0, 1)[0] === 0x4d) { // "M": live memory tiles
+          const buf = ev.data as ArrayBuffer
+          memChain.current = memChain.current.then(async () => {
+            const u = await decodeMem(buf).catch(() => null)
+            if (u) for (const fn of memSubs.current) fn(u)
+          })
         } else draw(ev.data)
       }
       ws.onclose = () => {
@@ -593,7 +610,7 @@ export function Player({ boxId, onBack, onFiles, onSignedOut }: Props) {
         <Workspace
           boxId={boxId} running={running} program={meta?.program} rpc={rpc} dbg={dbg} available={agentAvailable}
           onRun={runSteps} terminalRef={terminalRef} subscribeCon={subscribeCon} onTermKey={onTermKey}
-          subscribeHeat={subscribeHeat} setHeat={setHeat} handoff={handoffRef}
+          subscribeHeat={subscribeHeat} setHeat={setHeat} subscribeMem={subscribeMem} setMemTiles={setMemTiles} handoff={handoffRef}
         />
       )}
       {view === 'screen' && showEditor && running && (

@@ -11,6 +11,8 @@ import { GuidePanel } from './GuidePanel'
 import { InterruptsPanel } from './InterruptsPanel'
 import { Machine } from './Machine'
 import { MemoryMapPanel } from './MemoryMapPanel'
+import { MemoryAtlas } from './MemoryAtlas'
+import type { MemUpdate } from './memfeed'
 import type { Debugger } from './useDebugger'
 import type { HeatTick } from './heat'
 import type { Tds } from './tds'
@@ -195,6 +197,9 @@ interface Props {
   /** Live heat ticks from the box (the sidecar's "H" messages), and the switch that asks for them. */
   subscribeHeat?: (fn: (tick: HeatTick) => void) => () => void
   setHeat?: (on: boolean) => void
+  /** Live memory from the box (the sidecar's "M" messages), and the tiles to ask for. */
+  subscribeMem?: (fn: (u: MemUpdate) => void) => () => void
+  setMemTiles?: (tiles: number[]) => void
   /** The player's handle on the editor for the view handoff (set while the workspace is on). */
   handoff?: React.MutableRefObject<WorkbenchHandoff | null>
 }
@@ -208,7 +213,15 @@ export interface WorkbenchHandoff {
   ready: () => boolean
 }
 
-export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey, subscribeHeat, setHeat, handoff }: Props) {
+export function Workspace({ boxId, running, program, dbg, available, onRun, terminalRef, subscribeCon, onTermKey, subscribeHeat, setHeat: setHeatRaw, subscribeMem, setMemTiles, handoff }: Props) {
+  // Live heat is one switch on the box for every view that shows it (the Machine view, the memory map): on while
+  // any of them wants it.
+  const heatUsers = useRef(0)
+  const setHeat = useMemo(() => (setHeatRaw ? (on: boolean) => {
+    const before = heatUsers.current
+    heatUsers.current = Math.max(0, before + (on ? 1 : -1))
+    if ((before === 0) !== (heatUsers.current === 0)) setHeatRaw(heatUsers.current > 0)
+  } : undefined), [setHeatRaw])
   // Debugging from the moment Start is pressed (the build runs in the debug layout) until the session ends.
   const [startingDebug, setStartingDebug] = useState(false)
   const mode: Mode = dbg.session || startingDebug ? 'debug' : 'edit'
@@ -467,7 +480,11 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
       case 'ints':
         return <InterruptsPanel focus={intFocus} />
       case 'memmap':
-        return <MemoryMapPanel regs={dbg.regs} />
+        return (
+          <MemoryMapPanel regs={dbg.regs}>
+            <MemoryAtlas dbg={dbg} symbols={symbols} subscribeMem={subscribeMem} setMemTiles={setMemTiles} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} />
+          </MemoryMapPanel>
+        )
       case 'machine':
         return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
       case 'vars':

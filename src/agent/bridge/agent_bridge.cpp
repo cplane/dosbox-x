@@ -11,6 +11,11 @@
 #include <utility>
 #include <vector>
 
+#if C_GAMELINK
+// The memory mirror (output_gamelink.cpp): refreshed after the debugger's commands, so a viewer sees a step's result.
+void OUTPUT_GAMELINK_MemMirror(bool now);
+#endif
+
 namespace dosbox_agent {
 
 class EmulationThreadQueue::Impl {
@@ -142,7 +147,13 @@ void AGENT_BridgeAttachToCurrentThread()
 
 std::size_t AGENT_BridgePump()
 {
-    return AGENT_EmulationQueue().Pump();
+    const std::size_t ran = AGENT_EmulationQueue().Pump();
+#if C_GAMELINK
+    // After a step or a stop the memory is as the debugger left it: the mirror catches up at once. While the
+    // debugger is paused with nothing to do, a throttled refresh covers a stop that came from a breakpoint.
+    OUTPUT_GAMELINK_MemMirror(ran > 0);
+#endif
+    return ran;
 }
 
 void AGENT_BridgeShutdown()

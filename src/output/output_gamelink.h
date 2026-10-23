@@ -24,6 +24,8 @@ void OUTPUT_GAMELINK_Transfer();
 bool OUTPUT_GAMELINK_InitTrackingMode();
 // bytes a DOS program writes to CON, for the console stream (dev_con.h)
 void OUTPUT_GAMELINK_ConsoleWrite(const uint8_t* data, size_t n);
+// the memory mirror for a viewer (output_gamelink.cpp): throttled, or `now` after a debugger command
+void OUTPUT_GAMELINK_MemMirror(bool now);
 
 #endif
 

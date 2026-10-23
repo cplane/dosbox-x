@@ -65,6 +65,75 @@ type client struct {
 	// Live heat (heat.go), for clients that sent {"heat":1}.
 	heat    bool
 	heatOut chan []byte
+
+	// Live memory (mem.go), for clients that sent {"mem":[tiles]}: the tiles they show, most wanted
+	// first, the version of each they last got, and whether they were told there is no mirror.
+	memWant     []uint16
+	memSentV    [memTiles]uint32
+	memOut      chan []byte
+	memNoneTold bool
+}
+
+// setMem sets the tiles c shows (none: it stops watching memory).
+func (h *Hub) setMem(c *client, tiles []uint16) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c.memWant = tiles
+}
+
+// memWatchers are the clients that show some memory.
+func (h *Hub) memWatchers() []*client {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []*client
+	for c := range h.clients {
+		if len(c.memWant) > 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// memState is what c wants and the versions it has.
+func (h *Hub) memState(c *client) ([]uint16, [memTiles]uint32) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]uint16(nil), c.memWant...), c.memSentV
+}
+
+// memSent records the versions of the tiles just sent to c.
+func (h *Hub) memSent(c *client, tiles []int, versions []uint32) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, t := range tiles {
+		c.memSentV[t] = versions[i]
+	}
+}
+
+// sendMem hands c a memory message; a client whose queue is full misses it and gets those tiles
+// again later (their versions are forgotten).
+func (h *Hub) sendMem(c *client, msg []byte) {
+	select {
+	case c.memOut <- msg:
+	default:
+		h.mu.Lock()
+		c.memSentV = [memTiles]uint32{}
+		h.mu.Unlock()
+	}
+}
+
+// memUnavailable tells c once that the box has no memory mirror.
+func (h *Hub) memUnavailable(c *client) {
+	h.mu.Lock()
+	told := c.memNoneTold
+	c.memNoneTold = true
+	h.mu.Unlock()
+	if !told {
+		select {
+		case c.memOut <- []byte{'M', 1, 2, 0, 0}:
+		default:
+		}
+	}
 }
 
 // setHeat marks c as wanting (or no longer wanting) the heat ticks.
@@ -141,7 +210,7 @@ func NewHub(gl *Gamelink, quality, fps int) *Hub {
 }
 
 func (h *Hub) add() *client {
-	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1), conOut: make(chan []byte, 64), heatOut: make(chan []byte, 8)}
+	c := &client{meta: make(chan []byte, 4), notify: make(chan struct{}, 1), conOut: make(chan []byte, 64), heatOut: make(chan []byte, 8), memOut: make(chan []byte, 4)}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	meta := h.lastMeta

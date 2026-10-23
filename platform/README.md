@@ -339,6 +339,16 @@ DOSBox-X changes made for headless use (this fork):
   (`GameLink::MessagePending()`): DOSBox-X only read `buf_recv` when a frame
   was rendered, so on a static screen (a dialog without a blinking cursor)
   `:rescan` waited until something on screen changed.
+- Memory mirror (`OUTPUT_GAMELINK_MemMirror`, `src/output/output_gamelink.cpp`):
+  the first megabyte as the CPU sees it in `/DWD_GAMELINK_MEM_R1` while
+  the sidecar sets `enabled` (about 15 copies a second while running, and
+  after each agent command while paused, from `AGENT_BridgePump`). Pages
+  are copied from the memory handlers' host pointers, never through a read
+  handler (VGA reads move the latches); EGA/VGA text-mode video RAM is
+  rebuilt from planes 0 and 1, other video memory is flagged not mirrored.
+  The sidecar (`platform/stream/mem.go`) sends a client the 4 KB tiles it
+  asks for (`{"mem":[tiles]}`), deflated, each again when it changes, at
+  most 64 a tick; the workbench's Memory map draws them as a zoomable map.
 - DOS device `TTY` (`src/dos/dos_devices.cpp`): CON under another name,
   flagged as a plain character device. A program whose standard output is
   the console may write into video memory itself (Microsoft BASIC's PRINT);
