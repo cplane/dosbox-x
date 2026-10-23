@@ -569,3 +569,40 @@ html.paper body { overflow: hidden; }
 /* The state beside the controls (stopped · step, running…) and the editor's status: one line that shrinks (the full
    text on hover), so a longer message never wraps the bar to a new height. */
 .machine-state, .editor-status { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The 8086 guide: the index (one line per instruction) and the article tab beside the editor. */
+.guide-index { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 3px 6px; margin: 0 -6px; border: 0; border-radius: 5px; background: none; color: var(--text); text-align: left; cursor: pointer; font-size: 12.5px; }
+.guide-index b { flex: 0 0 auto; min-width: 7.5em; font-family: "JetBrains Mono", ui-monospace, monospace; font-weight: 600; color: var(--accent); }
+.guide-index span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guide-index:hover { background: rgba(70, 70, 65, 0.06); }
+.guide-index.on { background: rgba(224, 168, 90, 0.18); }
+.article { max-width: 780px; padding: 4px 16px 32px; font-size: 14px; line-height: 1.6; color: var(--text); }
+.article-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.article-top button { padding: 1px 8px; font-size: 12px; }
+.article-head h2 { margin: 4px 0 0; font: 600 28px/1.15 "JetBrains Mono", ui-monospace, monospace; letter-spacing: -0.01em; }
+.article-tagline { color: var(--muted); font-size: 15px; margin-top: 2px; }
+.article-facts { display: grid; gap: 6px; margin: 12px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(70, 70, 65, 0.03); }
+.article-syntax { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.article-syntax code { font-size: 12.5px; }
+.article-short { margin: 0 0 14px; padding-left: 12px; border-left: 3px solid #e0a85a; font-size: 15px; }
+.article-body h3 { margin: 18px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.article-body p { margin: 0 0 10px; }
+.article code { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.88em; padding: 0 3px; border-radius: 3px; background: rgba(70, 70, 65, 0.07); }
+.article .article-link { cursor: pointer; text-decoration: underline dotted rgba(70, 70, 65, 0.5); text-underline-offset: 2px; }
+.article .article-link:hover { background: rgba(224, 168, 90, 0.25); }
+.article-code { margin: 6px 0 14px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #faf8f3; }
+.article-code-bar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 3px 6px; border-bottom: 1px solid var(--line); font-size: 11.5px; }
+.article-code-bar .muted { margin-right: auto; }
+.article-code-bar button { padding: 1px 8px; font-size: 11.5px; }
+.article-code pre { margin: 0; padding: 8px 12px; font: 12.5px/1.5 "JetBrains Mono", ui-monospace, Consolas, monospace; white-space: pre; overflow-x: auto; }
+.hl-op { color: #8a4b1f; font-weight: 600; }
+.hl-reg { color: #3b63a8; }
+.hl-num { color: #2e7d5b; }
+.hl-str { color: #a3442c; }
+.hl-label { color: #6b4fa0; }
+.hl-comment { color: #8b8a83; font-style: italic; }
+.article-table { border-collapse: collapse; margin: 6px 0 14px; font-size: 13px; }
+.article-table th, .article-table td { padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.article-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.article-see { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.article-see button { padding: 1px 8px; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
