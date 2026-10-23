@@ -543,3 +543,24 @@ html.paper body { overflow: hidden; }
 .tree-menu-item:hover { background: var(--wb-line, var(--line)); }
 .tree-menu-item.danger { color: #a3493c; }
 .tree-menu-title { font-size: 12px; padding: 4px 10px 6px; max-width: 260px; white-space: normal; }
+
+/* The memory map: the whole first megabyte, zoomed and panned like a satellite picture, over the region reference. */
+.memmap-panel { display: flex; flex-direction: column; gap: 6px; }
+.memmap-ref { flex: 0 0 auto; max-height: 40%; overflow: auto; font-size: 12px; }
+.memmap-ref summary { cursor: pointer; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.atlas { flex: 1 1 auto; min-height: 280px; display: flex; flex-direction: column; gap: 4px; }
+.atlas-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.atlas-bar button { padding: 2px 8px; font-size: 12px; }
+.atlas-bar form { flex: 1 1 140px; min-width: 120px; }
+.atlas-bar input { width: 100%; font-size: 12px; padding: 2px 6px; }
+.atlas-heat.on { color: #e0785a; }
+.atlas-scale { margin-left: auto; }
+.atlas-err { color: #a3442c; }
+.atlas-view { position: relative; flex: 1 1 auto; min-height: 200px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #f7f5f0; }
+.atlas-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+.atlas-canvas:active { cursor: grabbing; }
+.atlas-hoverbox { position: absolute; pointer-events: none; border-radius: 2px; box-shadow: 0 0 0 1px rgba(255, 255, 255, .9), 0 0 0 2.5px #35342f; }
+.atlas-tag { position: absolute; z-index: 2; pointer-events: none; white-space: nowrap; padding: 2px 7px; border-radius: 4px; background: #35342f; color: #f3efe4; font: 11px/1.5 "JetBrains Mono", ui-monospace, Consolas, monospace; box-shadow: 0 2px 6px rgba(0, 0, 0, .18); }
+.atlas-mini { position: absolute; right: 8px; bottom: 8px; width: 128px; height: 128px; border: 1px solid var(--line); border-radius: 4px; background: #f7f5f0; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); cursor: pointer; image-rendering: auto; }
+.atlas-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); }
+.atlas-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; border: 1px solid #0001; }

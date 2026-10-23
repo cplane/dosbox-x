@@ -69,6 +69,8 @@ func main() {
 	go pump.Run()
 	heat := NewHeatPump(hub, env("GAMELINK_HEAT", "/dev/shm/DWD_GAMELINK_HEAT_R1"))
 	go heat.Run()
+	mem := NewMemPump(hub, env("GAMELINK_MEM", "/dev/shm/DWD_GAMELINK_MEM_R1"))
+	go mem.Run()
 	ctl := &Control{
 		gl:        gl,
 		in:        in,
@@ -156,6 +158,8 @@ type clientMsg struct {
 	} `json:"hello"`
 	// Live heat (heat.go): 1 to get the ticks, 0 to stop.
 	Heat *int `json:"heat"`
+	// Live memory (mem.go): the 4 KB tiles to watch, the most wanted first; [] to stop.
+	Mem *[]uint16 `json:"mem"`
 	// RPC: a JSON-RPC request for the debugger agent (agent.go); answered
 	// with {"type":"rpc","response":…}.
 	RPC json.RawMessage `json:"rpc"`
@@ -243,6 +247,8 @@ func serveWS(hub *Hub, in *InputWriter, agent *Agent, pump *ConPump, w http.Resp
 					err = write(websocket.BinaryMessage, b)
 				case b := <-c.heatOut:
 					err = write(websocket.BinaryMessage, b)
+				case b := <-c.memOut:
+					err = write(websocket.BinaryMessage, b)
 				case <-ping.C:
 					err = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
 				}
@@ -308,6 +314,8 @@ func serveWS(hub *Hub, in *InputWriter, agent *Agent, pump *ConPump, w http.Resp
 			helloOnce.Do(func() { close(hello) })
 		case m.Heat != nil:
 			hub.setHeat(c, *m.Heat != 0)
+		case m.Mem != nil:
+			hub.setMem(c, *m.Mem)
 		}
 	}
 	conn.Close()

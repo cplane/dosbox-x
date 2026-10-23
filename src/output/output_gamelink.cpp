@@ -17,6 +17,7 @@
 #include "render.h"
 #include "vga.h"
 #include "mem.h"
+#include "paging.h"
 #include "mixer.h"
 #include "mapper.h"
 #include "mouse.h"
@@ -658,10 +659,136 @@ void OUTPUT_GAMELINK_ConsoleWrite(const uint8_t* data, size_t n)
 #endif
 }
 
+// Memory mirror: the first megabyte as the CPU sees it, in /DWD_GAMELINK_MEM_R1, refreshed while the sidecar
+// has `enabled` set: about 15 times a second while the program runs, and right after the debugger's commands
+// while it is paused (a step, a stop), so a viewer can watch memory change live. Copied page by page from the
+// memory handlers' host pointers (RAM, ROM, UMBs, the EMS frame), never through a read handler: a VGA read
+// moves the card's latches. Video RAM in an EGA/VGA text mode is rebuilt from the planes (the character in
+// plane 0, the attribute in plane 1); other video memory is not mirrored (its `mirrored` bit is 0, its bytes 0).
+// A seqlock: `seq` is odd while a copy is under way, so a reader copies until it sees the same even value
+// before and after.
+#if !defined(WIN32)
+namespace {
+
+enum { MIRROR_SIZE = 0x100000, MIRROR_PAGES = MIRROR_SIZE / 4096 };
+
+#pragma pack( push, 1 )
+struct sGameLinkMem_R1
+{
+    uint32_t magic;            // "DBXM"
+    uint16_t version;          // 1
+    uint16_t page_shift;       // 12: a page is 4 KB
+    uint32_t size;             // MIRROR_SIZE
+    volatile uint32_t enabled; // set by the sidecar while someone watches
+    volatile uint64_t seq;     // even: stable; odd: a copy in progress
+    uint64_t reserved;
+    uint8_t  mirrored[MIRROR_PAGES / 8]; // a bit per page: 1 = its bytes are here
+    uint8_t  mem[MIRROR_SIZE];
+};
+#pragma pack( pop )
+
+sGameLinkMem_R1* mirror_block = nullptr;
+bool mirror_unavailable = false;
+uint32_t mirror_last = 0;
+
+bool mirror_open()
+{
+    if ( mirror_block ) return true;
+    if ( mirror_unavailable ) return false;
+    const int fd = shm_open( "/DWD_GAMELINK_MEM_R1", O_CREAT | O_RDWR, 0644 );
+    if ( fd < 0 || ftruncate( fd, sizeof( sGameLinkMem_R1 ) ) != 0 ) {
+        LOG_MSG( "GAMELINK: memory mirror unavailable (errno %d)", errno );
+        if ( fd >= 0 ) close( fd );
+        mirror_unavailable = true;
+        return false;
+    }
+    void* p = mmap( nullptr, sizeof( sGameLinkMem_R1 ), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0 );
+    close( fd );
+    if ( p == MAP_FAILED ) {
+        mirror_unavailable = true;
+        return false;
+    }
+    mirror_block = static_cast< sGameLinkMem_R1* >( p );
+    memset( mirror_block, 0, sizeof( sGameLinkMem_R1 ) );
+    mirror_block->version = 1;
+    mirror_block->page_shift = 12;
+    mirror_block->size = MIRROR_SIZE;
+    __sync_synchronize();
+    mirror_block->magic = 0x4D584244; // "DBXM"
+    return true;
+}
+
+// Where an EGA/VGA odd/even text mode shows its video RAM to the CPU (the Graphics Controller's memory map).
+bool mirror_text_window( uint32_t& base, uint32_t& size )
+{
+    if ( !IS_EGAVGA_ARCH || vga.mode != M_TEXT || !vga.mem.linear ) return false;
+    if ( !( vga.gfx.miscellaneous & 2 ) || ( vga.seq.memory_mode & 4 ) ) return false; // not odd/even
+    switch ( ( vga.gfx.miscellaneous >> 2 ) & 3 ) {
+        case 0: base = 0xA0000; size = 0x20000; break;
+        case 1: base = 0xA0000; size = 0x10000; break;
+        case 2: base = 0xB0000; size = 0x8000; break;
+        default: base = 0xB8000; size = 0x8000; break;
+    }
+    return true;
+}
+
+void mirror_copy()
+{
+    sGameLinkMem_R1& m = *mirror_block;
+    m.seq = m.seq + 1;
+    __sync_synchronize();
+    uint32_t tbase = 0, tsize = 0;
+    const bool text = mirror_text_window( tbase, tsize );
+    const uint32_t vmask = (uint32_t)vga.mem.memmask;
+    for ( uint32_t p = 0; p < MIRROR_PAGES; ++p ) {
+        uint8_t* dst = m.mem + p * 4096u;
+        const uint32_t a = p * 4096u;
+        bool ok = false;
+        if ( text && a >= tbase && a < tbase + tsize ) {
+            // Odd/even: CPU offset o is plane (o & 1) at plane address (o & ~1); planes are interleaved by 4.
+            for ( uint32_t i = 0; i < 4096u; ++i ) {
+                const uint32_t o = a - tbase + i;
+                dst[ i ] = vga.mem.linear[ ( ( ( o & ~1u ) << 2 ) | ( o & 1u ) ) & vmask ];
+            }
+            ok = true;
+        } else {
+            PageHandler* ph = MEM_GetPageHandler( p );
+            if ( ph && ( ph->getFlags() & PFLAG_READABLE ) ) {
+                const HostPt h = ph->GetHostReadPt( p );
+                if ( h ) { memcpy( dst, h, 4096u ); ok = true; }
+            }
+        }
+        if ( !ok ) memset( dst, 0, 4096u );
+        if ( ok ) m.mirrored[ p >> 3 ] |= (uint8_t)( 1u << ( p & 7u ) );
+        else m.mirrored[ p >> 3 ] &= (uint8_t)~( 1u << ( p & 7u ) );
+    }
+    __sync_synchronize();
+    m.seq = m.seq + 1;
+}
+
+} // namespace
+#endif // !WIN32
+
+// The mirror, when someone watches: at most every 66 ms, or `now` (after a debugger command: a step's result).
+void OUTPUT_GAMELINK_MemMirror(bool now)
+{
+#if !defined(WIN32)
+    if ( !sdl.gamelink.enable || sdl.desktop.want_type != SCREEN_GAMELINK ) return;
+    if ( !mirror_open() || !mirror_block->enabled ) return;
+    const uint32_t t = SDL_GetTicks();
+    if ( !now && t - mirror_last < 66u ) return;
+    mirror_last = t;
+    mirror_copy();
+#else
+    (void)now;
+#endif
+}
+
 void OUTPUT_GAMELINK_Transfer()
 {
     //LOG_MSG("OUTPUT_GAMELINK: Transfer");
     OUTPUT_GAMELINK_HeatFrame();
+    OUTPUT_GAMELINK_MemMirror(false);
     GameLink::Out( (uint16_t)sdl.clip.w+2*sdl.clip.x, (uint16_t)sdl.clip.h+2*sdl.clip.y, render.src.ratio,
         sdl.gamelink.want_mouse,
         RunningProgram.c_str(),

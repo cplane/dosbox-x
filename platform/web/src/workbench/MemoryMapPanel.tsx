@@ -30,13 +30,17 @@ export const REGIONS: Region[] = [
 
 const seg = (lin: number) => (lin >> 4).toString(16).toUpperCase().padStart(4, '0')
 
-export function MemoryMapPanel({ regs }: { regs: Registers | null }) {
+/** The zoomable map (children) over the reference: the regions of the first megabyte, folded away. */
+export function MemoryMapPanel({ regs, children }: { regs: Registers | null; children?: React.ReactNode }) {
   const cs = regs ? (parseInt(regs.segments.cs, 16) & 0xffff) : null
   const ss = regs ? (parseInt(regs.segments.ss, 16) & 0xffff) : null
   const sp = regs ? (parseInt(regs.general.esp, 16) & 0xffff) : null
   const MB = 0x100000
   return (
     <div className="guide memmap-panel">
+      {children}
+      <details className="memmap-ref" open={!children}>
+        <summary>Regions of the first megabyte</summary>
       <div className="guide-body">
         <div className="memmap-bar" title="the first megabyte, 0000:0000 to F000:FFFF">
           {REGIONS.map((r) => (
@@ -61,6 +65,7 @@ export function MemoryMapPanel({ regs }: { regs: Registers | null }) {
         ))}
         <p className="guide-note">Segment × 16 + offset = the address; the same byte has many names (0000:0400 = 0040:0000). Everything above 640 KB (A000) is hardware or ROM, not RAM a program may use.</p>
       </div>
+      </details>
     </div>
   )
 }
