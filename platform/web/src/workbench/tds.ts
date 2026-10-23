@@ -17,9 +17,14 @@ export interface TdsSymbol {
   /** Load-relative paragraph of the segment (0: the entry code segment). */
   seg: number
   cls: SymbolClass
+  /** A static that belongs to a procedure (BASIC's STATIC variables): shown with its locals, not the globals. */
+  local?: boolean
+  /** BASIC: the variable's type suffix (% & ! # $ @), which its name as the source spells it may leave out. */
+  suffix?: string
 }
 
-export enum SymbolClass { Static = 0, Absolute = 1, Auto = 2, PascalVar = 3, Register = 4, Constant = 5, Typedef = 6, Tag = 7 }
+/** NearVar: a parameter passed by near reference (BASIC): [BP+offset] holds its address in the data segment. */
+export enum SymbolClass { Static = 0, Absolute = 1, Auto = 2, PascalVar = 3, Register = 4, Constant = 5, Typedef = 6, Tag = 7, NearVar = 8 }
 
 export interface TdsScope {
   /** 1-based first symbol and how many. */
@@ -54,6 +59,9 @@ export enum TypeId {
   Float = 13, TPReal = 14, Double = 15, LDouble = 16, Near = 21, Far = 22, Seg = 23, Array = 26, PArray = 28,
   Struct = 30, Union = 31, Enum = 34, Function = 35, Label = 36, Set = 37, TFile = 38, BFile = 39, Bool = 40,
   PEnum = 41, FuncPrototype = 44, SpecialFunc = 45, Object = 46, NRef = 52, FRef = 53, WordBool = 54, LongBool = 55,
+  // Microsoft BASIC's own (from CodeView symbols, never in a TDS): a string descriptor (length, offset), a fixed
+  // STRING * n, an array through its descriptor, CURRENCY (a 64-bit integer in ten-thousandths).
+  BStr = 100, FStr = 101, BArray = 102, Currency = 103,
 }
 
 export interface Tds {
@@ -68,6 +76,15 @@ export interface Tds {
   members: TdsMember[]
   modules: { name: string }[]
   sources: string[]
+  /** Symbols of a BASIC program (CodeView): names are matched without case, and with or without a type suffix. */
+  language?: 'basic'
+  /** Procedures are called far: a frame holds the caller's CS too, [BP+4], above its IP. */
+  farFrames?: boolean
+  /** The entry CS's paragraph from the code's (the source's code segment, which the offsets and segments here are
+   *  relative to): 0 for Turbo C and Pascal, whose entry is in that segment; BASIC's is in the runtime's. */
+  entryParagraph?: number
+  /** The data segment (DGROUP) relative to the code's, where BASIC's near references and strings point. */
+  dataSeg?: number
 }
 
 /** The symbol block of a DOS EXE, or null when it has none. */

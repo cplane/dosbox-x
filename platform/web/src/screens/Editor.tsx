@@ -6,6 +6,7 @@ import type { Step } from './Console'
 import { FileTree } from './FileTree'
 import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
 import { lineMapFromTds, parseTds, type Tds } from '../workbench/tds'
+import { parseCodeView } from '../workbench/cv'
 
 /** What the editor needs from the debugger (workbench): where it is, its breakpoints, and the controls. */
 export interface EditorDebug {
@@ -22,7 +23,8 @@ export interface EditorDebug {
   entryCs: number | null
   breakpoints: Set<number>
   toggleBreakpoint: (offset: number) => void | Promise<void>
-  start: (command: string) => Promise<void>
+  /** `entryParagraph`: the entry CS's distance from the code segment the symbols are relative to (BASIC's runtime). */
+  start: (command: string, entryParagraph?: number) => Promise<void>
   /** Ends a debug session this page does not know about (left by a reload); true when there was one. */
   endOrphan?: () => Promise<boolean>
   step: (mode: 'into' | 'over') => void
@@ -57,7 +59,7 @@ const Icon = {
  * The workbench editor: a file browser over the box's C: drive and Monaco
  * with the DOS theme. Editing is entirely local; Save PUTs the file, Build &
  * Run saves and hands the console a CD + build + run list for the file's
- * toolchain (ML for .ASM, TCC for .C/.CPP, TPC for .PAS; batch files and
+ * toolchain (ML for .ASM, TCC for .C/.CPP, TPC for .PAS, BC and LINK for .BAS; batch files and
  * programs just run).
  */
 
@@ -101,7 +103,10 @@ export interface EditorHandle {
   deleted: (path: string) => void
 }
 
-type Lang = 'asm' | 'c' | 'pas' | 'bat' | 'prog' | 'none'
+type Lang = 'asm' | 'c' | 'pas' | 'bas' | 'bat' | 'prog' | 'none'
+
+/** The languages that build into a program (and debug). */
+const BUILT: Lang[] = ['asm', 'c', 'pas', 'bas']
 
 /**
  * The build command for a source file, {} is the bare file name. The catalog
@@ -112,6 +117,8 @@ const defaultBuild: Record<string, string> = {
   asm: 'C:\\MASM611\\BIN\\ML /AT /nologo {}',
   c: 'C:\\TCC\\TCC -IC:\\TCC -LC:\\TCC {} GRAPHICS.LIB', // GRAPHICS.LIB: BGI programs link; harmless otherwise
   pas: 'C:\\TP70\\TPC {}',
+  // BASIC PDS 7.1's compiler, stand-alone (/O: no BRUN71 runtime needed); LINK follows (see buildBatch).
+  bas: 'C:\\QBX\\BINB\\BC /O {};',
 }
 
 /** Exits with errorlevel 1: mov ax,4C01h / int 21h. Marks a failed build for the console. */
@@ -122,6 +129,7 @@ function langOf(name: string): Lang {
     case 'asm': return 'asm'
     case 'c': case 'cpp': return 'c'
     case 'pas': return 'pas'
+    case 'bas': return 'bas'
     case 'bat': return 'bat'
     case 'exe': case 'com': return 'prog'
     default: return 'none'
@@ -154,7 +162,21 @@ const dosDir = (dir: string) => 'C:\\' + dir.replace(/\//g, '\\')
  * the program runs; a failed build ends in $FAIL.COM so the console sees
  * errorlevel 1.
  */
-export function buildBatch(path: string, buildCmd: string, cycles: string, opts: { run: boolean; listing: boolean } = { run: true, listing: false }): string {
+/**
+ * Where a BASIC program's output goes. Its PRINT writes into video memory while its output is the console, so
+ * the terminal (what goes through DOS) would show nothing; sent to TTY (the box's console under another name)
+ * it goes through DOS, to the screen and the terminal both. A program that colours, places or draws its output
+ * (COLOR, LOCATE, SCREEN, graphics) or reads lines from the keyboard (INPUT: BASIC echoes the typing into video
+ * memory at its own cursor, which output through DOS does not move) keeps the screen to itself and runs as it is:
+ * the Screen view shows it.
+ */
+export function basicRedirect(source: string): string {
+  const code = source.replace(/"[^"\r\n]*"?/g, '""').replace(/(^|\s|:)(REM\b|')[^\r\n]*/gi, ' ')
+  const screen = /\b(LOCATE|COLOR|SCREEN\s*\d|PSET|PRESET|CIRCLE|PAINT|DRAW|VIEW|WINDOW|PCOPY|PALETTE|WIDTH)\b|\bLINE\s*-?\s*\(|\b(PUT|GET)\s*\(|\bINPUT\b(?!\s*#)(?!\$)/i
+  return screen.test(code) ? '' : ' > TTY'
+}
+
+export function buildBatch(path: string, buildCmd: string, cycles: string, opts: { run: boolean; listing: boolean; redirect?: string } = { run: true, listing: false }): string {
   const [dir, name] = split(path)
   const base = name.replace(/\.[^.]*$/, '')
   const lines = ['@ECHO OFF', 'C:', `CD ${dosDir(dir)}`]
@@ -166,16 +188,28 @@ export function buildBatch(path: string, buildCmd: string, cycles: string, opts:
   // The compiler token is the one followed by a space (not the directory of the same name).
   if (opts.listing && /\bTCC(\.EXE)?(?=\s)/i.test(build) && !/\s-v\b/.test(build)) build = build.replace(/\bTCC(\.EXE)?(?=\s)/i, 'TCC -v')
   if (opts.listing && /\bTPC(\.EXE)?(?=\s)/i.test(build) && !/\s[-/]V\b/.test(build)) build = build.replace(/\bTPC(\.EXE)?(?=\s)/i, 'TPC -V')
+  // BASIC: /Zi puts CodeView symbols in the object (LINK /CO below keeps them); BC asks for the object's name
+  // and a listing unless the line ends in ";".
+  const bas = langOf(name) === 'bas'
+  if (bas && opts.listing && /\bBC(\.EXE)?(?=\s)/i.test(build) && !/\s\/Zi\b/i.test(build)) build = build.replace(/\bBC(\.EXE)?(?=\s)/i, 'BC /Zi')
+  if (bas && !build.trim().endsWith(';')) build = `${build.trim()};`
   switch (langOf(name)) {
-    case 'asm': case 'c': case 'pas':
+    case 'asm': case 'c': case 'pas': case 'bas':
       lines.push(
         'CONFIG -set "cpu cycles=max"',
         // ML finds LINK.EXE through the PATH, and so does TCC its TLINK; TPC finds its own.
         ...(langOf(name) === 'asm' ? ['PATH C:\\MASM611\\BIN;C:\\MASM611\\BINR;%PATH%'] : langOf(name) === 'c' ? ['PATH C:\\TCC;%PATH%'] : []),
+        // BASIC's LINK finds the runtime library (BCL71ENR.LIB, named in the object) through LIB.
+        ...(bas ? ['SET LIB=C:\\QBX\\LIB'] : []),
         build,
         'IF ERRORLEVEL 1 GOTO FAIL',
+        ...(bas ? [`C:\\QBX\\BINB\\LINK /NOE${opts.listing ? ' /CO' : ''} ${base}.OBJ;`, 'IF ERRORLEVEL 1 GOTO FAIL'] : []),
         `CONFIG -set "cpu cycles=${cycles}"`,
-        ...(opts.run ? [`ECHO --- ${base} ---`, base] : [`ECHO --- ${base} built ---`]),
+        // Output to TTY where the box has that device (an older image has not: the program runs as it is). Not
+        // "IF EXIST TTY X > TTY": the shell opens the redirection first, which would make a file TTY to find.
+        ...(opts.run
+          ? [`ECHO --- ${base} ---`, ...(opts.redirect ? ['IF NOT EXIST TTY GOTO PLAIN', `${base}${opts.redirect}`, 'GOTO END', ':PLAIN'] : []), base]
+          : [`ECHO --- ${base} built ---`]),
         'GOTO END',
         ':FAIL',
         `CONFIG -set "cpu cycles=${cycles}"`,
@@ -206,7 +240,7 @@ let hoverRegistered = false
 function registerVariableHover() {
   if (hoverRegistered) return
   hoverRegistered = true
-  for (const language of ['c', 'cpp', 'pascal', 'masm', 'plaintext']) {
+  for (const language of ['c', 'cpp', 'pascal', 'masm', 'vb', 'plaintext']) {
     monaco.languages.registerHoverProvider(language, {
       provideHover(model, position) {
         const w = model.getWordAtPosition(position)
@@ -362,8 +396,9 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     if (dirty && !(await save())) return
     const unit = lang === 'pas' && isPascalUnit(editorRef.current?.getValue() ?? text)
     setStatus(unit ? 'building the unit…' : 'running…')
+    const redirect = lang === 'bas' ? basicRedirect(editorRef.current?.getValue() ?? text) : ''
     try {
-      await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles, { run: !unit, listing: false }))
+      await writeTextFile(boxId, 'BUILD.BAT', buildBatch(path, buildCmd, cycles, { run: !unit, listing: false, redirect }))
       await writeTextFile(boxId, '$FAIL.COM', FAIL_COM)
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err))
@@ -371,7 +406,9 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     }
     const ok = await onRun(buildSteps)
     if (unit) { setStatus(ok ? `${split(path)[1]} is a unit (nothing to run): built` : 'failed (see the console)'); return }
-    setStatus(ok ? (look === 'paper' ? 'running in the terminal' : 'done') : 'failed (see the console)')
+    // A BASIC program that keeps the screen to itself (INPUT, COLOR, LOCATE, graphics) shows in the Screen view only.
+    const ownScreen = lang === 'bas' && !redirect
+    setStatus(ok ? (look === 'paper' ? (ownScreen ? 'running on the box\'s screen (INPUT, COLOR, LOCATE or graphics): see the Screen view' : 'running in the terminal') : 'done') : 'failed (see the console)')
   }
 
   // Debug: build (with the listing for .ASM), then start the program at its
@@ -438,10 +475,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       }
       setLineMap(null)
       let tds: Tds | null = null
-      if (lang === 'c' || lang === 'pas') {
-        // Turbo Debugger symbols in the EXE: lines, functions and variables.
+      if (lang === 'c' || lang === 'pas' || lang === 'bas') {
+        // Debug symbols in the EXE: lines, functions and variables (Turbo Debugger's; CodeView's for BASIC).
         try {
-          tds = parseTds(await readBinaryFile(boxId, (dir ? `${dir}/` : '') + `${base}.EXE`))
+          const exe = await readBinaryFile(boxId, (dir ? `${dir}/` : '') + `${base}.EXE`)
+          tds = lang === 'bas' ? parseCodeView(exe, name, editorRef.current?.getValue() ?? text) : parseTds(exe)
           if (tds) { const map = lineMapFromTds(tds); setLineMap(map); lineMapRef.current = map }
           else setStatus('no debug symbols in the EXE; stepping by instruction')
         } catch {
@@ -464,8 +502,18 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       // A bare name: the agent takes a DOS filename only, and BUILD.BAT left the shell in the file's directory.
       const exe = `${base}.${lang === 'asm' ? 'COM' : 'EXE'}`
       const mapped = lineMapRef.current?.lineOf.size ?? 0
-      setStatus(mapped ? `debugging ${base} · ${mapped} lines mapped` : `debugging ${base} · no line map, stepping by instruction`)
-      await debug.start(exe)
+      const debugging = mapped ? `debugging ${base} · ${mapped} lines mapped` : `debugging ${base} · no line map, stepping by instruction`
+      setStatus(debugging)
+      const redirect = lang === 'bas' ? basicRedirect(editorRef.current?.getValue() ?? text) : ''
+      await debug.start(`${exe}${redirect}`, tds?.entryParagraph ?? 0)
+      if (redirect) {
+        // An older agent takes no redirection: the program then runs with its output on the screen only.
+        for (let i = 0; i < 10 && !debugRef.current?.active && !debugRef.current?.error; i++) await new Promise((r) => setTimeout(r, 100))
+        if (!debugRef.current?.active && /DOS-safe|redirect/i.test(debugRef.current?.error ?? '')) {
+          await debug.start(exe, tds?.entryParagraph ?? 0)
+          setStatus(debugging)
+        }
+      }
       // Let the session state land (a few renders may be needed before the live debugger shows it stopped).
       for (let i = 0; i < 30 && !(debugRef.current?.active && debugRef.current.stopped && debugRef.current.ip !== null); i++) await new Promise((r) => setTimeout(r, 100))
       if (!debugRef.current?.active) { setStatus(debugRef.current?.error ? `debugger: ${debugRef.current.error}` : 'the debugger did not start'); return }
@@ -483,9 +531,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       // Stopped in the runtime before any line of ours (C's startup code): on to main, as Turbo Debugger does
       // (a breakpoint on the way stops it first); without a main, to the first breakpoint or the end.
       const d = debugRef.current
-      if (map && d?.stopped && d.ip !== null && lineForOffset(map, d.ip) === null) {
+      if (map && d?.stopped && d.ip !== null && (lineForOffset(map, d.ip) === null || (parseInt(d.cs, 16) & 0xffff) !== d.entryCs)) {
         const main = tds?.symbols.find((s) => (s.name === '_main' || s.name === 'main') && s.seg === 0)
-        const first = main ? [...map.offsetOf.values()].filter((o) => o >= main.offset).sort((a, b) => a - b)[0] : undefined
+        // BASIC: the module's code comes first in its segment, its procedures after it.
+        const first = main ? [...map.offsetOf.values()].filter((o) => o >= main.offset).sort((a, b) => a - b)[0]
+          : tds?.language === 'basic' ? Math.min(...map.offsetOf.values()) : undefined
         if (first !== undefined) d.runTo(first)
         else d.cont()
       }
@@ -521,8 +571,10 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
       n++
       if (line === null) return 'over'
       // "call 00000291 ($-29)" / "call 00D0:0012": a near call to a line of ours is the one thing stepped into.
+      // So is a far one into the program's own code segment (BASIC's SUBs and FUNCTIONs: "call 082B:01AF").
       const call = /^call\s+(?:([0-9a-f]{4}):)?([0-9a-f]{4,8})\b/i.exec(text.trim())
-      if (call && mode === 'into' && !call[1] && lineForOffset(map, parseInt(call[2], 16) & 0xffff) !== null) return 'into'
+      const ownSeg = !call?.[1] || (d.entryCs !== null && parseInt(call[1], 16) === d.entryCs)
+      if (call && mode === 'into' && ownSeg && lineForOffset(map, parseInt(call[2], 16) & 0xffff) !== null) return 'into'
       return 'over'
     })
   }
@@ -609,7 +661,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
           <strong className="mono">{path ? `${dosDir(split(path)[0])}${split(path)[0] ? '\\' : ''}${name}` : 'no file'}</strong>
           {dirty && <span className="lag">•</span>}
           <button disabled={!path || !dirty || busy} onClick={save} title="Ctrl+S">Save</button>
-          {(lang === 'asm' || lang === 'c' || lang === 'pas') && (
+          {BUILT.includes(lang) && (
             <>
               <input
                 className="mono"
@@ -632,7 +684,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
               {lang === 'bat' || lang === 'prog' ? 'Run' : 'Build & Run'}
             </button>
           )}
-          {debug && (lang === 'asm' || lang === 'c' || lang === 'pas') && (
+          {debug && BUILT.includes(lang) && (
             <span className="media" role="group" aria-label="debug">
               <button className="media-btn" disabled={!path || busy || !running} onClick={debugRun} title={debug.active ? 'Start again from the beginning (build, then debug)' : 'Start: build, then debug'}>{Icon.start}</button>
               {debug.running

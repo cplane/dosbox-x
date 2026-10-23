@@ -29,6 +29,11 @@ function entryScopes(tds: Tds): { index: number; scope: Tds['scopes'][number] }[
   return out
 }
 
+const isFunction = (fn: number) => fn !== 0 && fn !== 0xffff && fn !== 0xfffe
+
+/** A frame's own variable: a parameter or local (on the stack, in a register, by reference) or a procedure's static. */
+const isLocal = (s: TdsSymbol) => s.cls === SymbolClass.Auto || s.cls === SymbolClass.PascalVar || s.cls === SymbolClass.Register || s.cls === SymbolClass.NearVar || (s.cls === SymbolClass.Static && !!s.local)
+
 export function frameAt(tds: Tds, ip: number): Frame {
   const covering = entryScopes(tds)
     .filter(({ scope }) => scope.length > 0 && ip >= scope.offset && ip < scope.offset + scope.length)
@@ -39,11 +44,12 @@ export function frameAt(tds: Tds, ip: number): Frame {
     for (let i = scope.symIndex; i < scope.symIndex + scope.symCount; i++) {
       const s = tds.symbols[i - 1]
       if (!s || seen.has(s.name)) continue
-      if (s.cls === SymbolClass.Auto || s.cls === SymbolClass.PascalVar || s.cls === SymbolClass.Register) { seen.add(s.name); locals.unshift(s) }
+      if (isLocal(s)) { seen.add(s.name); locals.unshift(s) }
     }
   }
   let fn: string | null = null, fnOffset: number | null = null
-  const outer = covering[0]
+  // The function's scope: the outermost one that is a function's (BASIC's module block is around them all).
+  const outer = covering.find(({ scope }) => isFunction(scope.fn)) ?? covering[0]
   if (outer) {
     const byIndex = outer.scope.fn !== 0xffff && outer.scope.fn !== 0 ? tds.symbols[outer.scope.fn - 1] : undefined
     const byAddress = tds.symbols.find((s) => s.cls === SymbolClass.Static && s.seg === 0 && s.offset === outer.scope.offset && tds.types[s.type - 1]?.id === TypeId.Function)
@@ -63,7 +69,6 @@ export function enclosingAt(tds: Tds, ip: number): { fn: string; locals: TdsSymb
   const inner = all
     .filter(({ scope }) => scope.length > 0 && ip >= scope.offset && ip < scope.offset + scope.length)
     .sort((a, b) => b.scope.offset - a.scope.offset || a.scope.length - b.scope.length)[0]
-  const isFunction = (fn: number) => fn !== 0 && fn !== 0xffff && fn !== 0xfffe
   const out: { fn: string; locals: TdsSymbol[] }[] = []
   let parent = inner?.scope.parent ?? 0
   for (let guard = 0; parent && guard < 8; guard++) {
@@ -73,7 +78,7 @@ export function enclosingAt(tds: Tds, ip: number): { fn: string; locals: TdsSymb
     const locals: TdsSymbol[] = []
     for (let i = scope.symIndex; i < scope.symIndex + scope.symCount; i++) {
       const s = tds.symbols[i - 1]
-      if (s && (s.cls === SymbolClass.Auto || s.cls === SymbolClass.PascalVar || s.cls === SymbolClass.Register)) locals.push(s)
+      if (s && isLocal(s)) locals.push(s)
     }
     out.push({ fn: (sym?.name ?? '?').replace(/^_/, ''), locals })
     parent = scope.parent
@@ -93,11 +98,12 @@ export function globalsOf(tds: Tds, source: string): TdsSymbol[] {
   const out: TdsSymbol[] = []
   const seen = new Set<string>()
   for (const s of tds.symbols) {
-    if (s.cls !== SymbolClass.Static || s.seg === 0) continue
+    if (s.cls !== SymbolClass.Static || s.seg === 0 || s.local) continue
     const t = tds.types[s.type - 1]
     if (!t || t.id === TypeId.Function || t.id === TypeId.FuncPrototype || t.id === TypeId.Label) continue
     const plain = s.name.replace(/^_/, '')
-    if (!idents.has(plain) && !idents.has(s.name)) continue
+    const bare = plain.replace(/[%&!#$@]$/, '') // BASIC's Label$ is the source's Label$ (or Label)
+    if (!idents.has(plain) && !idents.has(s.name) && !idents.has(bare)) continue
     if (seen.has(plain)) continue
     seen.add(plain)
     out.push(s)
@@ -133,6 +139,7 @@ export function typeName(tds: Tds, index: number, depth = 0): string {
     case TypeId.Near: case TypeId.Far: case TypeId.NRef: case TypeId.FRef:
       return depth > 2 ? 'pointer' : `${typeName(tds, t.member, depth + 1)}*`
     case TypeId.Function: return 'function'
+    case TypeId.BArray: return depth > 2 ? 'array' : `${typeName(tds, t.member, depth + 1)}()`
     default: return BASIC[t.id] ?? `type ${t.id}`
   }
 }
@@ -159,6 +166,27 @@ const u16 = (b: Uint8Array, o = 0) => b[o] | (b[o + 1] << 8)
 const i32 = (b: Uint8Array, o = 0) => new DataView(b.buffer, b.byteOffset + o, 4).getInt32(0, true)
 const u32 = (b: Uint8Array, o = 0) => new DataView(b.buffer, b.byteOffset + o, 4).getUint32(0, true)
 const chr = (c: number) => (c >= 32 && c < 127 ? String.fromCharCode(c) : c === 0 ? '\\0' : `\\x${c.toString(16).padStart(2, '0')}`)
+
+/** The data segment BASIC's references and strings point into (DGROUP), else DS. */
+export function dataSegment(tds: Tds, m: Machine): number {
+  return tds.dataSeg !== undefined ? (m.entryCs + tds.dataSeg) & 0xffff : parseInt(m.regs.segments.ds, 16) & 0xffff
+}
+
+/**
+ * A BASIC array's descriptor: the data's offset and segment, the number of dimensions (+8), the element size
+ * (+0Ch), then per dimension, the last first, its element count and lower bound (+0Eh). The data is column-major
+ * (the first index runs fastest). Null for an array not dimensioned yet (or erased).
+ */
+export function arrayOf(b: Uint8Array): { off: number; seg: number; size: number; dims: { count: number; low: number }[] } | null {
+  if (b.length < 0x12) return null
+  const n = b[8]
+  if (!n || n > 8 || b.length < 0x0e + 4 * n) return null
+  const dims: { count: number; low: number }[] = []
+  for (let k = n - 1; k >= 0; k--) dims.push({ count: u16(b, 0x0e + 4 * k), low: i16(b, 0x10 + 4 * k) })
+  const off = u16(b), seg = u16(b, 2), size = u16(b, 0x0c)
+  if ((!off && !seg) || !size) return null
+  return { off, seg, size, dims }
+}
 
 /** Turbo Pascal's 6-byte real: an 8-bit exponent then a 39-bit mantissa and the sign. */
 function tpReal(b: Uint8Array): number {
@@ -188,6 +216,50 @@ export async function format(tds: Tds, typeIndex: number, bytes: Uint8Array, m: 
     case TypeId.Double: return bytes.length >= 8 ? String(new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0, true)) : '?'
     case TypeId.TPReal: return bytes.length >= 6 ? String(Number(tpReal(bytes).toPrecision(11))) : '?'
     case TypeId.Enum: return bytes.length >= 2 ? String(u16(bytes)) : bytes.length ? String(bytes[0]) : '?'
+    case TypeId.Currency: {
+      if (bytes.length < 8) return '?'
+      const v = new DataView(bytes.buffer, bytes.byteOffset, 8).getBigInt64(0, true)
+      const neg = v < 0n, a = neg ? -v : v
+      const frac = (a % 10000n).toString().padStart(4, '0').replace(/0+$/, '')
+      return `${neg ? '-' : ''}${a / 10000n}${frac ? '.' + frac : ''}`
+    }
+    case TypeId.FStr: return `"${Array.from(bytes.subarray(0, 64), chr).join('')}"${bytes.length > 64 ? '…' : ''}`
+    case TypeId.BStr: {
+      // A descriptor: the length, then where the characters are in the data segment.
+      if (bytes.length < 4) return '?'
+      const len = u16(bytes), off = u16(bytes, 2)
+      if (!len) return '""'
+      try {
+        const text = await m.read(dataSegment(tds, m), off, Math.min(len, 80))
+        return `"${Array.from(text, chr).join('')}"${len > 80 ? `… (${len} chars)` : ''}`
+      } catch { return `(${len} chars at ${h4(off)})` }
+    }
+    case TypeId.BArray: {
+      const a = arrayOf(bytes)
+      if (!a) return '(not dimensioned)'
+      const bounds = `(${a.dims.map((d) => `${d.low} TO ${d.low + d.count - 1}`).join(', ')})`
+      const el = tds.types[t.member - 1]
+      if (!el || !el.size || depth > 1) return bounds
+      // Up to 16 elements, the last index running fastest (row by row), each read from where it lives.
+      const total = a.dims.reduce((n, d) => n * d.count, 1)
+      const shown = Math.min(total, 16)
+      let data: Uint8Array
+      try { data = await m.read(a.seg, a.off, Math.min(total * a.size, 4096)) } catch { return bounds }
+      const items: string[] = []
+      for (let k = 0; k < shown; k++) {
+        // k in row-major order -> the indexes -> the column-major place in the data.
+        const idx: number[] = []
+        let rest = k
+        for (let d = a.dims.length - 1; d >= 0; d--) { idx[d] = rest % a.dims[d].count; rest = Math.floor(rest / a.dims[d].count) }
+        let place = 0, stride = 1
+        for (let d = 0; d < a.dims.length; d++) { place += idx[d] * stride; stride *= a.dims[d].count }
+        const at = place * a.size
+        if (at + a.size > data.length) break
+        const v = await format(tds, t.member, data.subarray(at, at + a.size), m, depth + 1)
+        items.push(a.dims.length > 1 ? `(${idx.map((x, d) => x + a.dims[d].low).join(',')})=${v}` : v)
+      }
+      return `${bounds} [${items.join(', ')}${total > shown ? ', …' : ''}]`
+    }
     case TypeId.PStr: {
       const n = Math.min(bytes[0] ?? 0, bytes.length - 1)
       return `'${Array.from(bytes.subarray(1, 1 + n), chr).join('')}'`
@@ -284,14 +356,24 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
   const sp = parseInt(m.regs.general.esp, 16) & 0xffff
   // A return address inside a source line's code is the program's even outside any function (a Pascal main
   // block); the runtime before main has no lines.
-  const ours = (addr: number, f: Frame) => f.fn !== null || tds.lines.some((l) => addr >= l.offset && addr - l.offset < 32)
+  // Far calls (BASIC): a return address counts only when its CS is the program's code segment, and then anywhere
+  // among its lines (a BASIC statement's code can be long: CALL with its arguments, a PRINT list).
+  const far = !!tds.farFrames
+  const codeCs = m.entryCs & 0xffff
+  const lineLo = Math.min(...tds.lines.map((l) => l.offset)), lineHi = Math.max(...tds.lines.map((l) => l.offset))
+  const ours = (addr: number, f: Frame) => f.fn !== null
+    || (far ? addr >= lineLo && addr <= lineHi + 32 : tds.lines.some((l) => addr >= l.offset && addr - l.offset < 32))
   const frames: StackFrame[] = []
   // ip < 0: stopped outside the program (the runtime, DOS); the chain from BP still leads back into it.
   if (ip >= 0) {
     const f0 = frameAt(tds, ip)
     let pushed: number | null = null // bytes above the return address: 0 before push bp, 2 after it
     if (f0.fnOffset !== null && ip === f0.fnOffset) pushed = 0
-    else if (f0.fnOffset !== null && ip === f0.fnOffset + 1) pushed = 2
+    else if (far && f0.fnOffset !== null && ip > f0.fnOffset && ip < f0.fnOffset + 8) {
+      // BASIC's prologue, `mov cx,N; call far <runtime>`: the frame is made by the runtime, so until that call
+      // returns BP is still the caller's.
+      try { const c = await m.read(cs, f0.fnOffset, 4); if (c[0] === 0xb9 && c[3] === 0x9a) pushed = 0 } catch { /* unreadable */ }
+    } else if (f0.fnOffset !== null && ip === f0.fnOffset + 1) pushed = 2
     else {
       try { const op = (await m.read(cs, ip, 1))[0]; if (op === 0xc3 || op === 0xc2 || op === 0xcb || op === 0xca) pushed = 0 } catch { /* unreadable */ }
     }
@@ -299,9 +381,10 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
     else {
       frames.push({ fn: f0.fn, ip, at: ip, bp: (sp + pushed - 2) & 0xffff })
       try {
-        const ret = u16(await m.read(ss, (sp + pushed) & 0xffff, 2))
+        const top = await m.read(ss, (sp + pushed) & 0xffff, far ? 4 : 2)
+        const ret = u16(top)
         const fc = frameAt(tds, ret - 1)
-        if (ours(ret, fc)) frames.push({ fn: fc.fn, ip: ret, at: ret - 1, bp })
+        if (ours(ret, fc) && (!far || u16(top, 2) === codeCs)) frames.push({ fn: fc.fn, ip: ret, at: ret - 1, bp })
       } catch { /* unreadable: the chain from BP below still gives the rest */ }
     }
   } else frames.push({ fn: null, ip: 0, at: 0, bp })
@@ -310,11 +393,11 @@ export async function callStack(tds: Tds, m: Machine, ip: number, bp: number, ma
   for (let i = 0; i < max; i++) {
     if (cur === 0 || cur > 0xfffb) break
     let link: Uint8Array
-    try { link = await m.read(ss, cur, 4) } catch { break }
+    try { link = await m.read(ss, cur, far ? 6 : 4) } catch { break }
     const savedBp = u16(link), ret = u16(link, 2)
     const f = frameAt(tds, ret - 1)
     // Outside the program the first links may be the runtime's own frames: keep walking until ours.
-    if (!ours(ret, f)) { if (sawOurs) break } else { sawOurs = true; frames.push({ fn: f.fn, ip: ret, at: ret - 1, bp: savedBp }) }
+    if (!ours(ret, f) || (far && u16(link, 4) !== codeCs)) { if (sawOurs) break } else { sawOurs = true; frames.push({ fn: f.fn, ip: ret, at: ret - 1, bp: savedBp }) }
     if (savedBp <= cur) break
     cur = savedBp
   }
@@ -358,11 +441,11 @@ export async function registersOf(tds: Tds, m: Machine, frames: StackFrame[], k:
 export async function readValues(tds: Tds, symbols: TdsSymbol[], m: Machine, bp: number, previous?: Map<string, string>): Promise<VarValue[]> {
   const out: VarValue[] = []
   // One read for the whole BP window the locals live in.
-  const auto = symbols.filter((s) => s.cls === SymbolClass.Auto || s.cls === SymbolClass.PascalVar)
+  const auto = symbols.filter((s) => s.cls === SymbolClass.Auto || s.cls === SymbolClass.PascalVar || s.cls === SymbolClass.NearVar)
   let lo = 0, hi = 0
   for (const s of auto) {
     const off = s.offset > 0x7fff ? s.offset - 0x10000 : s.offset
-    const size = s.cls === SymbolClass.PascalVar ? 4 : (tds.types[s.type - 1]?.size ?? 2)
+    const size = s.cls === SymbolClass.PascalVar ? 4 : s.cls === SymbolClass.NearVar ? 2 : (tds.types[s.type - 1]?.size ?? 2)
     lo = Math.min(lo, off); hi = Math.max(hi, off + size)
   }
   const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
@@ -402,6 +485,12 @@ export async function readValues(tds: Tds, symbols: TdsSymbol[], m: Machine, bp:
         const poff = u16(p), pseg = u16(p, 2)
         value = await format(tds, s.type, await m.read(pseg, poff, size), m)
         where = `var → ${h4(pseg)}:${h4(poff)}`
+      } else if (s.cls === SymbolClass.NearVar && window) {
+        // BASIC passes by reference: [BP+n] is the variable's offset in the data segment.
+        const ds = dataSegment(tds, m)
+        const poff = u16(window, off - lo)
+        value = await format(tds, s.type, await m.read(ds, poff, Math.max(1, Math.min(size, 256))), m)
+        where = `ref → ${h4(ds)}:${h4(poff)}`
       } else if (s.cls === SymbolClass.Static) {
         const seg = (m.entryCs + s.seg) & 0xffff
         const b = blocks.get(s.seg)

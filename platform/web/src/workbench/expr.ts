@@ -1,4 +1,4 @@
-import { format, typeName, type Machine, type VarValue } from './symbols'
+import { arrayOf, dataSegment, format, typeName, type Machine, type VarValue } from './symbols'
 import { SymbolClass, TypeId, type Tds, type TdsSymbol } from './tds'
 
 /**
@@ -6,6 +6,8 @@ import { SymbolClass, TypeId, type Tds, type TdsSymbol } from './tds'
  * `^` (Pascal) or a leading `*` (C) to follow pointers, where an index may itself be an expression (`a[i + 1]`);
  * and integer or real arithmetic over such values: `+ - * /`, `div`, `mod` (or `%`), parentheses. Names are the
  * chosen frame's variables, then those of the procedures it is nested in (Pascal), then the program's globals.
+ * BASIC: names in any case with or without their type suffix (Total, total&, Label$), arrays indexed with
+ * parentheses (`Stock(I).Qty`, `Tbl(r, c)`), a backslash for integer division.
  */
 
 export interface Scope {
@@ -15,7 +17,7 @@ export interface Scope {
   enclosing: { locals: TdsSymbol[]; bp: number }[]
 }
 
-type Access = { k: 'field'; name: string; arrow: boolean } | { k: 'index'; at: Node } | { k: 'deref' }
+type Access = { k: 'field'; name: string; arrow: boolean } | { k: 'index'; at: Node } | { k: 'deref' } | { k: 'args'; at: Node[] }
 type Node =
   | { k: 'num'; v: number }
   | { k: 'neg'; a: Node }
@@ -24,13 +26,13 @@ type Node =
 
 class ParseError extends Error {}
 
-function parse(src: string): Node {
+function parse(src: string, basic = false): Node {
   let i = 0
   const ws = () => { while (i < src.length && /\s/.test(src[i])) i++ }
   const peek = (s: string) => { ws(); return src.startsWith(s, i) }
   const word = (w: string) => { ws(); const m = new RegExp(`^${w}\\b`, 'i').exec(src.slice(i)); return m ? m[0] : null }
   const eat = (s: string) => { if (!peek(s)) throw new ParseError(`expected "${s}" at "${src.slice(i) || 'the end'}"`); i += s.length }
-  const name = () => { ws(); const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i)); if (!m) throw new ParseError(`expected a name at "${src.slice(i) || 'the end'}"`); i += m[0].length; return m[0] }
+  const name = () => { ws(); const m = (basic ? /^[A-Za-z_][A-Za-z0-9_]*[%&!#$@]?/ : /^[A-Za-z_][A-Za-z0-9_]*/).exec(src.slice(i)); if (!m) throw new ParseError(`expected a name at "${src.slice(i) || 'the end'}"`); i += m[0].length; return m[0] }
 
   const expr = (): Node => {
     let a = term()
@@ -47,6 +49,7 @@ function parse(src: string): Node {
       if (peek('*')) { i++; op = '*' }
       else if (peek('/')) { i++; op = '/' }
       else if (peek('%')) { i++; op = 'mod' }
+      else if (basic && peek('\\')) { i++; op = 'div' }
       else { const w = word('div') ?? word('mod'); if (w) { i += w.length; op = w.toLowerCase() } }
       if (!op) return a
       a = { k: 'bin', op, a, b: factor() }
@@ -76,6 +79,13 @@ function parse(src: string): Node {
         ops.push({ k: 'index', at: expr() })
         while (peek(',')) { i++; ops.push({ k: 'index', at: expr() }) }
         eat(']')
+      } else if (basic && peek('(')) {
+        // BASIC indexes with parentheses, all the indexes at once: Tbl(r, c).
+        i++
+        const at = [expr()]
+        while (peek(',')) { i++; at.push(expr()) }
+        eat(')')
+        ops.push({ k: 'args', at })
       } else break
     }
     return { k: 'var', derefs, name: n, ops }
@@ -127,6 +137,7 @@ function numberOf(tds: Tds, type: number, b: Uint8Array): number | null {
     case TypeId.Enum: case TypeId.PEnum: return t.size === 1 ? b[0] : b.length >= 2 ? dv.getUint16(0, true) : null
     case TypeId.Float: return b.length >= 4 ? dv.getFloat32(0, true) : null
     case TypeId.Double: return b.length >= 8 ? dv.getFloat64(0, true) : null
+    case TypeId.Currency: return b.length >= 8 ? Number(dv.getBigInt64(0, true)) / 10000 : null
     case TypeId.TPReal: {
       if (b.length < 6 || b[0] === 0) return 0
       let mant = 0
@@ -140,21 +151,26 @@ function numberOf(tds: Tds, type: number, b: Uint8Array): number | null {
 export async function evaluate(tds: Tds, m: Machine, scope: Scope, expr: string): Promise<VarValue> {
   const out = (type: string, value: string, where = ''): VarValue => ({ name: expr, type, value, where, changed: false })
   let root: Node
-  try { root = parse(expr.trim()) } catch (err) { return out('', `? (${err instanceof Error ? err.message : String(err)})`) }
+  const basic = tds.language === 'basic'
+  try { root = parse(expr.trim(), basic) } catch (err) { return out('', `? (${err instanceof Error ? err.message : String(err)})`) }
 
   const ss = parseInt(m.regs.segments.ss, 16) & 0xffff
   const ds = parseInt(m.regs.segments.ds, 16) & 0xffff
 
   const lookup = (name: string): { sym: TdsSymbol; bp: number } => {
     const lc = name.toLowerCase()
+    // BASIC: total is TOTAL&; total& too, but not total$ (another variable).
+    const suffix = (n: string) => /[%&!#$@]$/.test(n) ? n.slice(-1) : ''
+    const bare = (n: string) => n.replace(/[%&!#$@]$/, '').toLowerCase()
     const named = (x: TdsSymbol) => x.name.toLowerCase() === lc || x.name.replace(/^_/, '').toLowerCase() === lc
+      || (basic && bare(x.name) === bare(name) && (!suffix(name) || suffix(name) === (x.suffix ?? suffix(x.name))))
     const own = scope.locals.find(named)
     if (own) return { sym: own, bp: scope.bp }
     for (const level of scope.enclosing) {
       const found = level.locals.find((x) => x.cls !== SymbolClass.Register && named(x))
       if (found) return { sym: found, bp: level.bp }
     }
-    const global = tds.symbols.find((x) => x.cls === SymbolClass.Static && x.seg !== 0 && named(x) && tds.types[x.type - 1]?.id !== TypeId.Function)
+    const global = tds.symbols.find((x) => x.cls === SymbolClass.Static && x.seg !== 0 && !x.local && named(x) && tds.types[x.type - 1]?.id !== TypeId.Function)
     if (global) return { sym: global, bp: scope.bp }
     throw new EvalError(`no variable ${name} here`)
   }
@@ -194,6 +210,9 @@ export async function evaluate(tds: Tds, m: Machine, scope: Scope, expr: string)
     } else if (sym.cls === SymbolClass.PascalVar) {
       const p = await m.read(ss, (bp + off) & 0xffff, 4)
       ref = { type: sym.type, place: { seg: u16(p, 2), off: u16(p) } }
+    } else if (sym.cls === SymbolClass.NearVar) {
+      const p = await m.read(ss, (bp + off) & 0xffff, 2)
+      ref = { type: sym.type, place: { seg: dataSegment(tds, m), off: u16(p) } }
     } else if (sym.cls === SymbolClass.Static) {
       ref = { type: sym.type, place: { seg: (m.entryCs + sym.seg) & 0xffff, off: sym.offset } }
     } else throw new EvalError(`${node.name} is not a variable`)
@@ -210,6 +229,25 @@ export async function evaluate(tds: Tds, m: Machine, scope: Scope, expr: string)
         ref = { type: mem.type, place: { seg: ref.place.seg, off: (ref.place.off + mem.off) & 0xffff } }
         continue
       }
+      // A BASIC array, through its descriptor: Stock(I), Tbl(r, c) (or Stock[I]).
+      const bt = tds.types[ref.type - 1]
+      if (bt?.id === TypeId.BArray) {
+        if ('reg' in ref) throw new EvalError('an array in a register')
+        const a = arrayOf(await m.read(ref.place.seg, ref.place.off, bt.size))
+        if (!a) throw new EvalError(`${node.name} is not dimensioned`)
+        const idx = op.k === 'args' ? await Promise.all(op.at.map(async (x) => Math.trunc(await num(x)))) : [Math.trunc(await num(op.at))]
+        if (idx.length !== a.dims.length) throw new EvalError(`${node.name} has ${a.dims.length} dimension${a.dims.length > 1 ? 's' : ''}`)
+        let place = 0, stride = 1
+        for (let d = 0; d < idx.length; d++) {
+          const { low, count } = a.dims[d]
+          if (idx[d] < low || idx[d] >= low + count) throw new EvalError(`index ${idx[d]} is outside ${low} TO ${low + count - 1}`)
+          place += (idx[d] - low) * stride
+          stride *= count
+        }
+        ref = { type: bt.member, place: { seg: a.seg, off: (a.off + place * a.size) & 0xffff } }
+        continue
+      }
+      if (op.k === 'args') throw new EvalError(`${typeName(tds, ref.type)} is not an array`)
       // [index]: through a pointer first (C's p[i]), then into the array.
       const index = Math.trunc(await num(op.at))
       let t = tds.types[ref.type - 1]

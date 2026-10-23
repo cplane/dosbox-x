@@ -279,8 +279,19 @@ the machine presets use:
   then the program; `$FAIL.COM` ends a failed build with errorlevel 1) and
   has the console type `C:\BUILD` — typing costs ~35 ms a character, so a
   long compiler line is not typed. Toolchains: `ML /AT` for .ASM, `TCC`
-  for .C/.CPP, `TPC` for .PAS; .BAT/.EXE/.COM just run; the build command
-  is editable and remembered per language.
+  for .C/.CPP, `TPC` for .PAS, `BC /O` then `LINK` for .BAS (BASIC PDS
+  7.1, stand-alone); .BAT/.EXE/.COM just run; the build command is
+  editable and remembered per language. BASIC programs run `> TTY` (see
+  the fork's changes below) so their PRINT reaches the terminal, except
+  ones that read lines (INPUT), colour, place or draw their output: those
+  keep the screen (the Screen view).
+- **BASIC debugging** (`workbench/cv.ts`): `BC /Zi` + `LINK /CO` put
+  CodeView 3 symbols (NB02) in the EXE; they are read into the same model
+  as Turbo Debugger's (procedures, parameters by near reference, the
+  module's and STATIC variables, TYPEs, `STRING * n`, strings and arrays
+  through their descriptors, CURRENCY, line numbers). SUBs and FUNCTIONs
+  are far calls, the entry is in the runtime (`entryParagraph`), and watches
+  take BASIC's syntax (`Stock(I).Qty`, `Tbl(r, c)`, suffixes, `\`).
 - **Machine per box** (`gateway/machine.go`, the Boxes screen): CPU model
   (8086, 186, 286, 386, 486, Pentium or the default), memory (1-64 MB) and
   speed (cycles, with presets named after the PCs they approximate),
@@ -328,6 +339,12 @@ DOSBox-X changes made for headless use (this fork):
   (`GameLink::MessagePending()`): DOSBox-X only read `buf_recv` when a frame
   was rendered, so on a static screen (a dialog without a blinking cursor)
   `:rescan` waited until something on screen changed.
+- DOS device `TTY` (`src/dos/dos_devices.cpp`): CON under another name,
+  flagged as a plain character device. A program whose standard output is
+  the console may write into video memory itself (Microsoft BASIC's PRINT);
+  with `PROG > TTY` it writes through DOS, so its output reaches the console
+  stream too. The agent's `session.start` takes a trailing `">", "TTY"` in
+  `target.arguments` for the same (a DOS device only, never a file).
 
 ## Web platform: https://dosbox.pocket-maze.app
 

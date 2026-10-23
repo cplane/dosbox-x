@@ -151,7 +151,8 @@ export interface Debugger {
   playing: boolean
   play: (stepsPerSec: number) => void
   pausePlay: () => void
-  start: (command: string, nudge?: (attempt: number) => Promise<void>) => Promise<void>
+  /** `entryParagraph`: how far the entry CS is past the program's code segment (BASIC's entry is in its runtime). */
+  start: (command: string, nudge?: (attempt: number) => Promise<void>, entryParagraph?: number) => Promise<void>
   /** Ends a session this page does not know (left by a reload): true when there was one and it ended. */
   endOrphan: (nudge?: (attempt: number) => Promise<void>) => Promise<boolean>
   step: (mode: 'into' | 'over') => Promise<void>
@@ -176,6 +177,11 @@ export function useDebugger(rpc: RPC): Debugger {
   const [lines, setLines] = useState<DisLine[]>([])
   const [cs, setCs] = useState('')
   const [entryCs, setEntryCs] = useState<number | null>(null)
+  const entryCsRef = useRef<number | null>(null)
+  entryCsRef.current = entryCs
+  // The program's code segment (its lines' offsets are in it): breakpoints and run-to targets go there, wherever
+  // the program is stopped (BASIC stops in its runtime at the entry, Pascal in a unit's code).
+  const codeSeg = () => (entryCsRef.current !== null ? entryCsRef.current.toString(16) : csRef.current)
   const [program, setProgram] = useState<{ psp: number; end: number } | null>(null)
   const [bps, setBps] = useState<Map<number, string>>(new Map()) // offset -> breakpoint_id
   const [busy, setBusy] = useState(false)
@@ -570,7 +576,7 @@ export function useDebugger(rpc: RPC): Debugger {
   }, [rpc, endSession])
 
   // Start: the program at its entry. A session left behind (a reload mid-debugging) is ended first.
-  const start = useCallback((command: string, nudge?: (attempt: number) => Promise<void>) => guard(async () => {
+  const start = useCallback((command: string, nudge?: (attempt: number) => Promise<void>, entryParagraph = 0) => guard(async () => {
     const [cmd, ...args] = command.trim().split(/\s+/)
     const params = {
       target: { command: cmd, arguments: args },
@@ -592,9 +598,11 @@ export function useDebugger(rpc: RPC): Debugger {
     setBps(new Map())
     windowRef.current = null
     await refresh(s)
-    // The entry stop: CS is the load segment.
+    // The entry stop: CS is the load segment (the code segment), or that many paragraphs past it.
     const r0 = (await rpc('state.get_registers', { session_id: s.session_id })) as Registers
-    setEntryCs(parseInt(r0.segments.cs, 16) & 0xffff)
+    const code = (parseInt(r0.segments.cs, 16) - entryParagraph) & 0xffff
+    entryCsRef.current = code
+    setEntryCs(code)
     setProgram(blockOf(r0))
   }), [guard, rpc, refresh, endSession])
 
@@ -609,7 +617,7 @@ export function useDebugger(rpc: RPC): Debugger {
     } else {
       const r = (await rpc('breakpoints.create', {
         session_id: s.session_id, kind: 'execution',
-        address: { space: 'segmented', segment: seg4(csRef.current), offset: off8(offset) },
+        address: { space: 'segmented', segment: seg4(codeSeg()), offset: off8(offset) },
       })) as { breakpoint_id: string }
       setBps((b) => new Map(b).set(offset, r.breakpoint_id))
       bpsRef.current = new Map(bpsRef.current).set(offset, r.breakpoint_id)
@@ -625,7 +633,7 @@ export function useDebugger(rpc: RPC): Debugger {
       if (!s || s.state !== 'stopped') return
       const bp = (await rpc('breakpoints.create', {
         session_id: s.session_id, kind: 'execution', once: true,
-        address: { space: 'segmented', segment: seg4(csRef.current), offset: off8(returnIp) },
+        address: { space: 'segmented', segment: seg4(codeSeg()), offset: off8(returnIp) },
       })) as { breakpoint_id: string }
       const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
       setSession({ ...s, state: 'running' })
@@ -648,7 +656,7 @@ export function useDebugger(rpc: RPC): Debugger {
     if (!s || s.state !== 'stopped') return
     await rpc('breakpoints.create', {
       session_id: s.session_id, kind: 'execution', once: true,
-      address: { space: 'segmented', segment: seg4(csRef.current), offset: off8(offset) },
+      address: { space: 'segmented', segment: seg4(codeSeg()), offset: off8(offset) },
     })
     const op = (await rpc('execution.continue', { session_id: s.session_id })) as { operation_id: string }
     setSession({ ...s, state: 'running' })
