@@ -397,11 +397,14 @@ export function MemoryAtlas({ dbg, symbols, subscribeMem, setMemTiles, subscribe
       const { x, y } = posOf(p.a)
       const X = sx(x + 0.5), Y = sy(y + 0.5)
       if (X < -20 || Y < -20 || X > size.w + 20 || Y > size.h + 20) continue
-      ctx.strokeStyle = p.color; ctx.lineWidth = 2
-      ctx.beginPath(); ctx.arc(X, Y, Math.max(4, s * 0.7), 0, Math.PI * 2); ctx.stroke()
+      // A square around the byte (at least 6 px when zoomed out): white inside, the pin's colour just outside.
+      const half = Math.max(3, s / 2)
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = '#fff'; ctx.strokeRect(X - half + 0.75, Y - half + 0.75, half * 2 - 1.5, half * 2 - 1.5)
+      ctx.strokeStyle = p.color; ctx.strokeRect(X - half - 0.75, Y - half - 0.75, half * 2 + 1.5, half * 2 + 1.5)
       ctx.fillStyle = p.color
       ctx.font = 'bold 11px "JetBrains Mono", ui-monospace, monospace'
-      ctx.fillText(p.label, X + Math.max(6, s * 0.8), Y - 6)
+      ctx.fillText(p.label, X + half + 4, Y - half)
     }
   }, [view, size, frame, heatOn, pins, vars, block])
 
