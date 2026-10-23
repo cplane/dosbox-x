@@ -486,7 +486,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           </MemoryMapPanel>
         )
       case 'machine':
-        return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} subscribeHeat={subscribeHeat} setHeat={setHeat} program={program} /></div>
+        return <div className="dbg-body"><Machine dbg={dbg} onShowInterrupt={showInterrupt} program={program} /></div>
       case 'vars':
         return symbols ? <VariablesPanel values={values} stopped={dbg.stopped} /> : <div className="muted">no symbols</div>
       case 'calls':

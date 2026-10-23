@@ -502,6 +502,22 @@ export function MemoryAtlas({ dbg, symbols, subscribeMem, setMemTiles, subscribe
     setGotoErr(`no ${t}: an address (B8000, B800:0000), IP / SP / DS, or a variable`)
   }
 
+  // While heat is on: the hottest regions (the program's block by its name), each with its hottest paragraph.
+  const hot = useMemo(() => {
+    if (!heatOn) return [] as { name: string; heat: number; at: number; top: number }[]
+    const sums = new Map<string, { name: string; heat: number; at: number; top: number }>()
+    for (const [para, ht] of liveHeat.current.map) {
+      const a = para << 4
+      const name = block && a >= block.from && a <= block.to ? `${block.name}'s memory` : REGIONS.find((r) => a >= r.from && a <= r.to)?.name ?? 'beyond 1 MB'
+      const e = sums.get(name) ?? { name, heat: 0, at: a, top: 0 }
+      const v = ht.r + ht.w
+      e.heat += v
+      if (v > e.top) { e.top = v; e.at = a }
+      sums.set(name, e)
+    }
+    return [...sums.values()].sort((x, y) => y.heat - x.heat).slice(0, 5)
+  }, [heatOn, frame, block]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const tag = (() => {
     if (!hover) return ''
     const a = hover.a
@@ -538,6 +554,14 @@ export function MemoryAtlas({ dbg, symbols, subscribeMem, setMemTiles, subscribe
         <span className="muted small atlas-scale">{scaleText}</span>
       </div>
       {gotoErr && <div className="atlas-err small">{gotoErr}</div>}
+      {heatOn && (
+        <div className="atlas-hot">
+          <span className="muted">hottest:</span>
+          {hot.length
+            ? hot.map((r) => <button key={r.name} onClick={() => centerOn(r.at, Math.max(view.s, 8))} title={`Go to its hottest spot, ${h(r.at, 5)}`}>{r.name}</button>)
+            : <span className="muted">nothing yet: heat shows while the program runs</span>}
+        </div>
+      )}
       <div className="atlas-view" ref={wrapRef}>
         <canvas
           ref={canvasRef} className="atlas-canvas"
