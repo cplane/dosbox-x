@@ -20,16 +20,19 @@ cd "$(dirname "$0")"
 
 NS=${NS:-dosbox}
 
-# pinned <repo>: the most recently pushed tag other than "latest", i.e. what
-# platform/build.sh last pushed. Not resolved through "latest" itself: the
-# DO registry has been seen to keep "latest" on the previous image after a
-# Kaniko push of both tags.
+# pinned <repo>: what platform/build.sh pushed last, i.e. the newest manifest
+# by push time, named by its own tag when it has one and else by its digest
+# ("latest@sha256:..."). Not resolved through tags alone: the DO registry has
+# been seen to keep "latest" on the previous image after a Kaniko push of both
+# tags, and also to keep only "latest" and drop the commit tag (which made a
+# deploy roll out the build before).
 pinned() {
-  doctl registry repository list-tags "$1" -o json | node -e '
-    const tags = JSON.parse(require("fs").readFileSync(0)).filter(t => t.tag !== "latest")
+  doctl registry repository list-manifests "$1" -o json | node -e '
+    const ms = JSON.parse(require("fs").readFileSync(0))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    if (!tags.length) process.exit(1);
-    console.log(tags[0].tag);'
+    if (!ms.length) process.exit(1);
+    const own = (ms[0].tags || []).find((t) => t !== "latest");
+    console.log(own || `latest@${ms[0].digest}`);'
 }
 
 args=()
