@@ -10,6 +10,7 @@ import { FilesTab } from './FilesTab'
 import { GuidePanel } from './GuidePanel'
 import { ArticleView } from './ArticleView'
 import { findArticle, findInterrupt } from './articles'
+import { RefCardHost, setArticleOpener } from './asmref'
 import { Machine } from './Machine'
 import { MemoryMapPanel } from './MemoryMapPanel'
 import { MemoryAtlas } from './MemoryAtlas'
@@ -445,6 +446,10 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
     }
     setArticleShown(a.key)
   }
+  // The editor's hover link and Ctrl+click open articles here too (Monaco is outside React).
+  const openArticleRef = useRef(openArticle)
+  openArticleRef.current = openArticle
+  useEffect(() => { setArticleOpener((k) => openArticleRef.current(k)); return () => setArticleOpener(null) }, [])
   const articleBack = () => {
     const prev = articleHistory.current.pop()
     if (prev) openArticle(prev, false)
@@ -548,7 +553,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
           </MemoryMapPanel>
         )
       case 'machine':
-        return <div className="dbg-body"><Machine dbg={dbg} controls={debug} onShowInterrupt={showInterrupt} program={program} /></div>
+        return <div className="dbg-body"><Machine dbg={dbg} controls={debug} onShowInterrupt={showInterrupt} onArticle={(k) => openArticle(k)} program={program} /></div>
       case 'vars':
         return symbols ? <VariablesPanel values={values} stopped={dbg.stopped} /> : <div className="muted">no symbols</div>
       case 'calls':
@@ -575,6 +580,7 @@ export function Workspace({ boxId, running, program, dbg, available, onRun, term
         onModelChange={(m) => { try { localStorage.setItem(LAYOUT_KEYS[layout.mode], JSON.stringify(m.toJson())) } catch { /* private mode */ } }}
       />
       <button className="ghost workspace-reset" onClick={reset} title={`Put the panels of the ${layout.mode === 'debug' ? 'debugging' : 'editing'} layout back where they started`}>⟲ {layout.mode === 'debug' ? 'debug layout' : 'layout'}</button>
+      <RefCardHost />
       {available === false && <span className="workspace-note muted small">no debugger on this box (plain image)</span>}
     </div>
   )

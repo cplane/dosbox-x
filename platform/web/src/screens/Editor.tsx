@@ -1,7 +1,8 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
 import { getBox, pressKeys, readBinaryFile, readTextFile, runCommand, typeText, writeTextFile } from '../api/client'
-import { languageFor, monaco } from '../player/monaco'
+import { articleAt, languageFor, monaco } from '../player/monaco'
+import { openArticleRef } from '../workbench/asmref'
 import type { Step } from './Console'
 import { FileTree } from './FileTree'
 import { lineForOffset, parseListing, type LineMap } from '../workbench/listing'
@@ -626,7 +627,25 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({ boxId, r
     editor.addCommand(monaco.KeyCode.F8, () => stepSourceRef.current('over'))
     editor.addCommand(monaco.KeyCode.F9, () => debugRef.current?.cont())
     editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.F8, () => debugRef.current?.stepOut?.())
+    // Ctrl+click on a mnemonic (or an INT) opens its article in the guide; with Ctrl held it is underlined as a link.
+    const refLink = editor.createDecorationsCollection()
+    const linkAt = (e: monaco.editor.IEditorMouseEvent) => {
+      const model = editor.getModel()
+      const pos = e.target.position
+      if (!(e.event.ctrlKey || e.event.metaKey) || e.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT || !model || !pos) return null
+      const key = articleAt(model, pos)
+      const word = key ? model.getWordAtPosition(pos) : null
+      return key && word ? { key, range: new monaco.Range(pos.lineNumber, word.startColumn, pos.lineNumber, word.endColumn) } : null
+    }
+    editor.onMouseMove((e) => {
+      const hit = linkAt(e)
+      refLink.set(hit ? [{ range: hit.range, options: { inlineClassName: 'asm-op-link' } }] : [])
+    })
+    editor.onMouseLeave(() => refLink.clear())
+    editor.onKeyUp(() => refLink.clear())
     editor.onMouseDown((e) => {
+      const hit = linkAt(e)
+      if (hit) { e.event.preventDefault(); refLink.clear(); openArticleRef(hit.key); return }
       const t = e.target.type
       if (t !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && t !== monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS) return
       const line = e.target.position?.lineNumber
