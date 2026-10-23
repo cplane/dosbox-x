@@ -1,6 +1,7 @@
 import { Fragment, useState, type ReactNode } from 'react'
 import { findArticle, type Block } from './articles'
 import { exampleFile, wrapExample } from './guide'
+import { Icon } from './icons'
 
 /**
  * One article of the 8086 guide, in a tab beside the editor: the name and a few words, the short description,
@@ -99,9 +100,9 @@ function Snippet({ block, title, articleKey, onOpen }: { block: Extract<Block, {
       <div className="article-code-bar">
         {block.note && <span className="muted">{block.note}</span>}
         {onOpen && block.run && (
-          <button className="ghost" onClick={() => onOpen(exampleFile(articleKey), alignComments(wrapExample(title, block.code, block.data).split('\r\n')).join('\r\n'))} title="Open as a complete program in the editor, ready to Build & Run or debug">open in editor</button>
+          <button className="icon-btn" aria-label="Open in the editor" onClick={() => onOpen(exampleFile(articleKey), alignComments(wrapExample(title, block.code, block.data).split('\r\n')).join('\r\n'))} title="Open in the editor as a complete program, ready to Build & Run or debug">{Icon.openFile}</button>
         )}
-        <button className="ghost" onClick={copy} title="Copy the snippet">{copied ? 'copied' : 'copy'}</button>
+        <button className={`icon-btn ${copied ? 'done' : ''}`} aria-label="Copy" onClick={copy} title={copied ? 'Copied' : 'Copy the snippet'}>{copied ? Icon.check : Icon.copy}</button>
       </div>
       <pre>{text.split('\n').map((l, i) => <div key={i}>{l ? highlight(l) : ' '}</div>)}</pre>
     </div>
