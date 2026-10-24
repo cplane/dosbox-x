@@ -65,12 +65,13 @@ export function WalkView({ walk, at, onAt }: Props) {
   const words = Array.from({ length: Math.floor(stack.length / 2) }, (_, i) => stack[i * 2] | (stack[i * 2 + 1] << 8)).slice(0, 8)
   const last = at === n - 1
 
-  // Memory as the program touched it, as the recording knows it at a state: the rows touched up to then as last
-  // seen (video memory, buffers, the stack), then the state's own data area and top of the stack.
+  // Memory as the program touched it, as the recording knows it at a state: the program as loaded, the rows touched
+  // up to then as last seen (video memory, buffers, the stack), then the state's own data area and top of the stack.
   const known = (idx: number) => {
     const m = new Map<number, number>()
     const st = walk.states[idx]
     if (!st) return m
+    if (walk.image) bytesOf(walk.image).forEach((b, i) => m.set(base + 0x100 + i, b))
     for (let i = 0; i <= idx; i++) for (const [row, hex] of walk.states[i].rows ?? []) bytesOf(hex).forEach((b, k) => m.set(row * 16 + k, b))
     bytesOf(st.data).forEach((b, i) => m.set(base + walk.dataAt + i, b))
     bytesOf(st.stack).forEach((b, i) => m.set(st.r[11] * 16 + st.r[7] + i, b))

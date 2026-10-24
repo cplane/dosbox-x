@@ -92,6 +92,8 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
     const j = i - b.code.length - 2
     return j >= 0 && j < (b.data?.length ?? 0) ? b.code.length + 1 + j : -1
   }
+  // A session left stopped (a run cut short) pauses the emulation: DOS takes no command until it ends.
+  await endSessions()
   await put('W.ASM', source)
   await fetch(`${POD}/rescan`, { method: 'POST' })
   await run('C:')
@@ -117,6 +119,10 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
   await endSessions()
   const s = await A<{ session_id: string }>('session.start', { target: { command: 'W.COM', arguments: [] }, mounts: [{ drive: 'C', host_path: '/data/c' }], break_at: 'entry' })
   const sid = s.session_id
+  // The program as loaded (its code and data, and a little past its end), for the rows the player opens beside what
+  // the program touched.
+  const cs0 = regsOf(await A<Registers>('state.get_registers', { session_id: sid }))[8]
+  const image = hex(await read(sid, cs0, 0x100, Math.min(end - 0x100 + 0x40, 0xff00)))
   const states: WalkState[] = []
   let out = ''
   let acc: WalkState['acc'] = []
@@ -247,11 +253,12 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
     await endSessions()
     await enter() // a fresh DOS prompt for the next run
   }
-  return { v: 2, src: walkSource(b.code, b.data), seg, dataAt, vars, states, end: how }
+  return { v: 3, src: walkSource(b.code, b.data), seg, dataAt, vars, image, states, end: how }
 }
 
-// A walk made by this version (v2: with the rows touched outside the data area) from the snippet as it is now.
-const isCurrent = (w: Walk, b: Extract<Block, { code: string[] }>) => w.v === 2 && w.src === walkSource(b.code, b.data)
+// A walk made by this version (v3: the rows touched outside the data area, the program image) from the snippet as
+// it is now.
+const isCurrent = (w: Walk, b: Extract<Block, { code: string[] }>) => w.v === 3 && w.src === walkSource(b.code, b.data)
 
 mkdirSync(OUT, { recursive: true })
 const wanted = process.argv.slice(2)

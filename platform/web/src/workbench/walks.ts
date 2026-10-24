@@ -41,14 +41,16 @@ export interface WalkState {
 }
 
 export interface Walk {
-  /** 1: the first recordings; 2: with the rows touched outside the data area (`rows`). */
-  v: 1 | 2
+  /** 1: the first recordings; 2: with the rows touched outside the data area (`rows`); 3: and the program image. */
+  v: 1 | 2 | 3
   /** The snippet the walk was made from (its code and data lines): a walk for another text is not shown. */
   src: string
   /** The program's segment, and where the data area starts in it. */
   seg: number
   dataAt: number
   vars: WalkVar[]
+  /** The program as loaded, from offset 100h of its segment (code, data, a little past the end), hex. */
+  image?: string
   states: WalkState[]
   /** How it ended: "exited"; "wait" when it went round a loop waiting for something outside it (the timer, a key),
    *  the walk stopping there; "limit" when it ran longer than a walk keeps. After "wait" and "limit" the program ran
