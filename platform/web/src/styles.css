@@ -623,3 +623,23 @@ html.paper body { overflow: hidden; }
 .ref-card-head span { color: var(--muted); }
 .ref-card-short { margin-top: 4px; }
 .ref-card-foot { margin-top: 6px; color: var(--muted); font-size: 11px; }
+/* A guide example step by step (WalkView): under the snippet, the line about to run marked in it. */
+.article-code pre .walk-now { background: rgba(224, 168, 90, 0.28); box-shadow: inset 3px 0 0 #c98a3a; }
+.article-code-bar .icon-btn.on { color: var(--accent); background: rgba(224, 168, 90, 0.18); }
+.walk { display: grid; gap: 8px; padding: 8px 10px 10px; border-top: 1px solid var(--line); outline: none; font-size: 12px; }
+.walk-bar { display: flex; align-items: center; gap: 4px; }
+.walk-bar input[type="range"] { flex: 1; min-width: 60px; accent-color: #c98a3a; }
+.walk-count { min-width: 4.5em; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.walk-next { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.walk-next code { font-weight: 600; }
+.walk-vars { display: grid; gap: 3px; }
+.walk-var { display: flex; align-items: baseline; gap: 8px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; transition: background .25s, border-color .25s; }
+.walk-var b { min-width: 4em; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.walk-var code { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.walk-var.changed { background: #f3d9cf; border-color: #e0785a; }
+.walk-var em { margin-left: auto; font-style: normal; font-size: 10px; padding: 0 5px; border-radius: 3px; }
+.walk-var em.w { color: #a3493c; background: rgba(163, 73, 60, 0.12); }
+.walk-var em.r { color: #3b63a8; background: rgba(59, 99, 168, 0.12); }
+.walk-stack { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.walk-out { display: grid; gap: 2px; }
+.walk-out pre { margin: 0; padding: 4px 6px; min-height: 1.4em; border-radius: 4px; background: rgba(70, 70, 65, 0.06); white-space: pre-wrap; }

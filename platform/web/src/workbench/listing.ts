@@ -21,9 +21,9 @@ export interface LineMap {
   end?: number
 }
 
-// " 0100  B8 1234<tabs>text", " 0110  BA 011A R<tabs>text" (R: relocatable), " 011A 48 65 6C<tabs>text" (data).
+// " 0100  B8 1234<tabs>text", " 0110  BA 011A R<tabs>text" (R: relocatable, between bytes too: "C6 06 0126 R 03"), " 011A 48 65 6C<tabs>text" (data).
 // Byte tokens are 2-4 hex digits a single space apart; at least two spaces (a tab) separate them from the text.
-const CODE_LINE = /^ ([0-9A-F]{4})\s+((?:[0-9A-F]{2,4} )*[0-9A-F]{2,4})(?: R)?\s{2,}(.*)$/
+const CODE_LINE = /^ ([0-9A-F]{4})\s+((?:[0-9A-F]{2,4}(?: R)? )*[0-9A-F]{2,4})(?: R)?\s{2,}(.*)$/
 
 export function parseListing(listing: string, source: string): LineMap {
   const src = source.split(/\r?\n/).map((l) => l.trim())
