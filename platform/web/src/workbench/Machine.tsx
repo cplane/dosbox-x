@@ -6,6 +6,7 @@ import { withOps } from './asmref'
 import { REGIONS } from './MemoryMapPanel'
 import { Icon } from './icons'
 import { DebugButtons, type DebugControls } from './DebugButtons'
+import { TouchedMemory, type Touch } from './TouchedMemory'
 import { hex, type Debugger, type MemAccess, type MemWindow, type Registers } from './useDebugger'
 
 /**
@@ -78,6 +79,10 @@ function bump(heat: Map<number, Heat>, accesses: MemAccess[]) {
   }
 }
 
+// What each debug session's program has touched, and the rows opened by hand: kept per session, not per view, so a
+// Machine view shown again (a tab collapsed and back) goes on where it was.
+const touchedBySession = new Map<string, { earlier: Map<number, boolean>; opened: Set<number> }>()
+
 export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: Props) {
   const { regs, prevRegs, mem, stack, ip, lines, stopped, accesses, recording } = dbg
   const fieldRef = useRef<HTMLCanvasElement>(null)
@@ -97,6 +102,14 @@ export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: 
   const [replaying, setReplaying] = useState(false)
   const [fps, setFps] = useState(10)
   const rootRef = useRef<HTMLDivElement>(null)
+  // Memory as the program touched it (rows of what its instructions read and wrote), or the window over DS.
+  const [memMode, setMemMode] = useState<'touched' | 'window'>(() => { try { return localStorage.getItem('dosbox.machine.mem') === 'window' ? 'window' : 'touched' } catch { return 'touched' } })
+  const chooseMem = (m: 'touched' | 'window') => { setMemMode(m); try { localStorage.setItem('dosbox.machine.mem', m) } catch { /* private mode */ } }
+  const touchedEarlier = useRef(new Map<number, boolean>()) // linear -> written
+  const [touchedNow, setTouchedNow] = useState<Touch[]>([])
+  const [opened, setOpened] = useState<Set<number>>(new Set())
+  const rowsNow = useRef(new Map<number, Uint8Array>())
+  const rowsBefore = useRef(new Map<number, Uint8Array>())
   const [arrows, setArrows] = useState<{ d: string; warm: boolean }[]>([])
   const [size, setSize] = useState({ w: 0, h: 0 })
 
@@ -136,6 +149,55 @@ export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: 
     if (ip !== null) executed.current.add(linear(parseInt(regs.segments.cs, 16) & 0xffff, ip))
     setTick((t) => t + 1)
   }, [mem, regs, ip, accesses, live]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new debug session starts with nothing touched.
+  const sessionId = dbg.session?.session_id
+  useEffect(() => {
+    let kept = sessionId ? touchedBySession.get(sessionId) : undefined
+    if (sessionId && !kept) { kept = { earlier: new Map(), opened: new Set() }; touchedBySession.clear(); touchedBySession.set(sessionId, kept) }
+    touchedEarlier.current = kept?.earlier ?? new Map()
+    rowsNow.current = new Map()
+    rowsBefore.current = new Map()
+    setTouchedNow([])
+    setOpened(kept?.opened ?? new Set())
+  }, [sessionId])
+  useEffect(() => { const kept = sessionId ? touchedBySession.get(sessionId) : undefined; if (kept) kept.opened = opened }, [opened, sessionId])
+  // What the last step touched, the program's own instructions only (an INT's work inside DOS is not the program's).
+  useEffect(() => {
+    if (!live || !regs || !accesses) return
+    const mine = accesses.filter((a) => dbg.inProgram(a.cs, regs))
+    for (const t of touchedNow) for (let i = 0; i < t.size; i++) {
+      const lin = t.address + i
+      touchedEarlier.current.set(lin, (touchedEarlier.current.get(lin) ?? false) || t.write)
+    }
+    setTouchedNow(mine.map((a) => ({ address: a.address, size: a.size, write: a.write })))
+  }, [accesses, regs, live]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The rows on show, read again at every stop (contiguous rows in one read); the previous read marks what changed.
+  useEffect(() => {
+    if (!live || !regs || memMode !== 'touched' || !dbg.session) return
+    const rows = new Set<number>(opened)
+    for (const a of touchedEarlier.current.keys()) rows.add(a >>> 4)
+    for (const t of touchedNow) for (let i = 0; i < t.size; i++) rows.add((t.address + i) >>> 4)
+    const sorted = [...rows].filter((r) => r <= 0xffff).sort((a, b) => a - b)
+    let cancelled = false
+    void (async () => {
+      const next = new Map<number, Uint8Array>()
+      for (let i = 0; i < sorted.length;) {
+        let j = i
+        while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1 && j - i < 255) j++
+        try {
+          const b = await dbg.readMemory(sorted[i], 0, (j - i + 1) * 16)
+          for (let k = i; k <= j; k++) next.set(sorted[k], b.subarray((k - i) * 16, (k - i) * 16 + 16))
+        } catch { /* not readable now: shown as unknown */ }
+        i = j + 1
+      }
+      if (cancelled) return
+      rowsBefore.current = rowsNow.current
+      rowsNow.current = next
+      setTick((t) => t + 1)
+    })()
+    return () => { cancelled = true }
+  }, [touchedNow, opened, regs, memMode, live]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // A replay frame: heat from the last HEAT_SPAN instructions (so scrubbing anywhere is exact), executed up to here.
   useEffect(() => {
@@ -252,6 +314,12 @@ export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: 
     const box = (a: Anchor): Box | null => {
       if (a.kind === 'mem') {
         const lin = linear(a.seg, a.offset)
+        if (memMode === 'touched') {
+          const el = root.querySelector(`[data-lin="${lin}"]`)
+          if (!el) return null
+          const r = el.getBoundingClientRect()
+          return { x: r.left - rr.left, y: r.top - rr.top, w: r.width, h: r.height }
+        }
         const windows: [HTMLCanvasElement | null, MemWindow | null, number][] = [
           [fieldRef.current, mem, mem ? Math.max(1, Math.floor(mem.bytes.length / (COLS * COLS))) : 1],
           [stackRef.current, stack, 1],
@@ -300,7 +368,7 @@ export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: 
       out.push({ d, warm: f.to.kind === 'mem' })
     }
     setArrows(out)
-  }, [flowList, tick, mem, stack, size])
+  }, [flowList, tick, mem, stack, size, memMode])
 
   // Accesses the field and the stack strip cannot show, named by the memory map region: "the DOS read the BIOS data area".
   const justDone: MemAccess[] | null = cur ? (at > 0 ? frames![at - 1].accesses : []) : accesses
@@ -407,19 +475,41 @@ export function Machine({ dbg, controls, onShowInterrupt, onArticle, program }: 
       )}
       <div className="machine-mem">
         <div className="machine-label">
-          <span>memory · DS:{mem ? mem.base.toString(16).toUpperCase().padStart(4, '0') : '----'}</span>
-          <select value={dbg.memSize} onChange={(e) => dbg.setMemWindow(dbg.memBase, Number(e.target.value))} title="window">
+          <span className="tm-switch">
+            <button className={memMode === 'touched' ? 'on' : ''} onClick={() => chooseMem('touched')} title="Only the memory the program's instructions read and wrote, row by row">touched</button>
+            <button className={memMode === 'window' ? 'on' : ''} onClick={() => chooseMem('window')} title="A window over DS, a cell per byte, with heat">window</button>
+          </span>
+          {memMode === 'window' && <span>memory · DS:{mem ? mem.base.toString(16).toUpperCase().padStart(4, '0') : '----'}</span>}
+          {memMode === 'window' && <select value={dbg.memSize} onChange={(e) => dbg.setMemWindow(dbg.memBase, Number(e.target.value))} title="window">
             <option value={4096}>4 KB · byte per cell</option>
             <option value={16384}>16 KB · 4 bytes per cell</option>
             <option value={65536}>64 KB · 16 bytes per cell</option>
-          </select>
+          </select>}
         </div>
-        <canvas ref={fieldRef} className="machine-field" onMouseMove={(e) => onHover(e, 'field')} onMouseLeave={() => setHover(null)} />
-        <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>
-        <canvas ref={stackRef} className="machine-stack" onMouseMove={(e) => onHover(e, 'stack')} onMouseLeave={() => setHover(null)} />
-        <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses || cur ? 'read' : 'about to be read'} · heat fades with each instruction <i style={{ background: paper.sp }} /> SP <span className="legend-arrow">→</span> data flow of the next instruction</div>
+        {memMode === 'touched' && (
+          live
+            ? (
+              <TouchedMemory
+                now={touchedNow}
+                earlier={touchedEarlier.current}
+                bytes={(r) => rowsNow.current.get(r)}
+                before={(r) => rowsBefore.current.get(r)}
+                segs={{ cs: vCs, ds: vRegs ? parseInt(vRegs.segments.ds, 16) & 0xffff : 0, es: vRegs ? parseInt(vRegs.segments.es, 16) & 0xffff : 0, ss: vRegs ? parseInt(vRegs.segments.ss, 16) & 0xffff : 0, sp: vRegs ? parseInt(vRegs.general.esp, 16) & 0xffff : undefined }}
+                opened={opened}
+                onOpen={(rows) => setOpened((o) => new Set([...o, ...rows]))}
+                empty={dbg.session ? 'Step: what the program reads and writes shows here, row by row.' : 'Debug a program: what it reads and writes shows here.'}
+              />
+            )
+            : <div className="tm-empty muted small">A replay has no memory contents: the window shows its heat.</div>
+        )}
+        <canvas ref={fieldRef} style={memMode === 'touched' && live ? { display: 'none' } : undefined} className="machine-field" onMouseMove={(e) => onHover(e, 'field')} onMouseLeave={() => setHover(null)} />
+        {!(memMode === 'touched' && live) && <div className="machine-label"><span>stack · SS:{stack ? stack.base.toString(16).toUpperCase().padStart(4, '0') : '----'} ▸ SP</span></div>}
+        <canvas ref={stackRef} style={memMode === 'touched' && live ? { display: 'none' } : undefined} className="machine-stack" onMouseMove={(e) => onHover(e, 'stack')} onMouseLeave={() => setHover(null)} />
+        {memMode === 'touched' && live
+          ? <div className="machine-legend"><i className="tm-key w" /> written <i className="tm-key r" /> read by the last instruction <i className="tm-key changed" /> changed <i className="tm-key tw" /> written <i className="tm-key tr" /> read before · ▲ ▼ more rows <span className="legend-arrow">→</span> data flow of the next instruction</div>
+          : <div className="machine-legend"><i style={{ background: paper.ip }} /> IP <i style={{ background: paper.exec }} /> executed <i style={{ background: `rgb(${paper.write.join(',')})` }} /> written <i style={{ background: `rgb(${paper.read.join(',')})` }} /> {accesses || cur ? 'read' : 'about to be read'} · heat fades with each instruction <i style={{ background: paper.sp }} /> SP  <span className="legend-arrow">→</span> data flow of the next instruction</div>}
         {/* Always there, one line high, so the controls below do not move from one step to the next. */}
-        <div className="machine-elsewhere" title={elsewhere.map((g) => g.name).join(', ')}>
+        <div className="machine-elsewhere" style={memMode === 'touched' && live ? { visibility: 'hidden' } : undefined} title={elsewhere.map((g) => g.name).join(', ')}>
           {elsewhere.length > 0 && <span className="muted">also touched:</span>}
           {elsewhere.map((g) => (
             <span key={g.name} title={`${g.lo.toString(16).toUpperCase().padStart(5, '0')}–${g.hi.toString(16).toUpperCase().padStart(5, '0')}`}>

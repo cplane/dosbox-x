@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Icon } from './icons'
+import { TouchedMemory, type Touch } from './TouchedMemory'
 import type { Walk, WalkState } from './walks'
 
 /**
@@ -38,6 +39,7 @@ export function WalkView({ walk, at, onAt }: Props) {
   const s: WalkState = walk.states[at]
   const prev: WalkState | undefined = walk.states[at - 1]
   const [playing, setPlaying] = useState(false)
+  const [opened, setOpened] = useState<Set<number>>(new Set())
   useEffect(() => {
     if (!playing) return
     if (at >= n - 1) { setPlaying(false); return }
@@ -62,6 +64,31 @@ export function WalkView({ walk, at, onAt }: Props) {
   const stack = bytesOf(s.stack)
   const words = Array.from({ length: Math.floor(stack.length / 2) }, (_, i) => stack[i * 2] | (stack[i * 2 + 1] << 8)).slice(0, 8)
   const last = at === n - 1
+
+  // Memory as the program touched it, as the recording knows it at a state: the rows touched up to then as last
+  // seen (video memory, buffers, the stack), then the state's own data area and top of the stack.
+  const known = (idx: number) => {
+    const m = new Map<number, number>()
+    const st = walk.states[idx]
+    if (!st) return m
+    for (let i = 0; i <= idx; i++) for (const [row, hex] of walk.states[i].rows ?? []) bytesOf(hex).forEach((b, k) => m.set(row * 16 + k, b))
+    bytesOf(st.data).forEach((b, i) => m.set(base + walk.dataAt + i, b))
+    bytesOf(st.stack).forEach((b, i) => m.set(st.r[11] * 16 + st.r[7] + i, b))
+    return m
+  }
+  const nowBytes = useMemo(() => known(at), [walk, at]) // eslint-disable-line react-hooks/exhaustive-deps
+  const beforeBytes = useMemo(() => known(at - 1), [walk, at]) // eslint-disable-line react-hooks/exhaustive-deps
+  const rowOf = (m: Map<number, number>) => (row: number) => {
+    const out = Array.from({ length: 16 }, (_, i) => m.get(row * 16 + i))
+    return out.some((v) => v !== undefined) ? out : undefined
+  }
+  const earlier = useMemo(() => {
+    const m = new Map<number, boolean>()
+    for (let i = 1; i < at; i++) for (const [lin, size, w] of walk.states[i].acc) for (let k = 0; k < size; k++) m.set(lin + k, (m.get(lin + k) ?? false) || w === 1)
+    return m
+  }, [walk, at])
+  const touchedNow: Touch[] = s.acc.map(([address, size, w]) => ({ address, size, write: w === 1 }))
+  const names = useMemo(() => new Map(walk.vars.map((v) => [base + v.offset, v.name] as [number, string])), [walk, base])
 
   return (
     <div className="walk" tabIndex={0} onKeyDown={(e) => {
@@ -124,6 +151,20 @@ export function WalkView({ walk, at, onAt }: Props) {
           })}
         </div>
       )}
+      <div className="walk-mem">
+        <span className="muted small">memory the program touched</span>
+        <TouchedMemory
+          now={touchedNow}
+          earlier={earlier}
+          bytes={rowOf(nowBytes)}
+          before={rowOf(beforeBytes)}
+          names={names}
+          segs={{ cs: r[8], ds: r[9], es: r[10], ss: r[11], sp: r[7] }}
+          opened={opened}
+          onOpen={(rows) => setOpened((o) => new Set([...o, ...rows]))}
+          empty="Nothing read or written in memory yet."
+        />
+      </div>
       {r[7] !== 0xfffe && words.length > 0 && (
         <div className="walk-stack">
           <span className="muted small">stack at SS:{h4(r[7])}</span>
