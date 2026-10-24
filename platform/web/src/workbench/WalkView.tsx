@@ -84,6 +84,16 @@ export function WalkView({ walk, at, onAt }: Props) {
         <span className="muted small">{s.bytes.replace(/(..)/g, '$1 ').trim()}</span>
         {s.line < 0 && <span className="muted small">{last && walk.end === 'exited' ? 'the skeleton\'s exit: the program ends here' : 'the skeleton around the example'}</span>}
       </div>
+      {s.waited && (
+        <div className="walk-note">The loop before ran on at full speed until it ended (counting down, or waiting for the timer or a key): its other passes are not shown.</div>
+      )}
+      {last && walk.end !== 'exited' && (
+        <div className="walk-note">
+          {walk.end === 'wait'
+            ? 'From here the program goes round this loop waiting (for the timer or a key) until what it waits for comes; the walk stops, the program runs on to its end.'
+            : `The walk stops after ${n} instructions; the program runs on to its end.`}
+        </div>
+      )}
 
       <div className="cpu-regs">
         {REGS.map((k, i) => <div key={k} className={`cpu-cell ${r[i] !== p[i] ? 'changed' : ''}`}><b>{k}</b><span>{h4(r[i])}</span></div>)}
