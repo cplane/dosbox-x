@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <cerrno>
@@ -126,6 +127,8 @@ private:
         HANDLE active_pipe = INVALID_HANDLE_VALUE;
         std::vector<HANDLE> active_pipes;
         std::vector<std::thread> client_workers;
+        // Workers that have served their client, to be joined at the next connection.
+        std::vector<std::thread::id> finished;
 #endif
     };
 
@@ -234,6 +237,24 @@ private:
         ServeClient(pipe);
         CloseHandle(pipe);
         RemoveActivePipe(pipe);
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        impl->finished.push_back(std::this_thread::get_id());
+    }
+
+    // The workers that have served their client, moved out to be joined (the caller holds the lock). A client may
+    // connect for every request: an ended thread left unjoined keeps its stack until Stop().
+    void TakeFinished(std::vector<std::thread>* done)
+    {
+        for (std::vector<std::thread::id>::const_iterator id = impl->finished.begin(); id != impl->finished.end(); ++id) {
+            for (std::vector<std::thread>::iterator worker = impl->client_workers.begin(); worker != impl->client_workers.end(); ++worker) {
+                if (worker->get_id() == *id) {
+                    done->push_back(std::move(*worker));
+                    impl->client_workers.erase(worker);
+                    break;
+                }
+            }
+        }
+        impl->finished.clear();
     }
 
     void Run()
@@ -274,12 +295,17 @@ private:
             const DWORD connect_error = connected ? ERROR_SUCCESS : GetLastError();
             if (connected || connect_error == ERROR_PIPE_CONNECTED) {
                 bool stopping = false;
+                std::vector<std::thread> done;
                 {
                     std::lock_guard<std::mutex> lock(impl->mutex);
                     stopping = impl->stopping;
-                    if (!stopping)
+                    if (!stopping) {
+                        TakeFinished(&done);
                         impl->client_workers.push_back(std::thread(&NamedPipeTransport::ServeClientThread, this, pipe));
+                    }
                 }
+                for (std::vector<std::thread>::iterator worker = done.begin(); worker != done.end(); ++worker)
+                    worker->join();
                 if (stopping) {
                     CloseHandle(pipe);
                     RemoveActivePipe(pipe);
@@ -417,6 +443,8 @@ private:
         RequestHandler handler;
         std::thread listener;
         std::vector<std::thread> workers;
+        // Workers that have served their client, to be joined at the next connection.
+        std::vector<std::thread::id> finished;
         std::vector<int> clients;
         int listen_fd = -1;
         bool stopping = false;
@@ -451,13 +479,19 @@ private:
                     continue;
                 return; // closed by Stop()
             }
-            std::lock_guard<std::mutex> lock(impl->mutex);
-            if (impl->stopping) {
-                close(client);
-                return;
+            std::vector<std::thread> done;
+            {
+                std::lock_guard<std::mutex> lock(impl->mutex);
+                if (impl->stopping) {
+                    close(client);
+                    return;
+                }
+                TakeFinished(&done);
+                impl->clients.push_back(client);
+                impl->workers.push_back(std::thread(&UnixSocketTransport::ServeClientThread, this, client));
             }
-            impl->clients.push_back(client);
-            impl->workers.push_back(std::thread(&UnixSocketTransport::ServeClientThread, this, client));
+            for (std::vector<std::thread>::iterator worker = done.begin(); worker != done.end(); ++worker)
+                worker->join();
         }
     }
 
@@ -472,6 +506,23 @@ private:
                 break;
             }
         }
+        impl->finished.push_back(std::this_thread::get_id());
+    }
+
+    // The workers that have served their client, moved out to be joined (the caller holds the lock). The sidecar
+    // connects for every request: an ended thread left unjoined keeps its stack (8 MB reserved) until Stop().
+    void TakeFinished(std::vector<std::thread>* done)
+    {
+        for (std::vector<std::thread::id>::const_iterator id = impl->finished.begin(); id != impl->finished.end(); ++id) {
+            for (std::vector<std::thread>::iterator worker = impl->workers.begin(); worker != impl->workers.end(); ++worker) {
+                if (worker->get_id() == *id) {
+                    done->push_back(std::move(*worker));
+                    impl->workers.erase(worker);
+                    break;
+                }
+            }
+        }
+        impl->finished.clear();
     }
 
     bool ServeClient(const int client)
