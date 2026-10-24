@@ -3,6 +3,9 @@ import { findArticle, findInterruptText, type Block } from './articles'
 import { exampleFile, wrapExample } from './guide'
 import { Icon } from './icons'
 import { AsmOp } from './asmref'
+import { WalkView } from './WalkView'
+import { hasWalk, loadWalk } from './walkload'
+import { walkSource, type Walk } from './walks'
 
 /**
  * One article of the 8086 guide, in a tab beside the editor: the name and a few words, the short description,
@@ -88,8 +91,24 @@ function alignComments(lines: string[]): string[] {
   })
 }
 
-function Snippet({ block, title, articleKey, onOpen, onNavigate }: { block: Extract<Block, { code: string[] }>; title: string; articleKey: string; onOpen?: Props['onOpen']; onNavigate: Props['onNavigate'] }) {
+function Snippet({ block, index, title, articleKey, onOpen, onNavigate }: { block: Extract<Block, { code: string[] }>; index: number; title: string; articleKey: string; onOpen?: Props['onOpen']; onNavigate: Props['onNavigate'] }) {
   const [copied, setCopied] = useState(false)
+  // Step through: the example as it ran on a box, one instruction at a time (made ahead, see walks.ts).
+  const [walk, setWalk] = useState<Walk | null | 'none'>(null)
+  const [walking, setWalking] = useState(false)
+  const [at, setAt] = useState(0)
+  const canWalk = block.run && hasWalk(articleKey, index) && walk !== 'none'
+  const toggleWalk = async () => {
+    if (walking) { setWalking(false); return }
+    if (!walk) {
+      const w = await loadWalk(articleKey, index, walkSource(block.code, block.data))
+      if (!w) { setWalk('none'); return }
+      setWalk(w)
+    }
+    setAt(0)
+    setWalking(true)
+  }
+  const now = walking && walk && walk !== 'none' ? walk.states[at].line : null
   const text = alignComments([...block.code, ...(block.run && block.data?.length ? ['', ...block.data] : [])]).join('\n')
   const copy = async () => {
     try { await navigator.clipboard.writeText(text.replace(/\n/g, '\r\n')) } catch { /* no clipboard: nothing to say */ }
@@ -100,12 +119,16 @@ function Snippet({ block, title, articleKey, onOpen, onNavigate }: { block: Extr
     <div className="article-code">
       <div className="article-code-bar">
         {block.note && <span className="muted">{block.note}</span>}
+        {canWalk && (
+          <button className={`icon-btn ${walking ? 'on' : ''}`} aria-label="Step through" onClick={() => { void toggleWalk() }} title={walking ? 'Close the step-through' : 'Step through: the example as it ran, one instruction at a time, with the registers, flags and variables'}>{Icon.steps}</button>
+        )}
         {onOpen && block.run && (
           <button className="icon-btn" aria-label="Open in the editor" onClick={() => onOpen(exampleFile(articleKey), alignComments(wrapExample(title, block.code, block.data).split('\r\n')).join('\r\n'))} title="Open in the editor as a complete program, ready to Build & Run or debug">{Icon.openFile}</button>
         )}
         <button className={`icon-btn ${copied ? 'done' : ''}`} aria-label="Copy" onClick={copy} title={copied ? 'Copied' : 'Copy the snippet'}>{copied ? Icon.check : Icon.copy}</button>
       </div>
-      <pre>{text.split('\n').map((l, i) => <div key={i}>{l ? highlight(l, onNavigate) : ' '}</div>)}</pre>
+      <pre>{text.split('\n').map((l, i) => <div key={i} className={now === i ? 'walk-now' : undefined}>{l ? highlight(l, onNavigate) : ' '}</div>)}</pre>
+      {walking && walk && walk !== 'none' && <WalkView walk={walk} at={at} onAt={setAt} />}
     </div>
   )
 }
@@ -143,7 +166,7 @@ export function ArticleView({ articleKey, onNavigate, onBack, onOpen }: Props) {
               </table>
             )
           }
-          return <Snippet key={i} block={b} title={a.title} articleKey={a.key} onOpen={onOpen} onNavigate={onNavigate} />
+          return <Snippet key={i} block={b} index={i} title={a.title} articleKey={a.key} onOpen={onOpen} onNavigate={onNavigate} />
         })}
       </div>
       {a.see && a.see.length > 0 && (
