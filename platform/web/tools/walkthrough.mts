@@ -6,9 +6,12 @@
 //   npx esbuild tools/walkthrough.mts --bundle --platform=node --format=esm --outfile=tools/.walkthrough.mjs
 //   node tools/.walkthrough.mjs MOV            # the article's runnable examples
 //   node tools/.walkthrough.mjs MOV:9          # one snippet (its index in the article's body)
+//   node tools/.walkthrough.mjs                # every runnable example (FORCE=1 remakes walks that are current)
 //
+// An example that runs longer than LIMIT instructions is walked that far, then left to run to its own end (so it
+// puts back whatever it hooked). Code outside the program (an interrupt handler the BIOS runs) is stepped over.
 // The box's sidecar (POD, default http://localhost:18099) runs the assembler and answers the debugger's RPC.
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { ARTICLES, findArticle, type Block } from '../src/workbench/articles'
 import { wrapExample } from '../src/workbench/guide'
 import { parseListing } from '../src/workbench/listing'
@@ -17,6 +20,8 @@ import { walkName, walkSource, type Walk, type WalkState, type WalkVar } from '.
 const POD = process.env.POD ?? 'http://localhost:18099'
 const OUT = new URL('../src/workbench/walks/', import.meta.url)
 const LIMIT = Number(process.env.LIMIT ?? 400) // states kept at most
+const OUTSIDE = 3000 // instructions outside the program before the walk gives up and lets it run
+const PASSES = Number(process.env.PASSES ?? 12) // passes of a loop recorded before the rest runs at full speed
 const DIR = 'WALK'
 
 let rpcId = Math.floor(Math.random() * 1e9)
@@ -91,6 +96,8 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
   await fetch(`${POD}/rescan`, { method: 'POST' })
   await run('C:')
   await run(`CD \\${DIR}`)
+  // ML finds LINK through PATH: set here, not left to whatever the box's shell has (a restarted box has none).
+  await run('SET PATH=C:\\MASM611\\BIN;C:\\MASM611\\BINR;Z:\\')
   const asm = await run('C:\\MASM611\\BIN\\ML.EXE /AT /Fl /nologo W.ASM', 120000)
   if (asm.errorlevel) throw new Error(`assembly failed: ${asm.output ?? asm.error}`)
   const map = parseListing((await get('W.LST')).toString('latin1'), source)
@@ -115,28 +122,109 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
   let acc: WalkState['acc'] = []
   let how = 'limit'
   let seg = 0
+  let outside = 0
+  // A machine state seen again: the program waits in a loop for something outside it (the timer, a key). The
+  // state's key -> the first state it was.
+  let seen = new Map<string, number>()
+  let waited = false
+  // A loop that counts (a delay, a long copy): after PASSES passes the rest at full speed. Per instruction, how
+  // often it ran and the state it last was; the loops skipped so far, by their first instruction: one met again
+  // (an inner loop inside an outer one) is skipped on its second pass.
+  const visits = new Map<number, number>()
+  const lastAt = new Map<number, number>()
+  const skipped = new Set<number>()
+  const step = async (mode: 'into' | 'over') => {
+    try {
+      await A('execution.step', { session_id: sid, mode })
+      return true
+    } catch (err) {
+      if ((err as { data?: { state?: string } }).data?.state === 'exited') return false
+      throw err
+    }
+  }
+  // Past the limit: the rest of the program at full speed, to its own end.
+  const runOut = async () => {
+    const op = await A<{ operation_id: string }>('execution.continue', { session_id: sid })
+    for (let i = 0; i < 30; i++) {
+      const w = await A<{ running: boolean; state?: string }>('execution.wait', { session_id: sid, operation_id: op.operation_id, timeout_ms: 1000 }).catch((e) => ({ running: false, state: (e as { data?: { state?: string } }).data?.state ?? 'exited' }))
+      if (!w.running) return
+    }
+    throw new Error('did not end within 30 s of running on')
+  }
+  // Out of a waiting loop at full speed: a breakpoint on every instruction of the example outside the loop, run to
+  // the first one reached. False when the program ended meanwhile.
+  const skipLoop = async (loop: Set<number>) => {
+    const ids: string[] = []
+    for (const off of map.lineOf.keys()) {
+      if (off < dataAt && !loop.has(off)) ids.push((await A<{ breakpoint_id: string }>('breakpoints.create', { session_id: sid, kind: 'execution', address: at(seg, off) })).breakpoint_id)
+    }
+    const op = await A<{ operation_id: string }>('execution.continue', { session_id: sid })
+    let running = true, ended = false
+    for (let i = 0; i < 30 && running; i++) {
+      const w = await A<{ running: boolean; state?: string; session?: { state?: string } }>('execution.wait', { session_id: sid, operation_id: op.operation_id, timeout_ms: 1000 })
+        .catch((e) => ({ running: false, state: (e as { data?: { state?: string } }).data?.state ?? 'exited' }) as { running: boolean; state?: string; session?: { state?: string } })
+      running = w.running
+      ended = !running && (w.session?.state ?? w.state) === 'exited'
+    }
+    if (running) throw new Error('still waiting after 30 s')
+    if (!ended) for (const id of ids) await A('breakpoints.delete', { session_id: sid, breakpoint_id: id }).catch(() => undefined)
+    return !ended
+  }
   try {
-    while (states.length < LIMIT) {
+    for (;;) {
       const r = regsOf(await A<Registers>('state.get_registers', { session_id: sid }))
       const [cs, ip, sp, ss] = [r[8], r[12], r[7], r[11]]
       if (!states.length) seg = cs
+      if (cs !== seg) {
+        // An interrupt handler outside the program (the timer's, the keyboard's): over it, unrecorded.
+        if (++outside > OUTSIDE) { await runOut(); how = 'limit'; break }
+        if (!await step('over')) { how = 'exited'; break }
+        continue
+      }
+      outside = 0
+      if (states.length >= LIMIT) { await runOut(); break }
+      const data = hex(await read(sid, seg, dataAt, Math.min(512, end - dataAt)))
+      const stack = hex(await read(sid, ss, sp, Math.min(32, 0x10000 - sp)))
+      const key = `${r.join(',')}|${data}|${stack}`
+      const first = seen.get(key)
+      if (first !== undefined && states.length - first >= 1) {
+        // Round the loop once with nothing changed: the rest of its passes at full speed.
+        const loop = new Set(states.slice(first).map((x) => x.r[12]))
+        if (!await skipLoop(loop)) { how = 'exited'; break }
+        seen = new Map()
+        waited = true
+        acc = []
+        continue
+      }
+      seen.set(key, states.length)
+      const v = (visits.get(ip) ?? 0) + 1
+      const prev = lastAt.get(ip)
+      // (Not a loop that calls DOS or the BIOS: what it prints is worked out step by step, all of it is kept.)
+      const body = prev !== undefined ? states.slice(prev) : []
+      if (prev !== undefined && !body.some((x) => /^int\s/i.test(x.text)) && (v > PASSES || (skipped.has(ip) && states.length - prev < 64))) {
+        const loop = new Set(body.map((x) => x.r[12]))
+        if (!await skipLoop(loop)) { how = 'exited'; break }
+        skipped.add(ip)
+        // Its instructions start afresh (entered again, it gets one pass); the counts of an outer loop go on.
+        for (const x of loop) lastAt.delete(x)
+        seen = new Map()
+        waited = true
+        acc = []
+        continue
+      }
+      visits.set(ip, v)
+      lastAt.set(ip, states.length)
       const d = (await A<{ lines: { bytes: string; text: string }[] }>('code.disassemble', { session_id: sid, address: at(cs, ip), count: 1 })).lines[0]
       const wl = cs === seg ? map.lineOf.get(ip) : undefined
       states.push({
         r, line: wl !== undefined ? shown(wl) : -1, text: d?.text.trim() ?? '', bytes: d?.bytes ?? '',
-        data: hex(await read(sid, seg, dataAt, Math.min(512, end - dataAt))),
-        stack: hex(await read(sid, ss, sp, Math.min(32, 0x10000 - sp))),
-        out, acc,
+        data, stack, out, acc, ...(waited ? { waited: true } : {}),
       })
+      waited = false
       // Into the program's own code; over a call into DOS or the BIOS (INT), which is one step here.
       const int = /^int\s+([0-9a-f]+)/i.exec(d?.text.trim() ?? '')
       if (int) out += await printed(sid, parseInt(int[1], 16), r)
-      try {
-        await A('execution.step', { session_id: sid, mode: int ? 'over' : 'into' })
-      } catch (err) {
-        if ((err as { data?: { state?: string } }).data?.state === 'exited') { how = 'exited'; break }
-        throw err
-      }
+      if (!await step(int ? 'over' : 'into')) { how = 'exited'; break }
       // What it touched in the program's segment. Over an INT only the example's data counts (DOS reading the string
       // it prints, a buffer it fills): its own bookkeeping on the stack and in the PSP is not the example's.
       const a = await A<{ accesses: { address: string; size: number; kind: string }[] }>('memory.accesses', { session_id: sid }).catch(() => ({ accesses: [] }))
@@ -161,10 +249,13 @@ const targets = (wanted.length ? wanted : ARTICLES.map((a) => a.key)).flatMap((w
 })
 for (const { a, j, b } of targets) {
   const name = walkName(a.key, j)
+  const file = new URL(`${name}.json`, OUT)
+  if (!process.env.FORCE && existsSync(file) && (JSON.parse(readFileSync(file, 'utf8')) as Walk).src === walkSource(b.code, b.data)) { console.log(`${name}: current`); continue }
+  const t0 = Date.now()
   try {
     const w = await walk(a.key, j, b, a.title)
-    writeFileSync(new URL(`${name}.json`, OUT), JSON.stringify(w))
-    console.log(`${name}: ${w.states.length} states, ${w.end}, printed ${JSON.stringify(w.states.at(-1)?.out ?? '')}`)
+    writeFileSync(file, JSON.stringify(w))
+    console.log(`${name}: ${w.states.length} states, ${w.end}, ${((Date.now() - t0) / 1000).toFixed(0)} s, printed ${JSON.stringify((w.states.at(-1)?.out ?? '').slice(0, 60))}`)
   } catch (err) {
     console.log(`${name}: FAILED ${err instanceof Error ? err.message : err}`)
   }

@@ -32,6 +32,9 @@ export interface WalkState {
   out: string
   /** What the instruction before this state read and wrote: [linear address, size, 1 = write]. */
   acc: [number, number, number][]
+  /** A loop before this state ran on at full speed, unrecorded: one that waits (for the timer, a key) or one that
+   *  goes round many times (a delay, a long copy). */
+  waited?: boolean
 }
 
 export interface Walk {
@@ -43,7 +46,9 @@ export interface Walk {
   dataAt: number
   vars: WalkVar[]
   states: WalkState[]
-  /** How it ended: exited, or "limit" when it ran longer than the walk keeps. */
+  /** How it ended: "exited"; "wait" when it went round a loop waiting for something outside it (the timer, a key),
+   *  the walk stopping there; "limit" when it ran longer than a walk keeps. After "wait" and "limit" the program ran
+   *  on to its end at full speed. */
   end: string
 }
 
