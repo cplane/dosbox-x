@@ -32,13 +32,17 @@ export interface WalkState {
   out: string
   /** What the instruction before this state read and wrote: [linear address, size, 1 = write]. */
   acc: [number, number, number][]
+  /** Rows (linear address >> 4, 16 bytes hex) the instruction before touched outside the data area, as it left them
+   *  (video memory, a buffer past the program, the stack): later states show them as they were last seen. */
+  rows?: [number, string][]
   /** A loop before this state ran on at full speed, unrecorded: one that waits (for the timer, a key) or one that
    *  goes round many times (a delay, a long copy). */
   waited?: boolean
 }
 
 export interface Walk {
-  v: 1
+  /** 1: the first recordings; 2: with the rows touched outside the data area (`rows`). */
+  v: 1 | 2
   /** The snippet the walk was made from (its code and data lines): a walk for another text is not shown. */
   src: string
   /** The program's segment, and where the data area starts in it. */

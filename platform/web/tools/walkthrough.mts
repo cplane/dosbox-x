@@ -127,6 +127,8 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
   // state's key -> the first state it was.
   let seen = new Map<string, number>()
   let waited = false
+  // The rows (16 bytes) the last instruction touched outside the data area, read after it ran: [row, hex].
+  let touchedRows: [number, string][] = []
   // A loop that counts (a delay, a long copy): after PASSES passes the rest at full speed. Per instruction, how
   // often it ran and the state it last was; the loops skipped so far, by their first instruction: one met again
   // (an inner loop inside an outer one) is skipped on its second pass.
@@ -194,6 +196,7 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
         seen = new Map()
         waited = true
         acc = []
+        touchedRows = []
         continue
       }
       seen.set(key, states.length)
@@ -210,6 +213,7 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
         seen = new Map()
         waited = true
         acc = []
+        touchedRows = []
         continue
       }
       visits.set(ip, v)
@@ -218,26 +222,36 @@ async function walk(key: string, index: number, b: Extract<Block, { code: string
       const wl = cs === seg ? map.lineOf.get(ip) : undefined
       states.push({
         r, line: wl !== undefined ? shown(wl) : -1, text: d?.text.trim() ?? '', bytes: d?.bytes ?? '',
-        data, stack, out, acc, ...(waited ? { waited: true } : {}),
+        data, stack, out, acc, ...(waited ? { waited: true } : {}), ...(touchedRows.length ? { rows: touchedRows } : {}),
       })
       waited = false
       // Into the program's own code; over a call into DOS or the BIOS (INT), which is one step here.
       const int = /^int\s+([0-9a-f]+)/i.exec(d?.text.trim() ?? '')
       if (int) out += await printed(sid, parseInt(int[1], 16), r)
       if (!await step(int ? 'over' : 'into')) { how = 'exited'; break }
-      // What it touched in the program's segment. Over an INT only the example's data counts (DOS reading the string
-      // it prints, a buffer it fills): its own bookkeeping on the stack and in the PSP is not the example's.
-      const a = await A<{ accesses: { address: string; size: number; kind: string }[] }>('memory.accesses', { session_id: sid }).catch(() => ({ accesses: [] }))
-      const [lo, hi] = int ? [seg * 16 + dataAt, seg * 16 + end] : [seg * 16, seg * 16 + 0x10000]
-      acc = a.accesses.map((x) => [parseInt(x.address, 16), x.size, x.kind === 'write' ? 1 : 0] as [number, number, number])
-        .filter(([lin]) => lin >= lo && lin < hi).slice(0, 16)
+      // What the instruction itself touched, anywhere (its own accesses: not a timer tick's in between). Over an INT
+      // only the example's data counts (DOS reading the string it prints, a buffer it fills): its own bookkeeping on
+      // the stack and in the PSP is not the example's.
+      const a = await A<{ accesses: { address: string; size: number; kind: string; cs: string }[] }>('memory.accesses', { session_id: sid }).catch(() => ({ accesses: [] }))
+      acc = a.accesses
+        .filter((x) => (int ? true : (parseInt(x.cs, 16) & 0xffff) === seg))
+        .map((x) => [parseInt(x.address, 16), x.size, x.kind === 'write' ? 1 : 0] as [number, number, number])
+        .filter(([lin]) => !int || (lin >= seg * 16 + dataAt && lin < seg * 16 + end)).slice(0, 16)
+      // The rows it touched outside the data area, as they are now (the player carries them on to later steps).
+      const rows = [...new Set(acc.flatMap(([lin, size]) => [lin >>> 4, (lin + size - 1) >>> 4]))]
+        .filter((row) => row <= 0xffff && !(row * 16 >= seg * 16 + dataAt && row * 16 + 16 <= seg * 16 + end))
+      touchedRows = []
+      for (const row of rows) touchedRows.push([row, hex(await read(sid, row, 0, 16))])
     }
   } finally {
     await endSessions()
     await enter() // a fresh DOS prompt for the next run
   }
-  return { v: 1, src: walkSource(b.code, b.data), seg, dataAt, vars, states, end: how }
+  return { v: 2, src: walkSource(b.code, b.data), seg, dataAt, vars, states, end: how }
 }
+
+// A walk made by this version (v2: with the rows touched outside the data area) from the snippet as it is now.
+const isCurrent = (w: Walk, b: Extract<Block, { code: string[] }>) => w.v === 2 && w.src === walkSource(b.code, b.data)
 
 mkdirSync(OUT, { recursive: true })
 const wanted = process.argv.slice(2)
@@ -250,7 +264,7 @@ const targets = (wanted.length ? wanted : ARTICLES.map((a) => a.key)).flatMap((w
 for (const { a, j, b } of targets) {
   const name = walkName(a.key, j)
   const file = new URL(`${name}.json`, OUT)
-  if (!process.env.FORCE && existsSync(file) && (JSON.parse(readFileSync(file, 'utf8')) as Walk).src === walkSource(b.code, b.data)) { console.log(`${name}: current`); continue }
+  if (!process.env.FORCE && existsSync(file) && isCurrent(JSON.parse(readFileSync(file, 'utf8')) as Walk, b)) { console.log(`${name}: current`); continue }
   const t0 = Date.now()
   try {
     const w = await walk(a.key, j, b, a.title)

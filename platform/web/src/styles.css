@@ -644,3 +644,37 @@ html.paper body { overflow: hidden; }
 .walk-out { display: grid; gap: 2px; }
 .walk-out pre { margin: 0; padding: 4px 6px; min-height: 1.4em; border-radius: 4px; background: rgba(70, 70, 65, 0.06); white-space: pre-wrap; }
 .walk-note { padding: 4px 8px; border-radius: 4px; background: rgba(224, 168, 90, 0.14); color: var(--text); }
+/* Touched memory (TouchedMemory): rows of what the program read and wrote, blocks like a diff's, expanders between. */
+.tm { display: grid; gap: 0; font: 11.5px/1.55 "JetBrains Mono", ui-monospace, Consolas, monospace; }
+.tm-row { display: grid; grid-template-columns: 6.6em auto auto 1fr; gap: 10px; align-items: baseline; padding: 0 4px; white-space: nowrap; }
+.tm-row:hover { background: rgba(70, 70, 65, 0.04); }
+.tm-addr { color: var(--muted); }
+.tm-bytes { display: inline-flex; gap: 0; }
+.tm-b { position: relative; padding: 0 2px; border-radius: 2px; color: #b4b2aa; }
+.tm-b.mid { margin-left: 6px; }
+.tm-b.tr { color: var(--text); background: rgba(59, 99, 168, 0.06); }
+.tm-b.tw { color: var(--text); background: rgba(224, 120, 90, 0.10); }
+.tm-b.changed { color: var(--text); background: rgba(224, 168, 90, 0.35); }
+.tm-b.r { color: #fcfcfa; background: #3b63a8; }
+.tm-b.w { color: #fcfcfa; background: #c4553d; }
+.tm-name-mark { position: absolute; left: 0; top: 1px; bottom: 1px; width: 2px; background: #5f5a4e; border-radius: 1px; }
+.tm-chars { color: var(--muted); white-space: pre; }
+.tm-names { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+.tm-more, .tm-gap { display: block; width: 100%; padding: 0 4px; border: 0; border-radius: 3px; background: rgba(70, 70, 65, 0.05); color: var(--muted); font: inherit; font-size: 10.5px; line-height: 1.6; text-align: left; cursor: pointer; }
+.tm-more:hover, .tm-gap:hover { background: rgba(224, 168, 90, 0.18); color: var(--text); }
+.tm-gap { margin: 2px 0; text-align: center; }
+.tm-gap.split { display: flex; align-items: center; gap: 8px; cursor: default; background: none; }
+.tm-gap.split > span { flex: 1; text-align: center; }
+.tm-gap.split .tm-more { width: auto; padding: 0 10px; }
+.tm-empty { padding: 6px 4px; }
+.tm-switch { display: inline-flex; gap: 2px; margin-right: 8px; }
+.tm-switch button { padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: none; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.tm-switch button.on { background: #35342f; border-color: #35342f; color: #fcfcfa; }
+.walk-mem { display: grid; gap: 2px; overflow-x: auto; }
+.machine .tm { overflow-x: auto; }
+.tm-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+.tm-key.w { background: #c4553d; }
+.tm-key.r { background: #3b63a8; }
+.tm-key.changed { background: rgba(224, 168, 90, 0.6); }
+.tm-key.tw { background: rgba(224, 120, 90, 0.25); }
+.tm-key.tr { background: rgba(59, 99, 168, 0.18); }
