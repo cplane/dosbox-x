@@ -1,6 +1,0 @@
-node_modules
-dist
-*.tsbuildinfo
-
-# The walkthrough generator, bundled to run
-tools/.walkthrough.mjs
